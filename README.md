@@ -1,6 +1,6 @@
 # Quant Trading System
 
-A full-featured quantitative trading system built in **Rust**, targeting the **Chinese A-share market**. Supports backtesting, paper trading, **QMT 实盘下单** (live trading via 迅投量化), intelligent stock screening, **sentiment data integration** (舆情数据), actor-based auto-trading engine, and an integrated **LLM-powered AI assistant** for conversational market analysis.
+A full-featured quantitative trading system built in **Rust**, targeting the **Chinese A-share market**. Supports backtesting, paper trading, **QMT 实盘下单** (live trading via 迅投量化), intelligent stock screening, **sentiment data integration** (舆情数据), **ML-based factor extraction** (机器学习因子策略 with GPU inference), actor-based auto-trading engine, and an integrated **LLM-powered AI assistant** for conversational market analysis.
 
 ## ✨ Features
 
@@ -11,6 +11,7 @@ A full-featured quantitative trading system built in **Rust**, targeting the **C
 | 📈 **Indicators** | SMA, EMA, MACD, RSI, Bollinger Bands, KDJ — all composable |
 | 🔍 **Stock Screener** | 3-phase pipeline: multi-factor scoring → strategy signal voting → LLM analysis |
 | 📰 **Sentiment Data** | Ingest sentiment/news data via API, adjust trading signals based on market mood |
+| 🧠 **ML Factor Model** | 24-feature engineering in Rust + GPU-accelerated inference via Python sidecar (LightGBM/ONNX/PyTorch) |
 | 🤖 **Auto-Trading** | Actor model engine (Data → Strategy → Risk → Order) with real-time status |
 | 🔴 **QMT 实盘** | Live trading via QMT (迅投量化) Python bridge — real order placement to broker |
 | 📝 **Paper Trading** | Simulated order execution with commission/stamp tax modeling |
@@ -48,6 +49,10 @@ quant-trading/
 ├── qmt_bridge/                     # Python sidecar wrapping xtquant SDK for QMT live trading
 │   ├── qmt_bridge.py               #   Flask HTTP API → xtquant (order, cancel, positions, account)
 │   └── requirements.txt            #   flask, xtquant
+├── ml_models/                      # ML factor model training & inference sidecar
+│   ├── train_factor_model.py       #   LightGBM training + ONNX export
+│   ├── ml_serve.py                 #   Flask GPU inference server (ONNX/LightGBM/PyTorch + CUDA)
+│   └── requirements.txt            #   torch, onnxruntime-gpu, lightgbm, flask
 ├── config/default.toml             # System configuration (database, API keys, trading params, QMT)
 ├── migrations/                     # PostgreSQL schema migrations
 ├── Dockerfile                      # Container build
@@ -80,6 +85,35 @@ Phase 3: LLM Analysis (optional)
   Generate structured prompt with all technical data → AI recommendation
 ```
 
+### ML Factor Extraction Strategy
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Rust (crates/strategy)                     │
+│                                                               │
+│  Kline Bars ──→ Feature Engineering (24 features)             │
+│                   returns, volatility, MA ratios, RSI,        │
+│                   MACD, volume, price patterns, Bollinger     │
+│                          │                                     │
+│                          ▼                                     │
+│              MlInferenceClient (HTTP)                          │
+│                          │                                     │
+└──────────────────────────│─────────────────────────────────────┘
+                           │  POST /predict
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│             Python Sidecar (ml_models/ml_serve.py)           │
+│                     127.0.0.1:18091                            │
+│                                                               │
+│   ONNX Runtime (GPU/CPU)  ←── train_factor_model.py           │
+│   LightGBM                     (LightGBM → ONNX export)      │
+│   PyTorch + CUDA                                              │
+└─────────────────────────────────────────────────────────────┘
+
+Fallback: When Python sidecar is unavailable, a rule-based scoring
+function evaluates the 24 features to produce a signal.
+```
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -88,6 +122,7 @@ Phase 3: LLM Analysis (optional)
 - Node.js 18+ (for WebUI)
 - PostgreSQL 14+ (optional, for data persistence)
 - Python 3.8+ (optional, for QMT live trading)
+- Python 3.8+ with CUDA (optional, for ML factor model GPU inference)
 
 ### Build
 
@@ -158,6 +193,9 @@ quant trade qmt-status
 
 # Live trading via QMT (requires bridge running)
 quant trade qmt --strategy sma_cross --symbols "000001.SZ"
+
+# ML factor model backtest (uses rule-based fallback if sidecar not running)
+quant backtest run --strategy ml_factor --symbol 600519.SH --start 2024-01-01 --end 2024-12-31
 ```
 
 ## 🔴 QMT Live Trading (实盘交易)
@@ -297,6 +335,37 @@ curl http://localhost:8080/api/sentiment/600519.SH?limit=10
 curl http://localhost:8080/api/sentiment/summary
 ```
 
+### ML Factor Strategy (ML因子模型)
+
+The `MlFactorStrategy` uses a **24-dimensional feature vector** computed in Rust from raw Kline bars, then sends it to a Python inference sidecar for GPU-accelerated prediction.
+
+**Features (24 total):**
+- **Returns**: 1d, 5d, 10d, 20d
+- **Volatility**: 5d, 20d
+- **MA ratios**: close/MA5, close/MA10, close/MA20, close/MA60, MA5/MA20
+- **Momentum**: RSI(14), MACD histogram, MACD signal ratio
+- **Volume**: 5d volume ratio, 20d volume ratio
+- **Price patterns**: price position, gap, intraday range, upper/lower shadow ratios, Bollinger %B, body ratio, close-to-open ratio
+
+**Running the ML inference sidecar:**
+```bash
+cd ml_models
+pip install -r requirements.txt
+python ml_serve.py --port 18091  # auto-detects GPU (CUDA)
+```
+
+**Training a custom model:**
+```bash
+cd ml_models
+# With your data CSV (columns: open, high, low, close, volume)
+python train_factor_model.py --data my_data.csv --output factor_model.onnx
+
+# Or use synthetic data for testing
+python train_factor_model.py --output factor_model.onnx
+```
+
+**Fallback mode**: When the Python sidecar is unavailable, the strategy uses a built-in rule-based scoring function that evaluates the same 24 features to produce trading signals. No ML infrastructure required for basic operation.
+
 ## 🔍 Stock Screener Factors
 
 | Factor | Weight | Description |
@@ -328,9 +397,10 @@ curl http://localhost:8080/api/sentiment/summary
 cargo test --release
 
 # Test breakdown:
-# - 19 strategy tests (indicators, screener, multi-factor model, sentiment)
+# - 27 strategy tests (indicators, screener, multi-factor, sentiment, ml_factor)
 # - 12 broker tests (paper, qmt, engine, orders)
 # - 15 risk tests (checks, rules, position sizing)
+# Total: 54 tests
 ```
 
 ## 💬 LLM Tool Calling

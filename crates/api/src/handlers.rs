@@ -116,6 +116,16 @@ pub async fn list_strategies() -> Json<Value> {
                     {"key": "sentiment_weight", "label": "舆情权重", "type": "number", "default": 0.20, "min": 0.05, "max": 0.50},
                     {"key": "min_items", "label": "最少舆情条数", "type": "number", "default": 3, "min": 1, "max": 20}
                 ]
+            },
+            {
+                "name": "ml_factor",
+                "display_name": "ML因子模型",
+                "description": "机器学习因子提取策略，24维特征工程 + GPU模型推理(Python sidecar)",
+                "parameters": [
+                    {"key": "buy_threshold", "label": "买入阈值", "type": "number", "default": 0.60, "min": 0.50, "max": 0.80},
+                    {"key": "sell_threshold", "label": "卖出阈值", "type": "number", "default": 0.35, "min": 0.20, "max": 0.50},
+                    {"key": "bridge_url", "label": "推理服务地址", "type": "string", "default": "http://127.0.0.1:18091"}
+                ]
             }
         ]
     }))
@@ -493,6 +503,7 @@ pub async fn trade_start(
                 Box::new(quant_strategy::builtin::MultiFactorStrategy::with_defaults()),
                 sentiment_store.clone(),
             )),
+            "ml_factor" => Box::new(quant_strategy::ml_factor::MlFactorStrategy::with_defaults()),
             _ => Box::new(DualMaCrossover::new(5, 20)),
         }
     }).await;

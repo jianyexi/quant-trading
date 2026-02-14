@@ -8,6 +8,7 @@ const STRATEGIES = [
   { value: 'macd_trend', label: 'MACD 动量 (12/26/9)', desc: 'MACD柱状图交叉' },
   { value: 'multi_factor', label: '多因子模型', desc: '6因子综合评分 (趋势+动量+波动+KDJ+量价+价格行为)' },
   { value: 'sentiment_aware', label: '舆情增强策略', desc: '多因子+舆情数据联合决策，根据市场情绪调整信号' },
+  { value: 'ml_factor', label: 'ML因子模型', desc: '24维特征工程 + GPU机器学习推理 (需启动Python推理服务)' },
 ];
 
 const STOCK_PRESETS = [

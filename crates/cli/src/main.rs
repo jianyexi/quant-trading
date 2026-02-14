@@ -20,6 +20,7 @@ use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, M
 use quant_strategy::indicators::{SMA, RSI};
 use quant_strategy::screener::{ScreenerConfig, StockScreener};
 use quant_strategy::sentiment::{SentimentStore, SentimentAwareStrategy};
+use quant_strategy::ml_factor::MlFactorStrategy;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -475,9 +476,10 @@ fn cmd_backtest_run(strategy: &str, symbol: &str, start: &str, end: &str, capita
             Box::new(MultiFactorStrategy::with_defaults()),
             SentimentStore::new(),
         )),
+        "ml_factor" => Box::new(MlFactorStrategy::with_defaults()),
         other => {
             println!("  ❌ Unknown strategy: {other}");
-            println!("  Available: sma_cross, rsi_reversal, macd_trend, multi_factor, sentiment_aware");
+            println!("  Available: sma_cross, rsi_reversal, macd_trend, multi_factor, sentiment_aware, ml_factor");
             return;
         }
     };
@@ -1073,6 +1075,7 @@ async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, positi
                 Box::new(MultiFactorStrategy::with_defaults()),
                 SentimentStore::new(),
             )),
+            "ml_factor" => Box::new(MlFactorStrategy::with_defaults()),
             _ => Box::new(DualMaCrossover::new(5, 20)),
         }
     }).await;
@@ -1218,6 +1221,7 @@ async fn cmd_trade_qmt(strategy: &str, symbols_str: &str, interval: u64, positio
                 Box::new(MultiFactorStrategy::with_defaults()),
                 SentimentStore::new(),
             )),
+            "ml_factor" => Box::new(MlFactorStrategy::with_defaults()),
             _ => Box::new(DualMaCrossover::new(5, 20)),
         }
     }).await;
