@@ -41,7 +41,7 @@ fn chat_routes() -> Router<AppState> {
         .route("/stream", get(ws::ws_chat))
 }
 
-pub fn create_router(state: AppState) -> Router {
+pub fn create_router(state: AppState, web_dist: &str) -> Router {
     let api_routes = Router::new()
         .route("/api/health", get(handlers::health))
         .route("/api/dashboard", get(handlers::get_dashboard))
@@ -55,8 +55,9 @@ pub fn create_router(state: AppState) -> Router {
         .with_state(state);
 
     // Serve static files from web/dist, fallback to index.html for SPA routing
-    let spa_fallback = ServeDir::new("web/dist")
-        .not_found_service(ServeFile::new("web/dist/index.html"));
+    let index_html = std::path::Path::new(web_dist).join("index.html");
+    let spa_fallback = ServeDir::new(web_dist)
+        .not_found_service(ServeFile::new(index_html));
 
     api_routes
         .fallback_service(spa_fallback)

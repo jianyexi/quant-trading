@@ -137,8 +137,28 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // Load config
-    let config = AppConfig::from_file(&cli.config)?;
+    // Load config — try CWD first, then relative to the executable, then project root
+    let config_path = if std::path::Path::new(&cli.config).exists() {
+        std::path::PathBuf::from(&cli.config)
+    } else if let Ok(exe) = std::env::current_exe() {
+        let exe_dir = exe.parent().unwrap_or(exe.as_path());
+        let candidate = exe_dir.join(&cli.config);
+        if candidate.exists() {
+            candidate
+        } else {
+            // Try two levels up (target/release/ -> project root)
+            let project_root = exe_dir.parent().and_then(|p| p.parent());
+            if let Some(root) = project_root {
+                let candidate2 = root.join(&cli.config);
+                if candidate2.exists() { candidate2 } else { std::path::PathBuf::from(&cli.config) }
+            } else {
+                std::path::PathBuf::from(&cli.config)
+            }
+        }
+    } else {
+        std::path::PathBuf::from(&cli.config)
+    };
+    let config = AppConfig::from_file(&config_path)?;
 
     match cli.command {
         Commands::Data { action } => match action {
@@ -639,7 +659,32 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
         config: config.clone(),
     };
 
-    let app = create_router(state);
+    // Resolve web/dist path — try CWD first, then relative to the executable
+    let web_dist = {
+        let cwd_path = std::path::PathBuf::from("web/dist");
+        if cwd_path.exists() {
+            cwd_path
+        } else if let Ok(exe) = std::env::current_exe() {
+            let exe_dir = exe.parent().unwrap_or(exe.as_path());
+            let candidate = exe_dir.join("web/dist");
+            if candidate.exists() {
+                candidate
+            } else {
+                // Try two levels up from exe (target/release/ -> project root)
+                let project_root = exe_dir.parent().and_then(|p| p.parent());
+                if let Some(root) = project_root {
+                    let candidate2 = root.join("web/dist");
+                    if candidate2.exists() { candidate2 } else { cwd_path }
+                } else {
+                    cwd_path
+                }
+            }
+        } else {
+            cwd_path
+        }
+    };
+
+    let app = create_router(state, web_dist.to_str().unwrap_or("web/dist"));
 
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
     println!("🚀 QuantTrader API server starting on {addr}");
@@ -647,11 +692,12 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
     println!("   Web:  http://{addr}/");
     println!();
 
-    // Check if web/dist exists
-    if !std::path::Path::new("web/dist").exists() {
+    if !web_dist.exists() {
         println!("⚠️  web/dist not found. Run 'cd web && npm run build' to build the WebUI.");
         println!("   API endpoints will still work without the WebUI.");
         println!();
+    } else {
+        println!("   Serving WebUI from: {}", web_dist.display());
     }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
