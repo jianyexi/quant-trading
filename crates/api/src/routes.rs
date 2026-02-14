@@ -13,14 +13,15 @@ use crate::ws;
 
 fn market_routes() -> Router<AppState> {
     Router::new()
-        .route("/kline/{symbol}", get(handlers::get_kline))
-        .route("/quote/{symbol}", get(handlers::get_quote))
+        .route("/kline/:symbol", get(handlers::get_kline))
+        .route("/quote/:symbol", get(handlers::get_quote))
+        .route("/stocks", get(handlers::list_stocks))
 }
 
 fn backtest_routes() -> Router<AppState> {
     Router::new()
         .route("/run", post(handlers::run_backtest))
-        .route("/results/{id}", get(handlers::get_backtest_results))
+        .route("/results/:id", get(handlers::get_backtest_results))
 }
 
 fn order_routes() -> Router<AppState> {
@@ -42,6 +43,9 @@ fn chat_routes() -> Router<AppState> {
 
 pub fn create_router(state: AppState) -> Router {
     let api_routes = Router::new()
+        .route("/api/health", get(handlers::health))
+        .route("/api/dashboard", get(handlers::get_dashboard))
+        .route("/api/strategies", get(handlers::list_strategies))
         .nest("/api/market", market_routes())
         .nest("/api/backtest", backtest_routes())
         .nest("/api/orders", order_routes())

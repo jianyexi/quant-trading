@@ -290,7 +290,7 @@ export default function MarketData() {
                 <Bar
                   dataKey="high"
                   isAnimationActive={false}
-                  shape={(props: Record<string, unknown>) => {
+                  shape={(props: unknown) => {
                     const { x, y, width, height, index } = props as {
                       x: number; y: number; width: number; height: number; index: number;
                     };

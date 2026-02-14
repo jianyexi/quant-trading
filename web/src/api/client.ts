@@ -9,10 +9,23 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export async function getKline(symbol: string, start?: string, end?: string) {
+export async function getDashboard() {
+  return fetchJson('/dashboard');
+}
+
+export async function getStrategies() {
+  return fetchJson('/strategies');
+}
+
+export async function getStocks() {
+  return fetchJson('/market/stocks');
+}
+
+export async function getKline(symbol: string, start?: string, end?: string, limit?: number) {
   const params = new URLSearchParams();
   if (start) params.set('start', start);
   if (end) params.set('end', end);
+  if (limit) params.set('limit', String(limit));
   return fetchJson(`/market/kline/${symbol}?${params}`);
 }
 

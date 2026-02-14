@@ -1,60 +1,25 @@
+import { useState, useEffect } from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, BarChart3, Percent } from 'lucide-react';
+import { TrendingUp, TrendingDown, Wallet, PiggyBank, BarChart3, Percent, Loader2 } from 'lucide-react';
+import { getPortfolio } from '../api/client';
 
-// --- Mock Data ---
+// --- Types ---
 
 interface PositionRow {
   symbol: string;
   name: string;
   shares: number;
-  avgCost: number;
-  currentPrice: number;
+  avg_cost: number;
+  current_price: number;
+  pnl: number;
 }
 
-interface OrderRow {
-  id: string;
-  time: string;
-  symbol: string;
-  side: 'buy' | 'sell';
-  price: number;
-  quantity: number;
-  status: '已成交' | '已撤单' | '委托中';
+interface PortfolioData {
+  total_value: number;
+  cash: number;
+  total_pnl: number;
+  positions: PositionRow[];
 }
-
-const POSITIONS: PositionRow[] = [
-  { symbol: '600519.SH', name: '贵州茅台', shares: 100, avgCost: 1620.00, currentPrice: 1688.50 },
-  { symbol: '000858.SZ', name: '五粮液', shares: 500, avgCost: 148.30, currentPrice: 142.85 },
-  { symbol: '601318.SH', name: '中国平安', shares: 1000, avgCost: 49.80, currentPrice: 52.36 },
-  { symbol: '000001.SZ', name: '平安银行', shares: 2000, avgCost: 13.10, currentPrice: 12.58 },
-  { symbol: '600036.SH', name: '招商银行', shares: 800, avgCost: 32.50, currentPrice: 35.72 },
-];
-
-const CASH = 245_680.00;
-
-function computePositionStats(p: PositionRow) {
-  const marketValue = p.shares * p.currentPrice;
-  const cost = p.shares * p.avgCost;
-  const pnl = marketValue - cost;
-  const pnlPercent = (pnl / cost) * 100;
-  return { ...p, marketValue, pnl, pnlPercent };
-}
-
-const positionsWithStats = POSITIONS.map(computePositionStats);
-const totalMarketValue = positionsWithStats.reduce((s, p) => s + p.marketValue, 0);
-const totalValue = totalMarketValue + CASH;
-const totalCost = positionsWithStats.reduce((s, p) => s + p.shares * p.avgCost, 0);
-const totalPnl = totalMarketValue - totalCost;
-const totalPnlPercent = (totalPnl / totalCost) * 100;
-
-// Pie chart data
-const PIE_COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#64748b'];
-
-const allocationData = [
-  ...positionsWithStats.map((p) => ({ name: p.name, value: p.marketValue })),
-  { name: '现金', value: CASH },
-];
-
-const ORDERS: OrderRow[] = [];
 
 // --- Helpers ---
 
@@ -62,7 +27,17 @@ function fmt(v: number): string {
   return v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function computePositionStats(p: PositionRow) {
+  const marketValue = p.shares * p.current_price;
+  const cost = p.shares * p.avg_cost;
+  const pnl = p.pnl;
+  const pnlPercent = cost !== 0 ? (pnl / cost) * 100 : 0;
+  return { ...p, marketValue, pnl, pnlPercent };
+}
+
 // --- Custom Pie Label ---
+
+const PIE_COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#64748b'];
 
 interface LabelProps {
   cx: number;
@@ -73,7 +48,9 @@ interface LabelProps {
   percent: number;
 }
 
-function renderLabel({ cx, cy, midAngle, outerRadius, name, percent }: LabelProps) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function renderLabel(props: any) {
+  const { cx, cy, midAngle, outerRadius, name, percent } = props as LabelProps;
   const RADIAN = Math.PI / 180;
   const radius = outerRadius + 24;
   const x = cx + radius * Math.cos(-midAngle * RADIAN);
@@ -131,7 +108,33 @@ function SummaryCard({
 // --- Main Component ---
 
 export default function Portfolio() {
-  const pnlColor = totalPnl >= 0 ? 'green' : 'red';
+  const [data, setData] = useState<PortfolioData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getPortfolio()
+      .then((d) => setData(d as PortfolioData))
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load'));
+  }, []);
+
+  if (error) {
+    return <div className="text-red-400 p-6">Error: {error}</div>;
+  }
+  if (!data) {
+    return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="animate-spin mr-2" size={20} /> Loading...</div>;
+  }
+
+  const positionsWithStats = data.positions.map(computePositionStats);
+  const totalCost = positionsWithStats.reduce((s, p) => s + p.shares * p.avg_cost, 0);
+  const totalPnl = data.total_pnl;
+  const totalPnlPercent = totalCost !== 0 ? (totalPnl / totalCost) * 100 : 0;
+
+  const allocationData = [
+    ...positionsWithStats.map((p) => ({ name: p.name, value: p.marketValue })),
+    { name: '现金', value: data.cash },
+  ];
+
+  const pnlColor = totalPnl >= 0 ? 'green' as const : 'red' as const;
 
   return (
     <div className="text-slate-200">
@@ -139,8 +142,8 @@ export default function Portfolio() {
 
       {/* Summary Cards */}
       <div className="mb-6 flex gap-4">
-        <SummaryCard icon={Wallet} label="总资产" value={`¥${fmt(totalValue)}`} />
-        <SummaryCard icon={PiggyBank} label="可用现金" value={`¥${fmt(CASH)}`} />
+        <SummaryCard icon={Wallet} label="总资产" value={`¥${fmt(data.total_value)}`} />
+        <SummaryCard icon={PiggyBank} label="可用现金" value={`¥${fmt(data.cash)}`} />
         <SummaryCard
           icon={totalPnl >= 0 ? TrendingUp : TrendingDown}
           label="总盈亏"
@@ -203,8 +206,8 @@ export default function Portfolio() {
                     <td className="px-4 py-2.5 font-mono text-[#3b82f6]">{p.symbol}</td>
                     <td className="px-4 py-2.5">{p.name}</td>
                     <td className="px-4 py-2.5 text-right">{p.shares.toLocaleString()}</td>
-                    <td className="px-4 py-2.5 text-right">{p.avgCost.toFixed(2)}</td>
-                    <td className="px-4 py-2.5 text-right">{p.currentPrice.toFixed(2)}</td>
+                    <td className="px-4 py-2.5 text-right">{p.avg_cost.toFixed(2)}</td>
+                    <td className="px-4 py-2.5 text-right">{p.current_price.toFixed(2)}</td>
                     <td className="px-4 py-2.5 text-right">¥{fmt(p.marketValue)}</td>
                     <td className={`px-4 py-2.5 text-right font-medium ${color}`}>
                       {p.pnl >= 0 ? '+' : ''}¥{fmt(p.pnl)}
@@ -218,43 +221,6 @@ export default function Portfolio() {
             </tbody>
           </table>
         </div>
-      </div>
-
-      {/* Recent Orders Table */}
-      <div className="rounded-xl border border-slate-700 bg-[#1e293b]">
-        <p className="border-b border-slate-700 px-5 py-3 text-sm font-medium text-slate-400">最近委托</p>
-        {ORDERS.length === 0 ? (
-          <div className="flex h-32 items-center justify-center text-sm text-slate-500">No recent orders</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-700 text-left text-xs text-slate-400">
-                  <th className="px-4 py-3">时间</th>
-                  <th className="px-4 py-3">代码</th>
-                  <th className="px-4 py-3">方向</th>
-                  <th className="px-4 py-3 text-right">价格</th>
-                  <th className="px-4 py-3 text-right">数量</th>
-                  <th className="px-4 py-3">状态</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ORDERS.map((o) => (
-                  <tr key={o.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
-                    <td className="px-4 py-2.5 font-mono text-xs">{o.time}</td>
-                    <td className="px-4 py-2.5 font-mono">{o.symbol}</td>
-                    <td className={`px-4 py-2.5 font-medium ${o.side === 'buy' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>
-                      {o.side === 'buy' ? '买入' : '卖出'}
-                    </td>
-                    <td className="px-4 py-2.5 text-right">{o.price.toFixed(2)}</td>
-                    <td className="px-4 py-2.5 text-right">{o.quantity.toLocaleString()}</td>
-                    <td className="px-4 py-2.5">{o.status}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
     </div>
   );

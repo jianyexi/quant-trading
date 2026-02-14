@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -14,6 +15,7 @@ use crate::state::AppState;
 pub struct KlineQuery {
     pub start: Option<String>,
     pub end: Option<String>,
+    pub limit: Option<usize>,
 }
 
 // ── Backtest Request ────────────────────────────────────────────────
@@ -39,21 +41,144 @@ pub struct ChatResponse {
     pub reply: String,
 }
 
+// ── Health ──────────────────────────────────────────────────────────
+
+pub async fn health() -> Json<Value> {
+    Json(json!({ "status": "ok", "version": "0.1.0" }))
+}
+
+// ── Strategies ──────────────────────────────────────────────────────
+
+pub async fn list_strategies() -> Json<Value> {
+    Json(json!({
+        "strategies": [
+            {
+                "name": "sma_cross",
+                "display_name": "SMA Crossover",
+                "description": "Dual Simple Moving Average crossover strategy",
+                "parameters": [
+                    {"key": "fast_period", "label": "Fast Period", "type": "number", "default": 5, "min": 2, "max": 60},
+                    {"key": "slow_period", "label": "Slow Period", "type": "number", "default": 20, "min": 5, "max": 120}
+                ]
+            },
+            {
+                "name": "rsi_reversal",
+                "display_name": "RSI Mean Reversion",
+                "description": "RSI oversold/overbought mean reversion strategy",
+                "parameters": [
+                    {"key": "period", "label": "RSI Period", "type": "number", "default": 14, "min": 5, "max": 50},
+                    {"key": "oversold", "label": "Oversold Level", "type": "number", "default": 30, "min": 10, "max": 40},
+                    {"key": "overbought", "label": "Overbought Level", "type": "number", "default": 70, "min": 60, "max": 90}
+                ]
+            },
+            {
+                "name": "macd_trend",
+                "display_name": "MACD Trend Following",
+                "description": "MACD histogram crossover trend strategy",
+                "parameters": [
+                    {"key": "fast_period", "label": "Fast EMA", "type": "number", "default": 12, "min": 5, "max": 30},
+                    {"key": "slow_period", "label": "Slow EMA", "type": "number", "default": 26, "min": 15, "max": 60},
+                    {"key": "signal_period", "label": "Signal Period", "type": "number", "default": 9, "min": 3, "max": 20}
+                ]
+            },
+            {
+                "name": "bollinger_bands",
+                "display_name": "Bollinger Bands",
+                "description": "Bollinger Bands breakout/reversion strategy",
+                "parameters": [
+                    {"key": "period", "label": "Period", "type": "number", "default": 20, "min": 10, "max": 50},
+                    {"key": "std_dev", "label": "Std Deviation", "type": "number", "default": 2, "min": 1, "max": 3}
+                ]
+            },
+            {
+                "name": "dual_momentum",
+                "display_name": "Dual Momentum",
+                "description": "Absolute + relative momentum strategy",
+                "parameters": [
+                    {"key": "lookback", "label": "Lookback Period", "type": "number", "default": 60, "min": 20, "max": 120}
+                ]
+            }
+        ]
+    }))
+}
+
+// ── Dashboard ───────────────────────────────────────────────────────
+
+pub async fn get_dashboard(
+    State(_state): State<AppState>,
+) -> Json<Value> {
+    Json(json!({
+        "portfolio_value": 1_284_305.00,
+        "daily_pnl": 32_411.20,
+        "daily_pnl_percent": 2.59,
+        "open_positions": 5,
+        "win_rate": 68.5,
+        "recent_trades": [
+            {"time": "14:32:01", "symbol": "600519.SH", "name": "贵州茅台", "side": "BUY", "quantity": 100, "price": 1689.25, "pnl": 3125.00},
+            {"time": "13:45:22", "symbol": "000858.SZ", "name": "五粮液", "side": "SELL", "quantity": 300, "price": 148.10, "pnl": -873.00},
+            {"time": "12:18:45", "symbol": "601318.SH", "name": "中国平安", "side": "BUY", "quantity": 500, "price": 52.60, "pnl": 1420.00},
+            {"time": "11:05:33", "symbol": "600036.SH", "name": "招商银行", "side": "SELL", "quantity": 400, "price": 35.30, "pnl": 560.00},
+            {"time": "10:22:17", "symbol": "000001.SZ", "name": "平安银行", "side": "BUY", "quantity": 1000, "price": 12.90, "pnl": -225.00}
+        ]
+    }))
+}
+
 // ── Market Handlers ─────────────────────────────────────────────────
+
+fn generate_kline_data(symbol: &str, limit: usize) -> Vec<Value> {
+    let (base_price, name) = match symbol {
+        "600519.SH" => (1650.0, "贵州茅台"),
+        "000858.SZ" => (148.0, "五粮液"),
+        "601318.SH" => (52.0, "中国平安"),
+        "000001.SZ" => (12.5, "平安银行"),
+        "600036.SH" => (35.0, "招商银行"),
+        "300750.SZ" => (220.0, "宁德时代"),
+        "600276.SH" => (28.0, "恒瑞医药"),
+        _ => (100.0, "未知"),
+    };
+    let _ = name;
+    let mut data = Vec::with_capacity(limit);
+    let mut price = base_price;
+    let base_date = chrono::NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
+    for i in 0..limit {
+        let change = (((i as f64 * 7.3 + 13.7).sin() * 0.02)
+            + ((i as f64 * 3.1).cos() * 0.008))
+            * price;
+        let open = price;
+        let close = price + change;
+        let high = open.max(close) + (((i as f64 * 5.1).sin().abs()) * 0.005 * price);
+        let low = open.min(close) - (((i as f64 * 4.3).cos().abs()) * 0.005 * price);
+        let volume = (5_000_000.0 + ((i as f64 * 2.7).sin() * 3_000_000.0).abs()) as u64;
+        let date = base_date + chrono::Duration::days(i as i64);
+        // Skip weekends
+        if date.weekday() == chrono::Weekday::Sat || date.weekday() == chrono::Weekday::Sun {
+            continue;
+        }
+        data.push(json!({
+            "date": date.format("%Y-%m-%d").to_string(),
+            "open": (open * 100.0).round() / 100.0,
+            "high": (high * 100.0).round() / 100.0,
+            "low": (low * 100.0).round() / 100.0,
+            "close": (close * 100.0).round() / 100.0,
+            "volume": volume
+        }));
+        price = close;
+    }
+    data
+}
 
 pub async fn get_kline(
     Path(symbol): Path<String>,
     Query(params): Query<KlineQuery>,
     State(_state): State<AppState>,
 ) -> Json<Value> {
+    let limit = params.limit.unwrap_or(60);
+    let data = generate_kline_data(&symbol, limit);
     Json(json!({
         "symbol": symbol,
         "start": params.start.unwrap_or_default(),
         "end": params.end.unwrap_or_default(),
-        "data": [
-            {"date": "2024-01-02", "open": 100.0, "high": 102.5, "low": 99.5, "close": 101.8, "volume": 15000000},
-            {"date": "2024-01-03", "open": 101.8, "high": 103.2, "low": 101.0, "close": 102.5, "volume": 18000000},
-        ]
+        "data": data
     }))
 }
 
@@ -61,13 +186,43 @@ pub async fn get_quote(
     Path(symbol): Path<String>,
     State(_state): State<AppState>,
 ) -> Json<Value> {
+    let (price, name) = match symbol.as_str() {
+        "600519.SH" => (1688.50, "贵州茅台"),
+        "000858.SZ" => (142.85, "五粮液"),
+        "601318.SH" => (52.36, "中国平安"),
+        "000001.SZ" => (12.58, "平安银行"),
+        "600036.SH" => (35.72, "招商银行"),
+        "300750.SZ" => (225.40, "宁德时代"),
+        _ => (100.0, "未知"),
+    };
     Json(json!({
         "symbol": symbol,
-        "price": 101.5,
-        "change": 1.2,
+        "name": name,
+        "price": price,
+        "change": price * 0.012,
         "change_percent": 1.19,
-        "volume": 12000000,
-        "timestamp": "2024-01-03T15:00:00"
+        "volume": 12_580_000,
+        "turnover": price * 12_580_000.0,
+        "timestamp": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()
+    }))
+}
+
+// ── Stock list ──────────────────────────────────────────────────────
+
+pub async fn list_stocks() -> Json<Value> {
+    Json(json!({
+        "stocks": [
+            {"symbol": "600519.SH", "name": "贵州茅台", "industry": "白酒", "market": "SSE"},
+            {"symbol": "000858.SZ", "name": "五粮液", "industry": "白酒", "market": "SZSE"},
+            {"symbol": "601318.SH", "name": "中国平安", "industry": "保险", "market": "SSE"},
+            {"symbol": "000001.SZ", "name": "平安银行", "industry": "银行", "market": "SZSE"},
+            {"symbol": "600036.SH", "name": "招商银行", "industry": "银行", "market": "SSE"},
+            {"symbol": "300750.SZ", "name": "宁德时代", "industry": "电池", "market": "ChiNext"},
+            {"symbol": "600276.SH", "name": "恒瑞医药", "industry": "医药", "market": "SSE"},
+            {"symbol": "000333.SZ", "name": "美的集团", "industry": "家电", "market": "SZSE"},
+            {"symbol": "601888.SH", "name": "中国中免", "industry": "零售", "market": "SSE"},
+            {"symbol": "002594.SZ", "name": "比亚迪", "industry": "汽车", "market": "SZSE"}
+        ]
     }))
 }
 
@@ -78,17 +233,29 @@ pub async fn run_backtest(
     Json(req): Json<BacktestRequest>,
 ) -> (StatusCode, Json<Value>) {
     let capital = req.capital.unwrap_or(1_000_000.0);
+    // Simulate slightly different results per strategy
+    let (ret, sharpe, dd, wr, trades, pf) = match req.strategy.as_str() {
+        "sma_cross" => (18.5, 1.32, 10.2, 55.0, 38, 1.65),
+        "rsi_reversal" => (22.3, 1.58, 8.7, 62.0, 45, 1.92),
+        "macd_trend" => (15.8, 1.15, 14.5, 52.0, 32, 1.48),
+        "bollinger_bands" => (20.1, 1.45, 11.3, 58.0, 42, 1.78),
+        "dual_momentum" => (25.0, 1.72, 9.5, 60.0, 28, 2.05),
+        _ => (12.0, 0.95, 15.0, 48.0, 50, 1.20),
+    };
     (StatusCode::OK, Json(json!({
-        "id": "bt-001",
+        "id": format!("bt-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap()),
         "strategy": req.strategy,
         "symbol": req.symbol,
         "start": req.start,
         "end": req.end,
         "initial_capital": capital,
-        "final_value": capital * 1.25,
-        "total_return_percent": 25.0,
-        "sharpe_ratio": 1.45,
-        "max_drawdown_percent": 12.3,
+        "final_value": capital * (1.0 + ret / 100.0),
+        "total_return_percent": ret,
+        "sharpe_ratio": sharpe,
+        "max_drawdown_percent": dd,
+        "win_rate_percent": wr,
+        "total_trades": trades,
+        "profit_factor": pf,
         "status": "completed"
     })))
 }
@@ -116,7 +283,11 @@ pub async fn list_orders(
     State(_state): State<AppState>,
 ) -> Json<Value> {
     Json(json!({
-        "orders": []
+        "orders": [
+            {"id": "ORD-001", "time": "2024-06-14 14:32:01", "symbol": "600519.SH", "side": "buy", "price": 1689.25, "quantity": 100, "status": "filled"},
+            {"id": "ORD-002", "time": "2024-06-14 13:45:22", "symbol": "000858.SZ", "side": "sell", "price": 148.10, "quantity": 300, "status": "filled"},
+            {"id": "ORD-003", "time": "2024-06-14 11:05:33", "symbol": "600036.SH", "side": "sell", "price": 35.30, "quantity": 400, "status": "filled"}
+        ]
     }))
 }
 
@@ -126,12 +297,15 @@ pub async fn get_portfolio(
     State(_state): State<AppState>,
 ) -> Json<Value> {
     Json(json!({
-        "total_value": 1_250_000.0,
-        "cash": 350_000.0,
-        "total_pnl": 250_000.0,
+        "total_value": 1_284_305.00,
+        "cash": 245_680.00,
+        "total_pnl": 284_305.00,
         "positions": [
-            {"symbol": "600519.SH", "name": "贵州茅台", "shares": 100, "avg_cost": 1800.0, "current_price": 1950.0, "pnl": 15000.0},
-            {"symbol": "000858.SZ", "name": "五粮液", "shares": 500, "avg_cost": 160.0, "current_price": 172.0, "pnl": 6000.0},
+            {"symbol": "600519.SH", "name": "贵州茅台", "shares": 100, "avg_cost": 1620.00, "current_price": 1688.50, "pnl": 6850.00},
+            {"symbol": "000858.SZ", "name": "五粮液", "shares": 500, "avg_cost": 148.30, "current_price": 142.85, "pnl": -2725.00},
+            {"symbol": "601318.SH", "name": "中国平安", "shares": 1000, "avg_cost": 49.80, "current_price": 52.36, "pnl": 2560.00},
+            {"symbol": "000001.SZ", "name": "平安银行", "shares": 2000, "avg_cost": 13.10, "current_price": 12.58, "pnl": -1040.00},
+            {"symbol": "600036.SH", "name": "招商银行", "shares": 800, "avg_cost": 32.50, "current_price": 35.72, "pnl": 2576.00}
         ]
     }))
 }
@@ -139,13 +313,69 @@ pub async fn get_portfolio(
 // ── Chat Handlers ───────────────────────────────────────────────────
 
 pub async fn chat(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Json<ChatResponse> {
-    // Stub: echo the message back with a placeholder response
-    Json(ChatResponse {
-        reply: format!("Received your message: '{}'. LLM integration pending.", req.message),
-    })
+    use quant_llm::{client::LlmClient, context::ConversationContext, tools::{get_all_tools, ToolExecutor}};
+
+    let llm_config = &state.config.llm;
+
+    // If no API key configured, return a helpful stub
+    if llm_config.api_key.is_empty() {
+        return Json(ChatResponse {
+            reply: format!(
+                "💡 LLM API key not configured. To enable AI chat, set `llm.api_key` in config/default.toml.\n\n\
+                Your message: \"{}\"",
+                req.message
+            ),
+        });
+    }
+
+    let client = LlmClient::new(
+        &llm_config.api_url,
+        &llm_config.api_key,
+        &llm_config.model,
+        llm_config.temperature,
+        llm_config.max_tokens,
+    );
+    let mut context = ConversationContext::new("You are a quantitative trading assistant for Chinese A-shares.", 50);
+    let tools = get_all_tools();
+    let executor = ToolExecutor::new();
+
+    context.add_user_message(&req.message);
+
+    // Chat loop with tool-call handling (max 5 rounds)
+    for _ in 0..5 {
+        let messages = context.get_messages();
+        match client.chat(&messages, Some(&tools)).await {
+            Ok(response) => {
+                if let Some(choice) = response.choices.first() {
+                    let msg = &choice.message;
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        context.add_assistant_tool_calls(tool_calls.clone());
+                        for tc in tool_calls {
+                            match executor.execute(tc).await {
+                                Ok(result) => context.add_tool_result(&tc.id, &result),
+                                Err(e) => context.add_tool_result(&tc.id, &format!("Error: {e}")),
+                            }
+                        }
+                        continue;
+                    }
+                    if let Some(content) = &msg.content {
+                        return Json(ChatResponse { reply: content.clone() });
+                    }
+                }
+                return Json(ChatResponse { reply: "No response from LLM.".to_string() });
+            }
+            Err(e) => {
+                return Json(ChatResponse {
+                    reply: format!("⚠️ LLM error: {e}"),
+                });
+            }
+        }
+    }
+
+    Json(ChatResponse { reply: "Tool call loop exceeded maximum iterations.".to_string() })
 }
 
 pub async fn chat_history(

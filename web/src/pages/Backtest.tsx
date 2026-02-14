@@ -344,7 +344,7 @@ export default function Backtest() {
                     color: '#f8fafc',
                     fontSize: '12px',
                   }}
-                  formatter={(value: number) => [`¥${value.toLocaleString()}`, 'Portfolio']}
+                  formatter={(value: number | undefined) => [`¥${(value ?? 0).toLocaleString()}`, 'Portfolio']}
                   labelStyle={{ color: '#94a3b8' }}
                 />
                 <Area
