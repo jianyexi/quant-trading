@@ -9,6 +9,7 @@ pub struct AppConfig {
     pub llm: LlmConfig,
     pub trading: TradingConfig,
     pub risk: RiskConfig,
+    pub qmt: QmtConfig,
     pub server: ServerConfig,
 }
 
@@ -51,6 +52,13 @@ pub struct RiskConfig {
     pub max_concentration: f64,
     pub max_daily_loss: f64,
     pub max_drawdown: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct QmtConfig {
+    pub bridge_url: String,
+    pub account: String,
+    pub qmt_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

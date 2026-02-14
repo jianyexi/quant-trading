@@ -26,5 +26,6 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
+reqwest = { workspace = true }
 sqlx = { workspace = true }
 axum = { workspace = true }

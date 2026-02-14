@@ -157,6 +157,7 @@ export async function tradeStart(params: {
   symbols: string[];
   interval: number;
   position_size: number;
+  mode?: string;
 }) {
   return fetchJson('/trade/start', {
     method: 'POST',
@@ -170,4 +171,16 @@ export async function tradeStop() {
 
 export async function tradeStatus(): Promise<TradeStatus> {
   return fetchJson('/trade/status');
+}
+
+export interface QmtBridgeStatus {
+  status: string;
+  connected?: boolean;
+  account?: string;
+  message?: string;
+  bridge_url?: string;
+}
+
+export async function qmtBridgeStatus(): Promise<QmtBridgeStatus> {
+  return fetchJson('/trade/qmt/status');
 }

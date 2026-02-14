@@ -47,6 +47,7 @@ fn trade_routes() -> Router<AppState> {
         .route("/start", post(handlers::trade_start))
         .route("/stop", post(handlers::trade_stop))
         .route("/status", get(handlers::trade_status))
+        .route("/qmt/status", get(handlers::qmt_bridge_status))
 }
 
 fn screen_routes() -> Router<AppState> {

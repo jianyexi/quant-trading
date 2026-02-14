@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Square, RefreshCw, Activity, TrendingUp, TrendingDown, AlertCircle, Loader2 } from 'lucide-react';
-import { tradeStart, tradeStop, tradeStatus, type TradeStatus } from '../api/client';
+import { Play, Square, RefreshCw, Activity, TrendingUp, TrendingDown, AlertCircle, Loader2, Radio } from 'lucide-react';
+import { tradeStart, tradeStop, tradeStatus, qmtBridgeStatus, type TradeStatus, type QmtBridgeStatus } from '../api/client';
 
 const STRATEGIES = [
   { value: 'sma_cross', label: 'SMA 交叉 (5/20)', desc: '双均线金叉/死叉' },
@@ -25,6 +25,8 @@ export default function AutoTrade() {
   const [symbolsInput, setSymbolsInput] = useState('000001.SZ,600036.SH');
   const [interval, setInterval_] = useState(5);
   const [positionSize, setPositionSize] = useState(0.15);
+  const [mode, setMode] = useState<'paper' | 'qmt'>('paper');
+  const [qmtStatus, setQmtStatus] = useState<QmtBridgeStatus | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Fetch initial status
@@ -34,6 +36,13 @@ export default function AutoTrade() {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
+
+  // Check QMT bridge status when mode changes to qmt
+  useEffect(() => {
+    if (mode === 'qmt') {
+      qmtBridgeStatus().then(setQmtStatus).catch(() => setQmtStatus({ status: 'offline', message: 'Cannot reach bridge' }));
+    }
+  }, [mode]);
 
   const fetchStatus = async () => {
     try {
@@ -62,7 +71,7 @@ export default function AutoTrade() {
     setError('');
     try {
       const symbols = symbolsInput.split(',').map(s => s.trim()).filter(Boolean);
-      await tradeStart({ strategy, symbols, interval: interval, position_size: positionSize });
+      await tradeStart({ strategy, symbols, interval: interval, position_size: positionSize, mode });
       await fetchStatus();
       startPolling();
     } catch (e) {
@@ -93,8 +102,10 @@ export default function AutoTrade() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-[#f8fafc]">🤖 自动交易</h1>
-          <p className="text-sm text-[#94a3b8] mt-1">Actor模型引擎 — 数据→策略→风控→下单</p>
+          <h1 className="text-2xl font-bold text-[#f8fafc]">{mode === 'qmt' ? '🔴' : '🤖'} 自动交易</h1>
+          <p className="text-sm text-[#94a3b8] mt-1">
+            {mode === 'qmt' ? 'QMT实盘引擎 — 数据→策略→风控→QMT下单' : 'Actor模型引擎 — 数据→策略→风控→下单'}
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <span className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium ${
@@ -121,6 +132,49 @@ export default function AutoTrade() {
         {/* Left: Configuration */}
         <div className="col-span-2 bg-[#1e293b] rounded-xl p-5 border border-[#334155]">
           <h2 className="text-sm font-semibold text-[#f8fafc] mb-4">交易配置</h2>
+
+          {/* Broker Mode Selector */}
+          <div className="mb-4">
+            <label className="block text-xs text-[#94a3b8] mb-2">交易模式</label>
+            <div className="flex gap-3">
+              <button onClick={() => setMode('paper')} disabled={isRunning}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${
+                  mode === 'paper'
+                    ? 'bg-blue-600/20 border-blue-500 text-blue-400'
+                    : 'bg-[#0f172a] border-[#334155] text-[#94a3b8] hover:border-[#475569]'
+                } disabled:opacity-50`}>
+                <Activity className="h-4 w-4" /> 模拟交易
+              </button>
+              <button onClick={() => setMode('qmt')} disabled={isRunning}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${
+                  mode === 'qmt'
+                    ? 'bg-red-600/20 border-red-500 text-red-400'
+                    : 'bg-[#0f172a] border-[#334155] text-[#94a3b8] hover:border-[#475569]'
+                } disabled:opacity-50`}>
+                <Radio className="h-4 w-4" /> QMT 实盘
+              </button>
+            </div>
+
+            {mode === 'qmt' && (
+              <div className={`mt-2 px-3 py-2 rounded-lg text-xs ${
+                qmtStatus?.connected
+                  ? 'bg-green-500/10 border border-green-500/30 text-green-400'
+                  : 'bg-yellow-500/10 border border-yellow-500/30 text-yellow-400'
+              }`}>
+                {qmtStatus?.connected
+                  ? `✅ QMT Bridge 已连接 (${qmtStatus.account || 'N/A'})`
+                  : `⚠️ QMT Bridge ${qmtStatus?.status === 'offline' ? '离线' : '未连接'} — ${qmtStatus?.message || '请启动 qmt_bridge.py'}`
+                }
+              </div>
+            )}
+
+            {mode === 'qmt' && (
+              <div className="mt-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-xs">
+                ⚠️ 实盘模式将通过QMT发送真实委托，请确认风险！
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs text-[#94a3b8] mb-1.5">策略</label>

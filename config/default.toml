@@ -36,6 +36,14 @@ max_daily_loss = 0.05
 # Maximum drawdown limit (0.15 = 15%)
 max_drawdown = 0.15
 
+[qmt]
+# QMT Python bridge URL (qmt_bridge.py sidecar)
+bridge_url = "http://127.0.0.1:18090"
+# QMT trading account ID
+account = ""
+# Path to miniQMT userdata directory
+qmt_path = ""
+
 [server]
 host = "0.0.0.0"
 port = 8080

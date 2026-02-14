@@ -16,6 +16,8 @@ use crate::orders::OrderStateMachine;
 
 pub struct PaperBroker {
     inner: Mutex<PaperBrokerInner>,
+    /// When true, submit_order immediately fills the order (for engine use)
+    auto_fill: std::sync::atomic::AtomicBool,
 }
 
 struct PaperBrokerInner {
@@ -46,7 +48,13 @@ impl PaperBroker {
                 commission_rate,
                 stamp_tax_rate,
             }),
+            auto_fill: std::sync::atomic::AtomicBool::new(true),
         }
+    }
+
+    /// Set whether submit_order should auto-fill (default: true).
+    pub fn set_auto_fill(&self, auto_fill: bool) {
+        self.auto_fill.store(auto_fill, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Simulate filling an order at the given price.
@@ -151,7 +159,86 @@ impl Broker for PaperBroker {
                 .map_err(QuantError::BrokerError)?;
         new_order.updated_at = Utc::now().naive_utc();
 
-        inner.pending_orders.push(new_order.clone());
+        if self.auto_fill.load(std::sync::atomic::Ordering::SeqCst) {
+            // Auto-fill: immediately execute at order price
+            new_order.status =
+                OrderStateMachine::transition(&new_order.status, OrderStatus::Filled)
+                    .map_err(QuantError::BrokerError)?;
+            new_order.filled_qty = new_order.quantity;
+
+            let fill_price = new_order.price;
+            let trade_value = fill_price * new_order.quantity;
+            let commission = {
+                let c = trade_value * inner.commission_rate;
+                if c < 5.0 { 5.0 } else { c }
+            };
+            let stamp_tax = if new_order.side == OrderSide::Sell {
+                trade_value * inner.stamp_tax_rate
+            } else {
+                0.0
+            };
+            let total_cost = commission + stamp_tax;
+
+            let trade = Trade {
+                id: Uuid::new_v4(),
+                order_id: new_order.id,
+                symbol: new_order.symbol.clone(),
+                side: new_order.side,
+                price: fill_price,
+                quantity: new_order.quantity,
+                commission: total_cost,
+                timestamp: Utc::now().naive_utc(),
+            };
+
+            // Update portfolio
+            let portfolio = &mut inner.account.portfolio;
+            match new_order.side {
+                OrderSide::Buy => {
+                    portfolio.cash -= trade_value + total_cost;
+                    let pos = portfolio
+                        .positions
+                        .entry(new_order.symbol.clone())
+                        .or_insert(Position {
+                            symbol: new_order.symbol.clone(),
+                            quantity: 0.0,
+                            avg_cost: 0.0,
+                            current_price: fill_price,
+                            unrealized_pnl: 0.0,
+                            realized_pnl: 0.0,
+                        });
+                    let total_qty = pos.quantity + new_order.quantity;
+                    pos.avg_cost =
+                        (pos.avg_cost * pos.quantity + fill_price * new_order.quantity) / total_qty;
+                    pos.quantity = total_qty;
+                    pos.current_price = fill_price;
+                }
+                OrderSide::Sell => {
+                    portfolio.cash += trade_value - total_cost;
+                    if let Some(pos) = portfolio.positions.get_mut(&new_order.symbol) {
+                        let realized = (fill_price - pos.avg_cost) * new_order.quantity;
+                        pos.realized_pnl += realized;
+                        pos.quantity -= new_order.quantity;
+                        pos.current_price = fill_price;
+                        if pos.quantity <= 0.0 {
+                            portfolio.positions.remove(&new_order.symbol);
+                        }
+                    }
+                }
+            }
+
+            // Recalculate total value
+            let positions_value: f64 = portfolio
+                .positions
+                .values()
+                .map(|p| p.quantity * p.current_price)
+                .sum();
+            portfolio.total_value = portfolio.cash + positions_value;
+
+            inner.filled_trades.push(trade);
+        } else {
+            inner.pending_orders.push(new_order.clone());
+        }
+
         Ok(new_order)
     }
 
@@ -205,6 +292,34 @@ mod tests {
             updated_at: Utc::now().naive_utc(),
         };
 
+        // With auto_fill=true (default), submit_order fills immediately
+        let submitted = broker.submit_order(&order).await.unwrap();
+        assert_eq!(submitted.status, OrderStatus::Filled);
+        assert_eq!(submitted.filled_qty, 100.0);
+
+        let account = broker.get_account().await.unwrap();
+        assert!(account.portfolio.cash < 1_000_000.0);
+        assert!(account.portfolio.positions.contains_key("600519.SH"));
+    }
+
+    #[tokio::test]
+    async fn test_manual_fill() {
+        let broker = PaperBroker::new(1_000_000.0, 0.0003, 0.001);
+        broker.set_auto_fill(false);
+
+        let order = Order {
+            id: Uuid::new_v4(),
+            symbol: "600519.SH".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            price: 1800.0,
+            quantity: 100.0,
+            filled_qty: 0.0,
+            status: OrderStatus::Pending,
+            created_at: Utc::now().naive_utc(),
+            updated_at: Utc::now().naive_utc(),
+        };
+
         let submitted = broker.submit_order(&order).await.unwrap();
         assert_eq!(submitted.status, OrderStatus::Submitted);
 
@@ -219,6 +334,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_order() {
         let broker = PaperBroker::new(1_000_000.0, 0.0003, 0.001);
+        broker.set_auto_fill(false);
 
         let order = Order {
             id: Uuid::new_v4(),

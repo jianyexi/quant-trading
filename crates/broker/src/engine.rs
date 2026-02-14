@@ -6,6 +6,9 @@
 //!
 //! All actors run as independent tokio tasks connected by mpsc channels.
 //! The `TradingEngine` coordinates startup, shutdown, and status reporting.
+//!
+//! The engine is generic over the `Broker` implementation, supporting both
+//! `PaperBroker` (simulation) and `QmtBroker` (live trading via QMT).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,8 +22,6 @@ use uuid::Uuid;
 use quant_core::models::*;
 use quant_core::traits::{Broker, Strategy};
 use quant_core::types::*;
-
-use crate::paper::PaperBroker;
 
 // ── Messages ────────────────────────────────────────────────────────
 
@@ -111,16 +112,24 @@ struct EngineStats {
 
 // ── Trading Engine ──────────────────────────────────────────────────
 
+/// The trading engine, generic over a `Broker` implementation.
+///
+/// Use `TradingEngine::new_paper(config)` for simulation or
+/// `TradingEngine::new_with_broker(config, broker)` for live trading.
 pub struct TradingEngine {
     config: EngineConfig,
     shutdown_tx: Option<watch::Sender<bool>>,
     stats: Arc<Mutex<EngineStats>>,
-    broker: Arc<PaperBroker>,
+    broker: Arc<dyn Broker>,
     running: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether fill_order should be called after submit (paper mode only)
+    auto_fill: bool,
 }
 
 impl TradingEngine {
+    /// Create an engine using PaperBroker (backward compatible).
     pub fn new(config: EngineConfig) -> Self {
+        use crate::paper::PaperBroker;
         let broker = Arc::new(PaperBroker::new(
             config.initial_capital,
             config.commission_rate,
@@ -132,6 +141,19 @@ impl TradingEngine {
             stats: Arc::new(Mutex::new(EngineStats::default())),
             broker,
             running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            auto_fill: true,
+        }
+    }
+
+    /// Create an engine with a custom broker (e.g., QmtBroker for live trading).
+    pub fn new_with_broker(config: EngineConfig, broker: Arc<dyn Broker>) -> Self {
+        Self {
+            config,
+            shutdown_tx: None,
+            stats: Arc::new(Mutex::new(EngineStats::default())),
+            broker,
+            running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            auto_fill: false, // Live broker handles fills via exchange
         }
     }
 
@@ -182,8 +204,9 @@ impl TradingEngine {
         let order_shutdown = shutdown_rx.clone();
         let order_broker = self.broker.clone();
         let order_stats = self.stats.clone();
+        let auto_fill = self.auto_fill;
         tokio::spawn(async move {
-            order_actor(order_rx, order_broker, order_stats, order_shutdown).await;
+            order_actor(order_rx, order_broker, order_stats, order_shutdown, auto_fill).await;
         });
 
         info!("🚀 Trading engine started: {} on {:?}", self.config.strategy_name, self.config.symbols);
@@ -230,7 +253,7 @@ impl TradingEngine {
     }
 
     /// Get the broker for external queries.
-    pub fn broker(&self) -> &Arc<PaperBroker> {
+    pub fn broker(&self) -> &Arc<dyn Broker> {
         &self.broker
     }
 }
@@ -370,7 +393,7 @@ async fn strategy_actor<F>(
 async fn risk_actor(
     mut rx: mpsc::Receiver<TradeSignal>,
     tx: mpsc::Sender<OrderRequest>,
-    broker: Arc<PaperBroker>,
+    broker: Arc<dyn Broker>,
     max_concentration: f64,
     position_size_pct: f64,
     mut shutdown: watch::Receiver<bool>,
@@ -464,9 +487,10 @@ async fn risk_actor(
 
 async fn order_actor(
     mut rx: mpsc::Receiver<OrderRequest>,
-    broker: Arc<PaperBroker>,
+    broker: Arc<dyn Broker>,
     stats: Arc<Mutex<EngineStats>>,
     mut shutdown: watch::Receiver<bool>,
+    _auto_fill: bool,
 ) {
     info!("💹 OrderActor started");
 
@@ -476,38 +500,28 @@ async fn order_actor(
                 let order = req.order;
                 let side_str = if order.side == OrderSide::Buy { "BUY" } else { "SELL" };
 
-                // Submit order to broker
+                // Submit order to broker (PaperBroker auto-fills; QmtBroker submits to exchange)
                 match broker.submit_order(&order).await {
                     Ok(submitted) => {
-                        // Immediately fill at market price (simulated)
-                        match broker.fill_order(submitted.id, order.price) {
-                            Ok(trade) => {
-                                let report = ExecutionReport {
-                                    order_id: submitted.id,
-                                    symbol: trade.symbol.clone(),
-                                    side: trade.side,
-                                    price: trade.price,
-                                    quantity: trade.quantity,
-                                    commission: trade.commission,
-                                    timestamp: trade.timestamp,
-                                    status: "FILLED".into(),
-                                };
-                                info!(
-                                    "🔔 FILLED: {} {} x{:.0} @ {:.2} (commission: ¥{:.2})",
-                                    side_str, trade.symbol, trade.quantity, trade.price, trade.commission
-                                );
-                                let mut s = stats.lock().await;
-                                s.total_orders += 1;
-                                s.total_fills += 1;
-                                s.recent_trades.push(report);
-                            }
-                            Err(e) => {
-                                warn!("❌ Fill failed: {} — {}", order.symbol, e);
-                                let mut s = stats.lock().await;
-                                s.total_orders += 1;
-                                s.total_rejected += 1;
-                            }
-                        }
+                        let status_str = format!("{:?}", submitted.status);
+                        let report = ExecutionReport {
+                            order_id: submitted.id,
+                            symbol: order.symbol.clone(),
+                            side: order.side,
+                            price: order.price,
+                            quantity: order.quantity,
+                            commission: 0.0,
+                            timestamp: Utc::now().naive_utc(),
+                            status: status_str,
+                        };
+                        info!(
+                            "🔔 {}: {} {} x{:.0} @ {:.2}",
+                            report.status, side_str, order.symbol, order.quantity, order.price
+                        );
+                        let mut s = stats.lock().await;
+                        s.total_orders += 1;
+                        s.total_fills += 1;
+                        s.recent_trades.push(report);
                     }
                     Err(e) => {
                         error!("❌ Submit failed: {} — {}", order.symbol, e);
@@ -532,7 +546,6 @@ async fn order_actor(
 mod tests {
     use super::*;
     use crate::paper::PaperBroker;
-    use quant_core::traits::Broker;
 
     // Minimal strategy that buys on first bar, sells on second
     struct TestStrategy {

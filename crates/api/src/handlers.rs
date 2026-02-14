@@ -395,6 +395,8 @@ pub struct TradeStartRequest {
     pub symbols: Option<Vec<String>>,
     pub interval: Option<u64>,
     pub position_size: Option<f64>,
+    /// "paper" (default) or "qmt" for live trading via QMT bridge
+    pub mode: Option<String>,
 }
 
 pub async fn trade_start(
@@ -419,6 +421,7 @@ pub async fn trade_start(
     let symbols = req.symbols.unwrap_or_else(|| vec!["600519.SH".into()]);
     let interval = req.interval.unwrap_or(5);
     let position_size = req.position_size.unwrap_or(0.15);
+    let mode = req.mode.as_deref().unwrap_or("paper");
 
     let config = EngineConfig {
         strategy_name: strategy_name.clone(),
@@ -432,7 +435,36 @@ pub async fn trade_start(
     };
 
     let strat_name = strategy_name.clone();
-    let mut engine = TradingEngine::new(config);
+
+    let mut engine = if mode == "qmt" {
+        // QMT live trading via Python bridge
+        use quant_broker::qmt::{QmtBroker, QmtConfig};
+        let qmt_config = QmtConfig {
+            bridge_url: state.config.qmt.bridge_url.clone(),
+            account: state.config.qmt.account.clone(),
+        };
+        let qmt_broker = std::sync::Arc::new(QmtBroker::new(qmt_config));
+
+        // Verify bridge connectivity
+        match qmt_broker.check_connection().await {
+            Ok(true) => {},
+            Ok(false) => {
+                return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
+                    "error": "QMT bridge is running but not connected to QMT client"
+                })));
+            },
+            Err(e) => {
+                return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
+                    "error": format!("Cannot reach QMT bridge: {}", e)
+                })));
+            }
+        }
+
+        TradingEngine::new_with_broker(config, qmt_broker)
+    } else {
+        TradingEngine::new(config)
+    };
+
     engine.start(move || -> Box<dyn quant_core::traits::Strategy> {
         match strat_name.as_str() {
             "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
@@ -445,6 +477,7 @@ pub async fn trade_start(
 
     (StatusCode::OK, Json(json!({
         "status": "started",
+        "mode": mode,
         "strategy": strategy_name,
         "symbols": symbols,
         "interval": interval,
@@ -489,6 +522,27 @@ pub async fn trade_status(
             "pnl": 0.0,
             "recent_trades": []
         }))
+    }
+}
+
+// ── QMT Bridge Status ───────────────────────────────────────────────
+
+pub async fn qmt_bridge_status(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let url = format!("{}/health", state.config.qmt.bridge_url);
+    match reqwest::get(&url).await {
+        Ok(resp) => {
+            match resp.json::<serde_json::Value>().await {
+                Ok(v) => Json(v),
+                Err(_) => Json(json!({ "status": "error", "message": "Invalid bridge response" })),
+            }
+        }
+        Err(e) => Json(json!({
+            "status": "offline",
+            "message": format!("Cannot reach QMT bridge: {}", e),
+            "bridge_url": state.config.qmt.bridge_url
+        })),
     }
 }
 

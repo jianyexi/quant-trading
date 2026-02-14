@@ -141,12 +141,23 @@ enum TradeAction {
         #[arg(long, default_value_t = 0.15)]
         position_size: f64,
     },
-    /// Start live trading
-    Live {
-        /// Strategy name
-        #[arg(short, long)]
+    /// Start live trading via QMT bridge
+    Qmt {
+        /// Strategy name (sma_cross, rsi_reversal, macd_trend)
+        #[arg(short, long, default_value = "sma_cross")]
         strategy: String,
+        /// Stock symbols (comma-separated)
+        #[arg(long, default_value = "600519.SH")]
+        symbols: String,
+        /// Data interval in seconds
+        #[arg(long, default_value_t = 5)]
+        interval: u64,
+        /// Position size as percentage of portfolio (0.0-1.0)
+        #[arg(long, default_value_t = 0.15)]
+        position_size: f64,
     },
+    /// Check QMT bridge status
+    QmtStatus,
 }
 
 #[derive(Subcommand)]
@@ -247,10 +258,11 @@ async fn main() -> anyhow::Result<()> {
             TradeAction::Auto { strategy, symbols, interval, position_size } => {
                 cmd_trade_auto(&strategy, &symbols, interval, position_size, &config).await;
             }
-            TradeAction::Live { strategy } => {
-                println!("🚀 Live trading with strategy: {strategy}");
-                println!("  ⚠️  Live trading requires broker API configuration.");
-                println!("  Configure your broker connection in config/default.toml first.");
+            TradeAction::Qmt { strategy, symbols, interval, position_size } => {
+                cmd_trade_qmt(&strategy, &symbols, interval, position_size, &config).await;
+            }
+            TradeAction::QmtStatus => {
+                cmd_qmt_status(&config).await;
             }
         },
         Commands::Screen { action } => match action {
@@ -977,7 +989,6 @@ async fn cmd_trade_paper(strategy: &str, symbol: &str, config: &AppConfig) {
 
 async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, position_size: f64, config: &AppConfig) {
     use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum};
-    use quant_core::traits::Broker;
 
     let symbols: Vec<String> = symbols_str.split(',').map(|s| s.trim().to_string()).collect();
 
@@ -1088,6 +1099,178 @@ async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, positi
     println!("  Total Rejected: {}", status.total_rejected);
     println!("  Final PnL:      ¥{:+.2}", status.pnl);
     println!("  ═══════════════════════════════════════════");
+}
+
+async fn cmd_trade_qmt(strategy: &str, symbols_str: &str, interval: u64, position_size: f64, config: &AppConfig) {
+    use quant_broker::qmt::{QmtBroker, QmtConfig};
+
+    let symbols: Vec<String> = symbols_str.split(',').map(|s| s.trim().to_string()).collect();
+
+    println!("🔴 QMT Live Trading Engine");
+    println!("  Strategy:      {strategy}");
+    println!("  Symbols:       {}", symbols.join(", "));
+    println!("  Interval:      {}s", interval);
+    println!("  Position Size: {:.0}%", position_size * 100.0);
+    println!("  Bridge URL:    {}", config.qmt.bridge_url);
+    println!("  Account:       {}", config.qmt.account);
+    println!();
+
+    if config.qmt.account.is_empty() {
+        println!("  ❌ QMT account not configured. Set [qmt] section in config/default.toml");
+        return;
+    }
+
+    // Connect to QMT bridge
+    let qmt_config = QmtConfig {
+        bridge_url: config.qmt.bridge_url.clone(),
+        account: config.qmt.account.clone(),
+    };
+    let qmt_broker = std::sync::Arc::new(QmtBroker::new(qmt_config));
+
+    match qmt_broker.check_connection().await {
+        Ok(true) => println!("  ✅ QMT bridge connected"),
+        Ok(false) => {
+            println!("  ⚠️  QMT bridge running but not connected to QMT client");
+            println!("  Please ensure QMT client is running in miniQMT mode");
+            return;
+        }
+        Err(e) => {
+            println!("  ❌ Cannot reach QMT bridge: {}", e);
+            println!("  Start the bridge: python qmt_bridge/qmt_bridge.py --qmt-path \"...\" --account \"...\"");
+            return;
+        }
+    }
+
+    let engine_config = EngineConfig {
+        strategy_name: strategy.to_string(),
+        symbols,
+        interval_secs: interval,
+        initial_capital: config.trading.initial_capital,
+        commission_rate: config.trading.commission_rate,
+        stamp_tax_rate: config.trading.stamp_tax_rate,
+        max_concentration: config.risk.max_concentration,
+        position_size_pct: position_size,
+    };
+
+    let strategy_name = strategy.to_string();
+    let mut engine = TradingEngine::new_with_broker(engine_config, qmt_broker);
+    engine.start(move || -> Box<dyn quant_core::traits::Strategy> {
+        match strategy_name.as_str() {
+            "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
+            "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
+            _ => Box::new(DualMaCrossover::new(5, 20)),
+        }
+    }).await;
+
+    println!("  🔴 LIVE engine running. Type 'status' or 'stop'.");
+    println!("  ⚠️  WARNING: Real orders will be placed through QMT!");
+    println!();
+
+    // Interactive status loop (same as auto)
+    loop {
+        print!("qmt> ");
+        io::stdout().flush().unwrap();
+
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_err() {
+            break;
+        }
+        let input = input.trim();
+
+        match input {
+            "stop" | "quit" | "exit" => {
+                engine.stop();
+                println!();
+                break;
+            }
+            "status" | "s" => {
+                let status = engine.status().await;
+                println!();
+                println!("  ═══════════════════════════════════════════");
+                println!("  🔴 QMT Live Engine Status");
+                println!("  ═══════════════════════════════════════════");
+                println!("  Running:      {}", if status.running { "✅ Yes" } else { "❌ No" });
+                println!("  Strategy:     {}", status.strategy);
+                println!("  Symbols:      {}", status.symbols.join(", "));
+                println!("  Signals:      {}", status.total_signals);
+                println!("  Orders:       {}", status.total_orders);
+                println!("  Fills:        {}", status.total_fills);
+                println!("  Rejected:     {}", status.total_rejected);
+                println!("  PnL:          ¥{:+.2}", status.pnl);
+                println!("  ═══════════════════════════════════════════");
+
+                if !status.recent_trades.is_empty() {
+                    println!();
+                    println!("  Recent Trades:");
+                    for t in status.recent_trades.iter().take(5) {
+                        let side_str = if t.side == quant_core::types::OrderSide::Buy { "BUY " } else { "SELL" };
+                        println!("    {} {} x{:.0} @ {:.2} [{}]",
+                            side_str, t.symbol, t.quantity, t.price, t.status);
+                    }
+                }
+
+                // Show live portfolio from QMT
+                if let Ok(account) = engine.broker().get_account().await {
+                    let p = &account.portfolio;
+                    println!();
+                    println!("  Portfolio: cash=¥{:.2} total=¥{:.2}", p.cash, p.total_value);
+                    for (sym, pos) in &p.positions {
+                        println!("    {} x{:.0} avg={:.2} cur={:.2}",
+                            sym, pos.quantity, pos.avg_cost, pos.current_price);
+                    }
+                }
+                println!();
+            }
+            "help" | "h" => {
+                println!("  Commands: status (s), stop, help (h)");
+            }
+            "" => continue,
+            _ => println!("  Unknown command. Type 'help' for options."),
+        }
+    }
+
+    let status = engine.status().await;
+    println!("  ═══════════════════════════════════════════");
+    println!("  📋 Final Summary (QMT Live)");
+    println!("  ═══════════════════════════════════════════");
+    println!("  Total Signals:  {}", status.total_signals);
+    println!("  Total Orders:   {}", status.total_orders);
+    println!("  Total Fills:    {}", status.total_fills);
+    println!("  Total Rejected: {}", status.total_rejected);
+    println!("  Final PnL:      ¥{:+.2}", status.pnl);
+    println!("  ═══════════════════════════════════════════");
+}
+
+async fn cmd_qmt_status(config: &AppConfig) {
+    println!("🔌 QMT Bridge Status");
+    println!("  Bridge URL: {}", config.qmt.bridge_url);
+    println!("  Account:    {}", config.qmt.account);
+    println!("  QMT Path:   {}", config.qmt.qmt_path);
+    println!();
+
+    let url = format!("{}/health", config.qmt.bridge_url);
+    match reqwest::get(&url).await {
+        Ok(resp) => {
+            match resp.json::<serde_json::Value>().await {
+                Ok(v) => {
+                    let connected = v.get("connected").and_then(|c| c.as_bool()).unwrap_or(false);
+                    let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("unknown");
+                    if connected {
+                        println!("  ✅ Bridge: {} (connected to QMT)", status);
+                    } else {
+                        println!("  ⚠️  Bridge: {} (not connected to QMT client)", status);
+                    }
+                }
+                Err(e) => println!("  ❌ Invalid response: {}", e),
+            }
+        }
+        Err(e) => {
+            println!("  ❌ Bridge offline: {}", e);
+            println!();
+            println!("  To start the bridge:");
+            println!("    python qmt_bridge/qmt_bridge.py --qmt-path \"C:/QMT/userdata_mini\" --account \"YOUR_ACCOUNT\"");
+        }
+    }
 }
 
 fn cmd_portfolio_show() {
