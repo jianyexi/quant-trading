@@ -9,6 +9,7 @@ use quant_llm::{
     context::ConversationContext,
     tools::{get_all_tools, ToolExecutor},
 };
+use quant_broker::engine::{EngineConfig, TradingEngine};
 use quant_strategy::indicators::{SMA, RSI};
 use tracing_subscriber::EnvFilter;
 
@@ -103,7 +104,7 @@ enum BacktestAction {
 
 #[derive(Subcommand)]
 enum TradeAction {
-    /// Start paper trading
+    /// Start paper trading (quick simulation)
     Paper {
         /// Strategy name
         #[arg(short, long)]
@@ -111,6 +112,21 @@ enum TradeAction {
         /// Stock symbol
         #[arg(long, default_value = "600519.SH")]
         symbol: String,
+    },
+    /// Start auto-trading with actor engine
+    Auto {
+        /// Strategy name (sma_cross, rsi_reversal, macd_trend)
+        #[arg(short, long, default_value = "sma_cross")]
+        strategy: String,
+        /// Stock symbols (comma-separated)
+        #[arg(long, default_value = "600519.SH")]
+        symbols: String,
+        /// Data interval in seconds
+        #[arg(long, default_value_t = 5)]
+        interval: u64,
+        /// Position size as percentage of portfolio (0.0-1.0)
+        #[arg(long, default_value_t = 0.15)]
+        position_size: f64,
     },
     /// Start live trading
     Live {
@@ -192,6 +208,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Trade { action } => match action {
             TradeAction::Paper { strategy, symbol } => {
                 cmd_trade_paper(&strategy, &symbol, &config).await;
+            }
+            TradeAction::Auto { strategy, symbols, interval, position_size } => {
+                cmd_trade_auto(&strategy, &symbols, interval, position_size, &config).await;
             }
             TradeAction::Live { strategy } => {
                 println!("🚀 Live trading with strategy: {strategy}");
@@ -497,7 +516,122 @@ async fn cmd_trade_paper(strategy: &str, symbol: &str, config: &AppConfig) {
     println!("  ═══════════════════════════════════════════");
 }
 
-// ── Portfolio Command ───────────────────────────────────────────────
+// ── Auto Trading Command ────────────────────────────────────────────
+
+async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, position_size: f64, config: &AppConfig) {
+    use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum};
+    use quant_core::traits::Broker;
+
+    let symbols: Vec<String> = symbols_str.split(',').map(|s| s.trim().to_string()).collect();
+
+    println!("🤖 Auto-Trading Engine (Actor Model)");
+    println!("  Strategy:      {strategy}");
+    println!("  Symbols:       {}", symbols.join(", "));
+    println!("  Interval:      {}s", interval);
+    println!("  Position Size: {:.0}%", position_size * 100.0);
+    println!("  Capital:       ¥{:.2}", config.trading.initial_capital);
+    println!("  Max Conc:      {:.0}%", config.risk.max_concentration * 100.0);
+    println!();
+
+    let engine_config = EngineConfig {
+        strategy_name: strategy.to_string(),
+        symbols,
+        interval_secs: interval,
+        initial_capital: config.trading.initial_capital,
+        commission_rate: config.trading.commission_rate,
+        stamp_tax_rate: config.trading.stamp_tax_rate,
+        max_concentration: config.risk.max_concentration,
+        position_size_pct: position_size,
+    };
+
+    let strategy_name = strategy.to_string();
+    let mut engine = TradingEngine::new(engine_config);
+    engine.start(move || -> Box<dyn quant_core::traits::Strategy> {
+        match strategy_name.as_str() {
+            "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
+            "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
+            _ => Box::new(DualMaCrossover::new(5, 20)),
+        }
+    }).await;
+
+    println!("  ✅ Engine running. Press Ctrl+C to stop or type 'status'/'stop'.");
+    println!();
+
+    // Interactive status loop
+    loop {
+        print!("auto> ");
+        io::stdout().flush().unwrap();
+
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_err() {
+            break;
+        }
+        let input = input.trim();
+
+        match input {
+            "stop" | "quit" | "exit" => {
+                engine.stop();
+                println!();
+                break;
+            }
+            "status" | "s" => {
+                let status = engine.status().await;
+                println!();
+                println!("  ═══════════════════════════════════════════");
+                println!("  📊 Engine Status");
+                println!("  ═══════════════════════════════════════════");
+                println!("  Running:      {}", if status.running { "✅ Yes" } else { "❌ No" });
+                println!("  Strategy:     {}", status.strategy);
+                println!("  Symbols:      {}", status.symbols.join(", "));
+                println!("  Signals:      {}", status.total_signals);
+                println!("  Orders:       {}", status.total_orders);
+                println!("  Fills:        {}", status.total_fills);
+                println!("  Rejected:     {}", status.total_rejected);
+                println!("  PnL:          ¥{:+.2}", status.pnl);
+                println!("  ═══════════════════════════════════════════");
+
+                if !status.recent_trades.is_empty() {
+                    println!();
+                    println!("  Recent Trades:");
+                    for t in status.recent_trades.iter().take(5) {
+                        let side_str = if t.side == quant_core::types::OrderSide::Buy { "BUY " } else { "SELL" };
+                        println!("    {} {} x{:.0} @ {:.2} (¥{:.2})",
+                            side_str, t.symbol, t.quantity, t.price, t.commission);
+                    }
+                }
+
+                // Show portfolio
+                if let Ok(account) = engine.broker().get_account().await {
+                    let p = &account.portfolio;
+                    println!();
+                    println!("  Portfolio: cash=¥{:.2} total=¥{:.2}", p.cash, p.total_value);
+                    for (sym, pos) in &p.positions {
+                        println!("    {} x{:.0} avg={:.2} cur={:.2} pnl=¥{:+.2}",
+                            sym, pos.quantity, pos.avg_cost, pos.current_price, pos.unrealized_pnl + pos.realized_pnl);
+                    }
+                }
+                println!();
+            }
+            "help" | "h" => {
+                println!("  Commands: status (s), stop, help (h)");
+            }
+            "" => continue,
+            _ => println!("  Unknown command. Type 'help' for options."),
+        }
+    }
+
+    // Final summary
+    let status = engine.status().await;
+    println!("  ═══════════════════════════════════════════");
+    println!("  📋 Final Summary");
+    println!("  ═══════════════════════════════════════════");
+    println!("  Total Signals:  {}", status.total_signals);
+    println!("  Total Orders:   {}", status.total_orders);
+    println!("  Total Fills:    {}", status.total_fills);
+    println!("  Total Rejected: {}", status.total_rejected);
+    println!("  Final PnL:      ¥{:+.2}", status.pnl);
+    println!("  ═══════════════════════════════════════════");
+}
 
 fn cmd_portfolio_show() {
     println!("💼 Portfolio Summary");
@@ -657,6 +791,7 @@ async fn run_chat(config: &AppConfig) {
 async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
     let state = AppState {
         config: config.clone(),
+        engine: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
     };
 
     // Resolve web/dist path — try CWD first, then relative to the executable

@@ -385,3 +385,108 @@ pub async fn chat_history(
         "sessions": []
     }))
 }
+
+// ── Auto-Trade Handlers ─────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct TradeStartRequest {
+    pub strategy: Option<String>,
+    pub symbols: Option<Vec<String>>,
+    pub interval: Option<u64>,
+    pub position_size: Option<f64>,
+}
+
+pub async fn trade_start(
+    State(state): State<AppState>,
+    Json(req): Json<TradeStartRequest>,
+) -> (StatusCode, Json<Value>) {
+    use quant_broker::engine::{EngineConfig, TradingEngine};
+    use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum};
+
+    let mut engine_guard = state.engine.lock().await;
+
+    // Check if already running
+    if let Some(ref eng) = *engine_guard {
+        if eng.is_running() {
+            return (StatusCode::CONFLICT, Json(json!({
+                "error": "Engine already running. Stop it first."
+            })));
+        }
+    }
+
+    let strategy_name = req.strategy.unwrap_or_else(|| "sma_cross".into());
+    let symbols = req.symbols.unwrap_or_else(|| vec!["600519.SH".into()]);
+    let interval = req.interval.unwrap_or(5);
+    let position_size = req.position_size.unwrap_or(0.15);
+
+    let config = EngineConfig {
+        strategy_name: strategy_name.clone(),
+        symbols: symbols.clone(),
+        interval_secs: interval,
+        initial_capital: state.config.trading.initial_capital,
+        commission_rate: state.config.trading.commission_rate,
+        stamp_tax_rate: state.config.trading.stamp_tax_rate,
+        max_concentration: state.config.risk.max_concentration,
+        position_size_pct: position_size,
+    };
+
+    let strat_name = strategy_name.clone();
+    let mut engine = TradingEngine::new(config);
+    engine.start(move || -> Box<dyn quant_core::traits::Strategy> {
+        match strat_name.as_str() {
+            "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
+            "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
+            _ => Box::new(DualMaCrossover::new(5, 20)),
+        }
+    }).await;
+
+    *engine_guard = Some(engine);
+
+    (StatusCode::OK, Json(json!({
+        "status": "started",
+        "strategy": strategy_name,
+        "symbols": symbols,
+        "interval": interval,
+        "position_size": position_size
+    })))
+}
+
+pub async fn trade_stop(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let mut engine_guard = state.engine.lock().await;
+    if let Some(ref mut eng) = *engine_guard {
+        eng.stop();
+        let status = eng.status().await;
+        Json(json!({
+            "status": "stopped",
+            "total_signals": status.total_signals,
+            "total_fills": status.total_fills,
+            "pnl": status.pnl
+        }))
+    } else {
+        Json(json!({ "status": "not_running" }))
+    }
+}
+
+pub async fn trade_status(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let engine_guard = state.engine.lock().await;
+    if let Some(ref eng) = *engine_guard {
+        let status = eng.status().await;
+        Json(json!(status))
+    } else {
+        Json(json!({
+            "running": false,
+            "strategy": "",
+            "symbols": [],
+            "total_signals": 0,
+            "total_orders": 0,
+            "total_fills": 0,
+            "total_rejected": 0,
+            "pnl": 0.0,
+            "recent_trades": []
+        }))
+    }
+}

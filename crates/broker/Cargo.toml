@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 quant-core = { workspace = true }
+quant-risk = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
