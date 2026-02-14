@@ -1,0 +1,65 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/config",
+    "crates/core",
+    "crates/data",
+    "crates/strategy",
+    "crates/backtest",
+    "crates/broker",
+    "crates/risk",
+    "crates/llm",
+    "crates/api",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["jianyxi"]
+license = "MIT"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "stream"] }
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "migrate"] }
+# Web framework
+axum = { version = "0.7", features = ["ws"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+# CLI
+clap = { version = "4", features = ["derive"] }
+# Configuration
+toml = "0.8"
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Date/Time
+chrono = { version = "0.4", features = ["serde"] }
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+# Error handling
+thiserror = "2"
+anyhow = "1"
+# Async traits
+async-trait = "0.1"
+# Futures
+futures = "0.3"
+tokio-stream = "0.1"
+# Internal crates
+quant-config = { path = "crates/config" }
+quant-core = { path = "crates/core" }
+quant-data = { path = "crates/data" }
+quant-strategy = { path = "crates/strategy" }
+quant-backtest = { path = "crates/backtest" }
+quant-broker = { path = "crates/broker" }
+quant-risk = { path = "crates/risk" }
+quant-llm = { path = "crates/llm" }
+quant-api = { path = "crates/api" }

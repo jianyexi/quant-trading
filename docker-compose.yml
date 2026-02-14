@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: quant_trading
+      POSTGRES_USER: quant
+      POSTGRES_PASSWORD: quant_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  quant:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    environment:
+      DATABASE_URL: postgresql://quant:quant_pass@postgres:5432/quant_trading
+    volumes:
+      - ./config:/app/config
+
+volumes:
+  pgdata:

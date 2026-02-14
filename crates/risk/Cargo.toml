@@ -1,0 +1,15 @@
+[package]
+name = "quant-risk"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quant-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

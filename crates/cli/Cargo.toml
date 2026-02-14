@@ -1,0 +1,30 @@
+[package]
+name = "quant-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "quant"
+path = "src/main.rs"
+
+[dependencies]
+quant-config = { workspace = true }
+quant-core = { workspace = true }
+quant-data = { workspace = true }
+quant-strategy = { workspace = true }
+quant-backtest = { workspace = true }
+quant-broker = { workspace = true }
+quant-risk = { workspace = true }
+quant-llm = { workspace = true }
+quant-api = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+axum = { workspace = true }

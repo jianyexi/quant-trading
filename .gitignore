@@ -1,0 +1,7 @@
+/target
+*.swp
+*.swo
+.env
+config/local.toml
+web/node_modules
+web/dist

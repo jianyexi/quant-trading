@@ -1,0 +1,31 @@
+[package]
+name = "quant-api"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quant-config = { workspace = true }
+quant-core = { workspace = true }
+quant-data = { workspace = true }
+quant-strategy = { workspace = true }
+quant-backtest = { workspace = true }
+quant-broker = { workspace = true }
+quant-risk = { workspace = true }
+quant-llm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+sqlx = { workspace = true }

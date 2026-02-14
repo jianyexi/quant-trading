@@ -1,0 +1,41 @@
+# Quant Trading System Configuration
+
+[database]
+url = "postgresql://localhost:5432/quant_trading"
+max_connections = 10
+
+[tushare]
+token = ""
+base_url = "http://api.tushare.pro"
+
+[akshare]
+base_url = "https://akshare.akfamily.xyz"
+
+[llm]
+api_url = "https://api.openai.com/v1"
+api_key = ""
+model = "gpt-4"
+temperature = 0.7
+max_tokens = 4096
+
+[trading]
+# Commission rate (e.g., 0.00025 = 0.025%)
+commission_rate = 0.00025
+# Stamp tax rate (sell side only, 0.001 = 0.1%)
+stamp_tax_rate = 0.001
+# Slippage in price ticks
+slippage_ticks = 1
+# Default initial capital
+initial_capital = 1000000.0
+
+[risk]
+# Maximum position concentration per stock (0.2 = 20%)
+max_concentration = 0.2
+# Maximum daily loss limit (0.05 = 5%)
+max_daily_loss = 0.05
+# Maximum drawdown limit (0.15 = 15%)
+max_drawdown = 0.15
+
+[server]
+host = "0.0.0.0"
+port = 8080

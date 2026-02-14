@@ -1,0 +1,18 @@
+[package]
+name = "quant-data"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quant-config = { workspace = true }
+quant-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }

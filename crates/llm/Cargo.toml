@@ -1,0 +1,21 @@
+[package]
+name = "quant-llm"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quant-config = { workspace = true }
+quant-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+sqlx = { workspace = true }
