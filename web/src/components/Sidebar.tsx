@@ -6,6 +6,8 @@ import {
   FlaskConical,
   Wallet,
   MessageSquare,
+  Search,
+  Bot,
 } from 'lucide-react';
 
 const navItems = [
@@ -13,6 +15,8 @@ const navItems = [
   { to: '/market', label: 'Market Data', icon: TrendingUp },
   { to: '/strategy', label: 'Strategy', icon: Settings },
   { to: '/backtest', label: 'Backtest', icon: FlaskConical },
+  { to: '/screener', label: '智能选股', icon: Search },
+  { to: '/autotrade', label: '自动交易', icon: Bot },
   { to: '/portfolio', label: 'Portfolio', icon: Wallet },
   { to: '/chat', label: 'AI Chat', icon: MessageSquare },
 ];

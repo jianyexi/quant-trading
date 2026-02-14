@@ -73,3 +73,101 @@ export function createChatWebSocket(): WebSocket {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return new WebSocket(`${protocol}//${window.location.host}/api/chat/stream`);
 }
+
+// ── Screener API ────────────────────────────────────────────────────
+
+export interface FactorScores {
+  momentum_5d: number;
+  momentum_20d: number;
+  rsi_14: number;
+  macd_histogram: number;
+  bollinger_position: number;
+  volume_ratio: number;
+  ma_trend: number;
+  kdj_j: number;
+  volatility_20d: number;
+}
+
+export interface VoteResult {
+  Buy?: number;
+  Sell?: number;
+  Neutral?: string;
+}
+
+export interface StrategyVote {
+  sma_cross: VoteResult;
+  rsi_reversal: VoteResult;
+  macd_trend: VoteResult;
+  consensus_count: number;
+  avg_confidence: number;
+}
+
+export interface StockCandidate {
+  symbol: string;
+  name: string;
+  price: number;
+  factor_score: number;
+  factors: FactorScores;
+  strategy_vote: StrategyVote;
+  composite_score: number;
+  recommendation: string;
+  reasons: string[];
+}
+
+export interface ScreenerResult {
+  candidates: StockCandidate[];
+  total_scanned: number;
+  phase1_passed: number;
+  phase2_passed: number;
+}
+
+export async function screenScan(topN: number = 10, minVotes: number = 2): Promise<ScreenerResult> {
+  return fetchJson('/screen/scan', {
+    method: 'POST',
+    body: JSON.stringify({ top_n: topN, min_votes: minVotes }),
+  });
+}
+
+export async function screenFactors(symbol: string): Promise<StockCandidate> {
+  return fetchJson(`/screen/factors/${symbol}`);
+}
+
+// ── Auto-Trade API ──────────────────────────────────────────────────
+
+export interface TradeStatus {
+  running: boolean;
+  strategy: string;
+  symbols: string[];
+  total_signals: number;
+  total_orders: number;
+  total_fills: number;
+  total_rejected: number;
+  pnl: number;
+  recent_trades: Array<{
+    side: string;
+    symbol: string;
+    quantity: number;
+    price: number;
+    commission: number;
+  }>;
+}
+
+export async function tradeStart(params: {
+  strategy: string;
+  symbols: string[];
+  interval: number;
+  position_size: number;
+}) {
+  return fetchJson('/trade/start', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function tradeStop() {
+  return fetchJson('/trade/stop', { method: 'POST' });
+}
+
+export async function tradeStatus(): Promise<TradeStatus> {
+  return fetchJson('/trade/status');
+}

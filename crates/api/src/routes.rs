@@ -1,10 +1,11 @@
 use axum::{
     middleware,
+    response::IntoResponse,
     routing::{get, post},
     Router,
 };
 use tower_http::cors::CorsLayer;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeDir;
 
 use crate::auth::api_key_auth;
 use crate::handlers;
@@ -69,12 +70,21 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .layer(middleware::from_fn(api_key_auth))
         .with_state(state);
 
-    // Serve static files from web/dist, fallback to index.html for SPA routing
-    let index_html = std::path::Path::new(web_dist).join("index.html");
-    let spa_fallback = ServeDir::new(web_dist)
-        .not_found_service(ServeFile::new(index_html));
+    // SPA fallback: serve index.html for any non-API, non-static path (returns 200)
+    let index_path = std::path::PathBuf::from(web_dist).join("index.html");
+    let spa_handler = move || {
+        let path = index_path.clone();
+        async move {
+            match tokio::fs::read(&path).await {
+                Ok(bytes) => axum::response::Html(bytes).into_response(),
+                Err(_) => (axum::http::StatusCode::NOT_FOUND, "index.html not found").into_response(),
+            }
+        }
+    };
 
     api_routes
-        .fallback_service(spa_fallback)
+        .fallback_service(
+            ServeDir::new(web_dist).fallback(get(spa_handler))
+        )
         .layer(CorsLayer::permissive())
 }

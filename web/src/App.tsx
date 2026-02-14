@@ -6,6 +6,8 @@ import StrategyConfig from './pages/StrategyConfig';
 import Backtest from './pages/Backtest';
 import Portfolio from './pages/Portfolio';
 import Chat from './pages/Chat';
+import Screener from './pages/Screener';
+import AutoTrade from './pages/AutoTrade';
 
 export default function App() {
   return (
@@ -16,6 +18,8 @@ export default function App() {
           <Route path="market" element={<MarketData />} />
           <Route path="strategy" element={<StrategyConfig />} />
           <Route path="backtest" element={<Backtest />} />
+          <Route path="screener" element={<Screener />} />
+          <Route path="autotrade" element={<AutoTrade />} />
           <Route path="portfolio" element={<Portfolio />} />
           <Route path="chat" element={<Chat />} />
         </Route>
