@@ -5,3 +5,8 @@
 config/local.toml
 web/node_modules
 web/dist
+
+# Screenshots
+dashboard.png
+dashboard-check.png
+.claude/
