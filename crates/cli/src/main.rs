@@ -1,15 +1,21 @@
 use std::io::{self, Write};
 use std::net::SocketAddr;
 
+use chrono::{Datelike, NaiveDate};
 use clap::{Parser, Subcommand};
 use quant_api::{create_router, AppState};
+use quant_backtest::engine::{BacktestConfig, BacktestEngine};
+use quant_backtest::report::format_report;
 use quant_config::AppConfig;
+use quant_core::models::Kline;
+use quant_core::types::OrderSide;
 use quant_llm::{
     client::LlmClient,
     context::ConversationContext,
     tools::{get_all_tools, ToolExecutor},
 };
 use quant_broker::engine::{EngineConfig, TradingEngine};
+use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum};
 use quant_strategy::indicators::{SMA, RSI};
 use tracing_subscriber::EnvFilter;
 
@@ -350,75 +356,218 @@ fn cmd_backtest_run(strategy: &str, symbol: &str, start: &str, end: &str, capita
     println!("  Capital:  ¥{capital:.2}");
     println!();
 
-    // Generate mock price data and run actual backtest engine
-    let (base_price, name) = match symbol {
-        "600519.SH" => (1650.0, "贵州茅台"),
-        "000858.SZ" => (148.0, "五粮液"),
-        "601318.SH" => (52.0, "中国平安"),
-        _ => (100.0, "未知"),
+    // Parse date range
+    let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d")
+        .unwrap_or(NaiveDate::from_ymd_opt(2023, 1, 1).unwrap());
+    let end_date = NaiveDate::parse_from_str(end, "%Y-%m-%d")
+        .unwrap_or(NaiveDate::from_ymd_opt(2024, 12, 31).unwrap());
+
+    // Generate realistic daily kline data
+    let klines = generate_realistic_klines(symbol, start_date, end_date);
+    if klines.is_empty() {
+        println!("  ❌ No data generated for {symbol} in the given period.");
+        return;
+    }
+
+    println!("  ⏳ Processing {} daily bars ...", klines.len());
+
+    // Create strategy instance
+    let mut strat: Box<dyn quant_core::traits::Strategy> = match strategy {
+        "sma_cross" => Box::new(DualMaCrossover::new(5, 20)),
+        "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
+        "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
+        other => {
+            println!("  ❌ Unknown strategy: {other}");
+            println!("  Available: sma_cross, rsi_reversal, macd_trend");
+            return;
+        }
     };
 
-    let bar_count = 120;
-    let mut prices = Vec::with_capacity(bar_count);
-    let mut price = base_price;
-    for i in 0..bar_count {
-        let change = ((i as f64 * 7.3 + 13.7).sin() * 0.02 + (i as f64 * 3.1).cos() * 0.008) * price;
-        price += change;
-        prices.push(price);
-    }
+    // Configure and run backtest engine
+    let bt_config = BacktestConfig {
+        initial_capital: capital,
+        commission_rate: 0.00025,  // 万分之2.5
+        stamp_tax_rate: 0.001,    // 千分之一 (卖出)
+        slippage_ticks: 1,
+    };
 
-    // Compute strategy signals using actual indicators
-    let mut sma_fast_ind = SMA::new(5);
-    let mut sma_slow_ind = SMA::new(20);
-    let mut sma_fast_vals = Vec::with_capacity(bar_count);
-    let mut sma_slow_vals = Vec::with_capacity(bar_count);
-    for &p in &prices {
-        sma_fast_vals.push(sma_fast_ind.update(p));
-        sma_slow_vals.push(sma_slow_ind.update(p));
-    }
+    let engine = BacktestEngine::new(bt_config);
+    let result = engine.run(strat.as_mut(), &klines);
 
-    let mut trades = 0;
-    let mut wins = 0;
-    let mut position = false;
-    let mut entry_price = 0.0;
-    let mut pnl = 0.0;
+    // Print performance report
+    println!();
+    println!("{}", format_report(&result.metrics));
 
-    for i in 1..bar_count {
-        let (Some(fast), Some(slow)) = (sma_fast_vals[i], sma_slow_vals[i]) else { continue };
-        let (Some(prev_fast), Some(prev_slow)) = (sma_fast_vals[i - 1], sma_slow_vals[i - 1]) else { continue };
-        let current_price = prices[i];
+    // Print trade details
+    println!();
+    println!("  ═══════════════════════════════════════════════════════════════");
+    println!("  📋 Portfolio Summary");
+    println!("  ═══════════════════════════════════════════════════════════════");
+    println!("  Initial Capital:  ¥{:>14.2}", capital);
+    println!("  Final Value:      ¥{:>14.2}", result.final_portfolio.total_value);
+    println!("  Cash:             ¥{:>14.2}", result.final_portfolio.cash);
 
-        if !position && prev_fast <= prev_slow && fast > slow {
-            position = true;
-            entry_price = current_price;
-        } else if position && prev_fast >= prev_slow && fast < slow {
-            let trade_pnl = current_price - entry_price;
-            pnl += trade_pnl;
-            trades += 1;
-            if trade_pnl > 0.0 { wins += 1; }
-            position = false;
+    if !result.final_portfolio.positions.is_empty() {
+        println!("  Open Positions:");
+        for (sym, pos) in &result.final_portfolio.positions {
+            println!("    {}: {} shares @ avg ¥{:.2}, current ¥{:.2}, PnL ¥{:.2}",
+                sym, pos.quantity, pos.avg_cost, pos.current_price, pos.unrealized_pnl);
         }
     }
 
-    let shares = (capital / base_price / 100.0).floor() * 100.0;
-    let total_pnl = pnl * shares;
-    let final_value = capital + total_pnl;
-    let return_pct = (total_pnl / capital) * 100.0;
-    let win_rate = if trades > 0 { (wins as f64 / trades as f64) * 100.0 } else { 0.0 };
+    println!("  ═══════════════════════════════════════════════════════════════");
 
-    println!("  ⏳ Processing {} bars for {} ...", bar_count, name);
-    println!();
-    println!("  ═══════════════════════════════════════════");
-    println!("  📋 Backtest Results");
-    println!("  ═══════════════════════════════════════════");
-    println!("  Initial Capital:  ¥{capital:>14.2}");
-    println!("  Final Value:      ¥{final_value:>14.2}");
-    println!("  Total Return:     {:>14.2}%", return_pct);
-    println!("  Total PnL:        ¥{total_pnl:>14.2}");
-    println!("  Total Trades:     {:>14}", trades);
-    println!("  Win Rate:         {:>13.1}%", win_rate);
-    println!("  Shares per trade: {:>14.0}", shares);
-    println!("  ═══════════════════════════════════════════");
+    // Print recent trades
+    if !result.trades.is_empty() {
+        println!();
+        println!("  📈 Trade Log ({} total trades):", result.trades.len());
+        println!("  {:<12} {:<6} {:>12} {:>10} {:>12} {:>12}",
+            "Date", "Side", "Symbol", "Qty", "Price", "Commission");
+        println!("  {}", "─".repeat(66));
+
+        let show_count = result.trades.len().min(20);
+        if result.trades.len() > show_count {
+            println!("  ... showing last {} of {} trades ...", show_count, result.trades.len());
+        }
+        for trade in result.trades.iter().rev().take(show_count).collect::<Vec<_>>().iter().rev() {
+            let side_str = match trade.side {
+                OrderSide::Buy => "BUY ",
+                OrderSide::Sell => "SELL",
+            };
+            let side_emoji = match trade.side {
+                OrderSide::Buy => "🟢",
+                OrderSide::Sell => "🔴",
+            };
+            println!("  {} {:<12} {:<6} {:>12} {:>10.0} {:>12.2} {:>12.2}",
+                side_emoji,
+                trade.timestamp.format("%Y-%m-%d"),
+                side_str,
+                trade.symbol,
+                trade.quantity,
+                trade.price,
+                trade.commission);
+        }
+    }
+
+    // Print equity curve summary (start, min, max, end)
+    if result.equity_curve.len() > 2 {
+        let min_eq = result.equity_curve.iter().map(|(_, v)| *v).fold(f64::INFINITY, f64::min);
+        let max_eq = result.equity_curve.iter().map(|(_, v)| *v).fold(f64::NEG_INFINITY, f64::max);
+        let start_eq = result.equity_curve.first().unwrap().1;
+        let end_eq = result.equity_curve.last().unwrap().1;
+        println!();
+        println!("  📉 Equity Curve:");
+        println!("    Start: ¥{:.2}  →  Min: ¥{:.2}  →  Max: ¥{:.2}  →  End: ¥{:.2}",
+            start_eq, min_eq, max_eq, end_eq);
+    }
+}
+
+/// Generate realistic daily Kline data using mean-reverting price model.
+/// Prices oscillate around a base with realistic volatility, never drifting too far.
+fn generate_realistic_klines(symbol: &str, start: NaiveDate, end: NaiveDate) -> Vec<Kline> {
+    // Base price, daily volatility, and amplitude of oscillation
+    let (base_price, daily_vol, amplitude, name) = match symbol {
+        "000300.SH" | "000300.SZ" => (3900.0, 0.012, 0.15, "沪深300"),
+        "000001.SH" => (3100.0, 0.011, 0.12, "上证指数"),
+        "399001.SZ" => (10800.0, 0.013, 0.14, "深证成指"),
+        "399006.SZ" => (2100.0, 0.018, 0.20, "创业板指"),
+        "600519.SH" => (1700.0, 0.018, 0.18, "贵州茅台"),
+        "000858.SZ" => (150.0, 0.022, 0.20, "五粮液"),
+        "601318.SH" => (48.0, 0.020, 0.18, "中国平安"),
+        "000001.SZ" => (11.5, 0.019, 0.18, "平安银行"),
+        "600036.SH" => (34.0, 0.017, 0.15, "招商银行"),
+        "300750.SZ" => (195.0, 0.025, 0.25, "宁德时代"),
+        "600276.SH" => (45.0, 0.020, 0.18, "恒瑞医药"),
+        "000333.SZ" => (60.0, 0.018, 0.15, "美的集团"),
+        "601888.SH" => (85.0, 0.022, 0.20, "中国中免"),
+        "002594.SZ" => (230.0, 0.024, 0.22, "比亚迪"),
+        _ => (100.0, 0.015, 0.15, "未知"),
+    };
+
+    println!("  📦 Generating data for {symbol} ({name})");
+
+    let mut klines = Vec::new();
+    let mut current = start;
+
+    // Seed from symbol hash for reproducibility
+    let seed: u64 = symbol.bytes().fold(42u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    let mut rng_state = seed;
+
+    // Count trading days first for cycle computation
+    let total_days = {
+        let mut d = start;
+        let mut count = 0;
+        while d <= end {
+            let wd = d.weekday();
+            if wd != chrono::Weekday::Sat && wd != chrono::Weekday::Sun {
+                count += 1;
+            }
+            d += chrono::Duration::days(1);
+        }
+        count as f64
+    };
+
+    let mut bar_idx: f64 = 0.0;
+    let mut close = base_price;
+
+    while current <= end {
+        // Skip weekends
+        let weekday = current.weekday();
+        if weekday == chrono::Weekday::Sat || weekday == chrono::Weekday::Sun {
+            current += chrono::Duration::days(1);
+            continue;
+        }
+
+        // LCG pseudo-random
+        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let r1 = ((rng_state >> 33) as f64) / (u32::MAX as f64) - 0.5;
+        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let r2 = ((rng_state >> 33) as f64) / (u32::MAX as f64) - 0.5;
+        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let r3 = ((rng_state >> 33) as f64) / (u32::MAX as f64);
+
+        // Target price from overlapping cycles (mean-reverting around base_price)
+        let t = bar_idx / total_days;
+        let cycle1 = (t * std::f64::consts::PI * 6.0).sin();   // ~3 full cycles
+        let cycle2 = (t * std::f64::consts::PI * 14.0).sin();  // ~7 cycles (faster)
+        let cycle3 = (t * std::f64::consts::PI * 2.0).sin();   // ~1 long cycle
+        let target = base_price * (1.0 + amplitude * (0.5 * cycle1 + 0.3 * cycle2 + 0.2 * cycle3));
+
+        // Mean-reversion pull toward target + random noise
+        let reversion_speed = 0.03;
+        let pull = reversion_speed * (target - close) / close;
+        let noise = daily_vol * r1 * 2.0;
+        let daily_return = pull + noise;
+
+        let open = close;
+        close = open * (1.0 + daily_return);
+
+        // Intraday high/low
+        let intra_range = open.abs() * daily_vol * (0.3 + r3 * 0.5);
+        let high = open.max(close) + intra_range * (0.3 + r2.abs());
+        let low = open.min(close) - intra_range * (0.3 + (0.5 - r2).abs());
+        let low = low.max(open.min(close) * 0.95); // Floor at -5% intraday
+
+        // Volume
+        let base_vol = if base_price > 500.0 { 5_000_000.0 } else if base_price > 50.0 { 20_000_000.0 } else { 60_000_000.0 };
+        let volume = base_vol * (0.6 + r3 * 0.8) * (1.0 + daily_return.abs() * 15.0);
+
+        let datetime = current.and_hms_opt(15, 0, 0).unwrap();
+        klines.push(Kline {
+            symbol: symbol.to_string(),
+            datetime,
+            open,
+            high,
+            low,
+            close,
+            volume,
+        });
+
+        bar_idx += 1.0;
+        current += chrono::Duration::days(1);
+    }
+
+    klines
 }
 
 fn cmd_backtest_report(id: &str) {
