@@ -911,3 +911,82 @@ pub async fn sentiment_summary(
         })).collect::<Vec<_>>(),
     }))
 }
+
+// ── DL Models Research ──────────────────────────────────────────────
+
+pub async fn research_dl_models() -> Json<Value> {
+    let kb = quant_strategy::dl_models::build_knowledge_base();
+    Json(serde_json::to_value(&kb).unwrap())
+}
+
+pub async fn research_dl_models_summary() -> Json<Value> {
+    let kb = quant_strategy::dl_models::build_knowledge_base();
+    let summary = quant_strategy::dl_models::summarize_knowledge_base(&kb);
+    Json(serde_json::to_value(&summary).unwrap())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CollectRequest {
+    pub topic: Option<String>,
+}
+
+pub async fn research_dl_collect(
+    State(state): State<AppState>,
+    Json(body): Json<CollectRequest>,
+) -> (StatusCode, Json<Value>) {
+    let topic = body.topic.unwrap_or_else(|| "量化多因子深度学习模型最新进展".into());
+    let prompt = quant_strategy::dl_models::build_collection_prompt(&topic);
+
+    let llm = quant_llm::client::LlmClient::new(
+        &state.config.llm.api_url,
+        &state.config.llm.api_key,
+        &state.config.llm.model,
+        state.config.llm.temperature,
+        state.config.llm.max_tokens,
+    );
+
+    let messages = vec![
+        quant_llm::client::ChatMessage {
+            role: "user".into(),
+            content: Some(prompt),
+            tool_calls: None,
+            tool_call_id: None,
+        },
+    ];
+
+    match llm.chat(&messages, None).await {
+        Ok(resp) => {
+            let content = resp.choices.first()
+                .and_then(|c| c.message.content.as_ref())
+                .cloned()
+                .unwrap_or_default();
+
+            // Try to parse as JSON array of collected items
+            let collected: Vec<quant_strategy::dl_models::CollectedResearch> =
+                serde_json::from_str(&content).unwrap_or_else(|_| {
+                    // If not valid JSON, wrap the raw text as a single entry
+                    vec![quant_strategy::dl_models::CollectedResearch {
+                        title: format!("LLM研究摘要: {}", topic),
+                        summary: content.clone(),
+                        source: "LLM自动收集".into(),
+                        relevance: "高".into(),
+                        collected_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+                    }]
+                });
+
+            (StatusCode::OK, Json(json!({
+                "status": "ok",
+                "topic": topic,
+                "collected": collected,
+                "raw_response": content,
+            })))
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "status": "error",
+                "message": format!("LLM collection failed: {}", e),
+                "hint": "请确保LLM配置正确(config/default.toml中的[llm]部分)"
+            })))
+        }
+    }
+}

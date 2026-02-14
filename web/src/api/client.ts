@@ -264,3 +264,73 @@ export async function sentimentQuery(symbol: string, limit?: number): Promise<Se
 export async function sentimentSummary(): Promise<SentimentOverview> {
   return fetchJson('/sentiment/summary');
 }
+
+// ── DL Models Research API ──────────────────────────────────────────
+
+export interface DlModelEntry {
+  id: string;
+  name: string;
+  category: string;
+  year: number;
+  architecture: string;
+  description: string;
+  key_innovation: string;
+  input_data: string[];
+  output: string;
+  strengths: string[];
+  limitations: string[];
+  reference: string;
+  reference_url: string;
+}
+
+export interface ModelCategory {
+  name: string;
+  description: string;
+  models: DlModelEntry[];
+}
+
+export interface CollectedResearch {
+  title: string;
+  summary: string;
+  source: string;
+  relevance: string;
+  collected_at: string;
+}
+
+export interface ResearchKnowledgeBase {
+  categories: ModelCategory[];
+  collected: CollectedResearch[];
+  last_updated: string;
+}
+
+export interface KnowledgeBaseSummary {
+  total_models: number;
+  total_categories: number;
+  total_collected: number;
+  categories: Array<{ name: string; count: number; description: string }>;
+  last_updated: string;
+}
+
+export interface CollectResult {
+  status: string;
+  topic: string;
+  collected: CollectedResearch[];
+  raw_response?: string;
+  message?: string;
+  hint?: string;
+}
+
+export async function getResearchDlModels(): Promise<ResearchKnowledgeBase> {
+  return fetchJson('/research/dl-models');
+}
+
+export async function getResearchSummary(): Promise<KnowledgeBaseSummary> {
+  return fetchJson('/research/dl-models/summary');
+}
+
+export async function collectResearch(topic?: string): Promise<CollectResult> {
+  return fetchJson('/research/dl-models/collect', {
+    method: 'POST',
+    body: JSON.stringify({ topic }),
+  });
+}

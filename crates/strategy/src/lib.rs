@@ -5,3 +5,4 @@ pub mod builtin;
 pub mod screener;
 pub mod sentiment;
 pub mod ml_factor;
+pub mod dl_models;

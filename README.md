@@ -15,8 +15,9 @@ A full-featured quantitative trading system built in **Rust**, targeting the **C
 | 🤖 **Auto-Trading** | Actor model engine (Data → Strategy → Risk → Order) with real-time status |
 | 🔴 **QMT 实盘** | Live trading via QMT (迅投量化) Python bridge — real order placement to broker |
 | 📝 **Paper Trading** | Simulated order execution with commission/stamp tax modeling |
+| 🧠 **DL Model Research** | Curated knowledge base of 11 latest DL factor models + LLM auto-collection |
 | 💬 **LLM Assistant** | OpenAI-compatible AI chat with tool calling for market analysis |
-| 🖥️ **Web UI** | React + TypeScript dashboard: 9 pages for market, backtest, screener, sentiment, auto-trade, chat |
+| 🖥️ **Web UI** | React + TypeScript dashboard: 10 pages for market, backtest, screener, sentiment, DL研究, auto-trade, chat |
 | 🌐 **Web API** | REST + WebSocket API (Axum) with SPA fallback |
 | 💻 **CLI** | Full subcommand CLI with interactive chat REPL |
 | 🛡️ **Risk Management** | T+1, price limits (±10%/±20%), stamp tax, lot sizing, concentration limits |
@@ -33,6 +34,7 @@ quant-trading/
 │   │   ├── indicators.rs           #   SMA, EMA, MACD, RSI, Bollinger, KDJ
 │   │   ├── builtin.rs              #   DualMaCrossover, RsiMeanReversion, MacdMomentum
 │   │   └── screener.rs             #   3-phase stock screening pipeline
+│   │   └── dl_models.rs            #   DL factor model knowledge base + auto-collection
 │   ├── backtest/                   # Backtesting engine with performance report
 │   ├── broker/                     # Order management + execution
 │   │   ├── paper.rs                #   PaperBroker (simulated, auto-fill)
@@ -262,6 +264,9 @@ QMT (迅投量化) integration enables real order placement through your broker.
 | POST | `/api/sentiment/batch` | Batch submit sentiment items |
 | GET | `/api/sentiment/:symbol` | Query sentiment data for a stock |
 | GET | `/api/sentiment/summary` | Global sentiment overview across all stocks |
+| GET | `/api/research/dl-models` | Full DL factor model knowledge base |
+| GET | `/api/research/dl-models/summary` | Knowledge base summary statistics |
+| POST | `/api/research/dl-models/collect` | Auto-collect latest research via LLM |
 
 ## 🖥️ Web UI Pages
 
@@ -276,6 +281,7 @@ QMT (迅投量化) integration enables real order placement through your broker.
 | 智能选股 | `/screener` | Multi-factor scan, strategy votes, LLM analysis |
 | 自动交易 | `/autotrade` | Start/stop engine, mode selector (Paper/QMT), real-time stats |
 | 舆情数据 | `/sentiment` | Sentiment data submission, overview, per-stock analysis |
+| DL模型研究 | `/dl-models` | DL factor model knowledge base, auto-collection, comparison table |
 
 ## 📈 Built-in Strategies
 
@@ -397,10 +403,10 @@ python train_factor_model.py --output factor_model.onnx
 cargo test --release
 
 # Test breakdown:
-# - 27 strategy tests (indicators, screener, multi-factor, sentiment, ml_factor)
+# - 32 strategy tests (indicators, screener, multi-factor, sentiment, ml_factor, dl_models)
 # - 12 broker tests (paper, qmt, engine, orders)
 # - 15 risk tests (checks, rules, position sizing)
-# Total: 54 tests
+# Total: 59 tests
 ```
 
 ## 💬 LLM Tool Calling

@@ -61,6 +61,11 @@ enum Commands {
         #[command(subcommand)]
         action: SentimentAction,
     },
+    /// DL model research (深度学习因子模型研究)
+    Research {
+        #[command(subcommand)]
+        action: ResearchAction,
+    },
     /// Portfolio management
     Portfolio {
         #[command(subcommand)]
@@ -226,6 +231,20 @@ enum SentimentAction {
     },
 }
 
+#[derive(Subcommand)]
+enum ResearchAction {
+    /// List all curated DL factor models
+    List,
+    /// Show summary statistics
+    Summary,
+    /// Auto-collect latest research via LLM
+    Collect {
+        /// Research topic (optional)
+        #[arg(short, long)]
+        topic: Option<String>,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -317,6 +336,17 @@ async fn main() -> anyhow::Result<()> {
             }
             SentimentAction::Query { symbol, limit } => {
                 cmd_sentiment_query(&symbol, limit);
+            }
+        },
+        Commands::Research { action } => match action {
+            ResearchAction::List => {
+                cmd_research_list();
+            }
+            ResearchAction::Summary => {
+                cmd_research_summary();
+            }
+            ResearchAction::Collect { topic } => {
+                cmd_research_collect(&config, topic.as_deref()).await;
             }
         },
         Commands::Portfolio { action } => match action {
@@ -1579,4 +1609,108 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+// ── Research Commands ──────────────────────────────────────────────
+
+fn cmd_research_list() {
+    use quant_strategy::dl_models::build_knowledge_base;
+
+    let kb = build_knowledge_base();
+    println!("🧠 深度学习多因子模型知识库");
+    println!("  更新时间: {}", kb.last_updated);
+    println!();
+
+    for cat in &kb.categories {
+        println!("━━━ {} ━━━", cat.name);
+        println!("  {}", cat.description);
+        println!();
+        for model in &cat.models {
+            println!("  📌 {} ({}, {})", model.name, model.category, model.year);
+            println!("     {}", model.description);
+            println!("     🔬 创新: {}", model.key_innovation);
+            println!("     ✅ 优势: {}", model.strengths.join(" | "));
+            println!("     ⚠️  局限: {}", model.limitations.join(" | "));
+            println!("     📄 {}", model.reference);
+            println!("     🔗 {}", model.reference_url);
+            println!();
+        }
+    }
+
+    let total: usize = kb.categories.iter().map(|c| c.models.len()).sum();
+    println!("📊 共 {} 个类别, {} 个模型", kb.categories.len(), total);
+}
+
+fn cmd_research_summary() {
+    use quant_strategy::dl_models::{build_knowledge_base, summarize_knowledge_base};
+
+    let kb = build_knowledge_base();
+    let summary = summarize_knowledge_base(&kb);
+
+    println!("🧠 DL因子模型知识库概览");
+    println!("  总模型数: {}", summary.total_models);
+    println!("  总类别数: {}", summary.total_categories);
+    println!("  更新时间: {}", summary.last_updated);
+    println!();
+    println!("  {:<20} {:>6}", "类别", "模型数");
+    println!("  {}", "-".repeat(30));
+    for cat in &summary.categories {
+        println!("  {:<20} {:>6}", cat.name, cat.count);
+    }
+}
+
+async fn cmd_research_collect(config: &AppConfig, topic: Option<&str>) {
+    use quant_strategy::dl_models::build_collection_prompt;
+
+    let topic = topic.unwrap_or("量化多因子深度学习模型最新进展");
+    println!("🤖 自动收集研究: {}", topic);
+    println!("  正在调用LLM...");
+
+    let prompt = build_collection_prompt(topic);
+    let llm = LlmClient::new(
+        &config.llm.api_url,
+        &config.llm.api_key,
+        &config.llm.model,
+        config.llm.temperature,
+        config.llm.max_tokens,
+    );
+
+    let messages = vec![
+        quant_llm::client::ChatMessage {
+            role: "user".into(),
+            content: Some(prompt),
+            tool_calls: None,
+            tool_call_id: None,
+        },
+    ];
+
+    match llm.chat(&messages, None).await {
+        Ok(resp) => {
+            let content = resp.choices.first()
+                .and_then(|c| c.message.content.as_ref())
+                .cloned()
+                .unwrap_or_default();
+
+            println!();
+            println!("📰 收集结果:");
+            println!("{}", "-".repeat(60));
+
+            // Try to parse as JSON
+            if let Ok(items) = serde_json::from_str::<Vec<quant_strategy::dl_models::CollectedResearch>>(&content) {
+                for (i, item) in items.iter().enumerate() {
+                    println!("  {}. {} [相关度: {}]", i + 1, item.title, item.relevance);
+                    println!("     来源: {}", item.source);
+                    println!("     {}", item.summary);
+                    println!();
+                }
+                println!("✅ 共收集 {} 条研究", items.len());
+            } else {
+                println!("{}", content);
+            }
+        }
+        Err(e) => {
+            println!("❌ LLM收集失败: {}", e);
+            println!("💡 请确保config/default.toml中的[llm]配置正确");
+        }
+    }
 }
