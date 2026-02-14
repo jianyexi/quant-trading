@@ -56,6 +56,14 @@ fn screen_routes() -> Router<AppState> {
         .route("/factors/:symbol", get(handlers::screen_factors))
 }
 
+fn sentiment_routes() -> Router<AppState> {
+    Router::new()
+        .route("/submit", post(handlers::sentiment_submit))
+        .route("/batch", post(handlers::sentiment_batch_submit))
+        .route("/summary", get(handlers::sentiment_summary))
+        .route("/:symbol", get(handlers::sentiment_query))
+}
+
 pub fn create_router(state: AppState, web_dist: &str) -> Router {
     let api_routes = Router::new()
         .route("/api/health", get(handlers::health))
@@ -68,6 +76,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/chat", chat_routes())
         .nest("/api/trade", trade_routes())
         .nest("/api/screen", screen_routes())
+        .nest("/api/sentiment", sentiment_routes())
         .layer(middleware::from_fn(api_key_auth))
         .with_state(state);
 

@@ -19,6 +19,7 @@ use quant_broker::engine::{EngineConfig, TradingEngine};
 use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy};
 use quant_strategy::indicators::{SMA, RSI};
 use quant_strategy::screener::{ScreenerConfig, StockScreener};
+use quant_strategy::sentiment::{SentimentStore, SentimentAwareStrategy};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -53,6 +54,11 @@ enum Commands {
     Screen {
         #[command(subcommand)]
         action: ScreenAction,
+    },
+    /// Sentiment data operations (舆情数据)
+    Sentiment {
+        #[command(subcommand)]
+        action: SentimentAction,
     },
     /// Portfolio management
     Portfolio {
@@ -188,6 +194,37 @@ enum ScreenAction {
     },
 }
 
+#[derive(Subcommand)]
+enum SentimentAction {
+    /// Submit a sentiment item for a stock
+    Submit {
+        /// Stock symbol (e.g. 600519.SH)
+        #[arg(short, long)]
+        symbol: String,
+        /// Sentiment score (-1.0 to 1.0)
+        #[arg(long)]
+        score: f64,
+        /// Title / headline
+        #[arg(short, long)]
+        title: String,
+        /// Source name
+        #[arg(long, default_value = "manual")]
+        source: String,
+        /// Content / body text
+        #[arg(long, default_value = "")]
+        content: String,
+    },
+    /// Query sentiment data for a stock
+    Query {
+        /// Stock symbol (e.g. 600519.SH)
+        #[arg(short, long)]
+        symbol: String,
+        /// Number of recent items to show
+        #[arg(short = 'n', long, default_value_t = 10)]
+        limit: usize,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -271,6 +308,14 @@ async fn main() -> anyhow::Result<()> {
             }
             ScreenAction::Factors { symbol } => {
                 cmd_screen_factors(&symbol);
+            }
+        },
+        Commands::Sentiment { action } => match action {
+            SentimentAction::Submit { symbol, score, title, source, content } => {
+                cmd_sentiment_submit(&symbol, score, &title, &source, &content);
+            }
+            SentimentAction::Query { symbol, limit } => {
+                cmd_sentiment_query(&symbol, limit);
             }
         },
         Commands::Portfolio { action } => match action {
@@ -426,9 +471,13 @@ fn cmd_backtest_run(strategy: &str, symbol: &str, start: &str, end: &str, capita
         "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
         "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
         "multi_factor" => Box::new(MultiFactorStrategy::with_defaults()),
+        "sentiment_aware" => Box::new(SentimentAwareStrategy::with_defaults(
+            Box::new(MultiFactorStrategy::with_defaults()),
+            SentimentStore::new(),
+        )),
         other => {
             println!("  ❌ Unknown strategy: {other}");
-            println!("  Available: sma_cross, rsi_reversal, macd_trend, multi_factor");
+            println!("  Available: sma_cross, rsi_reversal, macd_trend, multi_factor, sentiment_aware");
             return;
         }
     };
@@ -1020,6 +1069,10 @@ async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, positi
             "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
             "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
             "multi_factor" => Box::new(MultiFactorStrategy::with_defaults()),
+            "sentiment_aware" => Box::new(SentimentAwareStrategy::with_defaults(
+                Box::new(MultiFactorStrategy::with_defaults()),
+                SentimentStore::new(),
+            )),
             _ => Box::new(DualMaCrossover::new(5, 20)),
         }
     }).await;
@@ -1161,6 +1214,10 @@ async fn cmd_trade_qmt(strategy: &str, symbols_str: &str, interval: u64, positio
             "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
             "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
             "multi_factor" => Box::new(MultiFactorStrategy::with_defaults()),
+            "sentiment_aware" => Box::new(SentimentAwareStrategy::with_defaults(
+                Box::new(MultiFactorStrategy::with_defaults()),
+                SentimentStore::new(),
+            )),
             _ => Box::new(DualMaCrossover::new(5, 20)),
         }
     }).await;
@@ -1431,10 +1488,46 @@ async fn run_chat(config: &AppConfig) {
 
 // ── Server ──────────────────────────────────────────────────────────
 
+// ── Sentiment Commands ──────────────────────────────────────────────
+
+fn cmd_sentiment_submit(symbol: &str, score: f64, title: &str, source: &str, content: &str) {
+    let store = SentimentStore::new();
+    let item = store.submit(symbol, source, title, content, score, chrono::Utc::now().naive_utc());
+
+    println!("📰 Sentiment item submitted");
+    println!("  ID:       {}", item.id);
+    println!("  Symbol:   {}", item.symbol);
+    println!("  Source:   {}", item.source);
+    println!("  Title:    {}", item.title);
+    println!("  Score:    {:.2} ({})", item.sentiment_score, item.level());
+    println!("  Time:     {}", item.published_at.format("%Y-%m-%d %H:%M:%S"));
+    println!();
+    println!("  ℹ️  Note: CLI sentiment data is ephemeral. Use the API endpoint");
+    println!("  POST /api/sentiment/submit for persistent storage during server mode.");
+}
+
+fn cmd_sentiment_query(symbol: &str, limit: usize) {
+    println!("📊 Sentiment Query for {symbol}");
+    println!("  ℹ️  CLI can only show data from the running server.");
+    println!("  Use the WebUI or API for full sentiment data.");
+    println!();
+    println!("  To submit sentiment via API:");
+    println!("    curl -X POST http://localhost:8080/api/sentiment/submit \\");
+    println!("      -H 'Content-Type: application/json' \\");
+    println!("      -d '{{\"symbol\":\"{symbol}\",\"source\":\"news\",\"title\":\"...\",\"sentiment_score\":0.5}}'");
+    println!();
+    println!("  To query via API:");
+    println!("    curl http://localhost:8080/api/sentiment/{symbol}?limit={limit}");
+    println!();
+    println!("  To view in WebUI:");
+    println!("    Open http://localhost:8080/sentiment");
+}
+
 async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
     let state = AppState {
         config: config.clone(),
         engine: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+        sentiment_store: quant_strategy::sentiment::SentimentStore::new(),
     };
 
     // Resolve web/dist path — try CWD first, then relative to the executable

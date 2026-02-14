@@ -51,6 +51,71 @@ pub struct StockInfo {
     pub list_date: String,
 }
 
+// ── Sentiment ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SentimentLevel {
+    VeryBullish,
+    Bullish,
+    Neutral,
+    Bearish,
+    VeryBearish,
+}
+
+impl SentimentLevel {
+    pub fn from_score(score: f64) -> Self {
+        if score > 0.6 { Self::VeryBullish }
+        else if score > 0.2 { Self::Bullish }
+        else if score > -0.2 { Self::Neutral }
+        else if score > -0.6 { Self::Bearish }
+        else { Self::VeryBearish }
+    }
+}
+
+impl std::fmt::Display for SentimentLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VeryBullish => write!(f, "非常看多"),
+            Self::Bullish => write!(f, "看多"),
+            Self::Neutral => write!(f, "中性"),
+            Self::Bearish => write!(f, "看空"),
+            Self::VeryBearish => write!(f, "非常看空"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SentimentItem {
+    pub id: Uuid,
+    pub symbol: String,
+    pub source: String,
+    pub title: String,
+    pub content: String,
+    /// Sentiment score in [-1.0, +1.0]: positive = bullish, negative = bearish
+    pub sentiment_score: f64,
+    pub published_at: NaiveDateTime,
+    pub created_at: NaiveDateTime,
+}
+
+impl SentimentItem {
+    pub fn level(&self) -> SentimentLevel {
+        SentimentLevel::from_score(self.sentiment_score)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SentimentSummary {
+    pub symbol: String,
+    pub count: usize,
+    pub avg_score: f64,
+    pub level: SentimentLevel,
+    pub bullish_count: usize,
+    pub bearish_count: usize,
+    pub neutral_count: usize,
+    pub latest_title: String,
+    pub latest_at: Option<NaiveDateTime>,
+}
+
 // ── Trading ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

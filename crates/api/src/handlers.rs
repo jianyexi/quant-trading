@@ -107,6 +107,15 @@ pub async fn list_strategies() -> Json<Value> {
                     {"key": "buy_threshold", "label": "买入阈值", "type": "number", "default": 0.30, "min": 0.1, "max": 0.6},
                     {"key": "sell_threshold", "label": "卖出阈值", "type": "number", "default": -0.30, "min": -0.6, "max": -0.1}
                 ]
+            },
+            {
+                "name": "sentiment_aware",
+                "display_name": "舆情增强策略",
+                "description": "基于舆情数据增强的多因子策略，结合市场情绪调整交易信号强度",
+                "parameters": [
+                    {"key": "sentiment_weight", "label": "舆情权重", "type": "number", "default": 0.20, "min": 0.05, "max": 0.50},
+                    {"key": "min_items", "label": "最少舆情条数", "type": "number", "default": 3, "min": 1, "max": 20}
+                ]
             }
         ]
     }))
@@ -474,11 +483,16 @@ pub async fn trade_start(
         TradingEngine::new(config)
     };
 
+    let sentiment_store = state.sentiment_store.clone();
     engine.start(move || -> Box<dyn quant_core::traits::Strategy> {
         match strat_name.as_str() {
             "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
             "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
             "multi_factor" => Box::new(quant_strategy::builtin::MultiFactorStrategy::with_defaults()),
+            "sentiment_aware" => Box::new(quant_strategy::sentiment::SentimentAwareStrategy::with_defaults(
+                Box::new(quant_strategy::builtin::MultiFactorStrategy::with_defaults()),
+                sentiment_store.clone(),
+            )),
             _ => Box::new(DualMaCrossover::new(5, 20)),
         }
     }).await;
@@ -737,4 +751,152 @@ fn generate_screening_klines(
     }
 
     klines
+}
+
+// ── Sentiment API ──────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SentimentSubmitRequest {
+    pub symbol: String,
+    pub source: String,
+    pub title: String,
+    #[serde(default)]
+    pub content: String,
+    pub sentiment_score: f64,
+    #[serde(default)]
+    pub published_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SentimentQuery {
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub limit: Option<usize>,
+}
+
+pub async fn sentiment_submit(
+    State(state): State<AppState>,
+    Json(req): Json<SentimentSubmitRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if req.symbol.is_empty() || req.title.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "symbol and title are required"})),
+        ));
+    }
+
+    let published = req.published_at
+        .as_ref()
+        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .map(|d| d.and_hms_opt(12, 0, 0).unwrap())
+        .unwrap_or_else(|| chrono::Utc::now().naive_utc());
+
+    let item = state.sentiment_store.submit(
+        &req.symbol,
+        &req.source,
+        &req.title,
+        &req.content,
+        req.sentiment_score,
+        published,
+    );
+
+    Ok(Json(json!({
+        "status": "ok",
+        "item": {
+            "id": item.id.to_string(),
+            "symbol": item.symbol,
+            "source": item.source,
+            "title": item.title,
+            "sentiment_score": item.sentiment_score,
+            "level": format!("{}", item.level()),
+            "published_at": item.published_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+        }
+    })))
+}
+
+pub async fn sentiment_batch_submit(
+    State(state): State<AppState>,
+    Json(items): Json<Vec<SentimentSubmitRequest>>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let mut count = 0;
+    for req in items {
+        if req.symbol.is_empty() || req.title.is_empty() {
+            continue;
+        }
+        let published = req.published_at
+            .as_ref()
+            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+            .map(|d| d.and_hms_opt(12, 0, 0).unwrap())
+            .unwrap_or_else(|| chrono::Utc::now().naive_utc());
+
+        state.sentiment_store.submit(
+            &req.symbol, &req.source, &req.title, &req.content,
+            req.sentiment_score, published,
+        );
+        count += 1;
+    }
+
+    Ok(Json(json!({
+        "status": "ok",
+        "submitted": count,
+        "total": state.sentiment_store.count(),
+    })))
+}
+
+pub async fn sentiment_query(
+    State(state): State<AppState>,
+    Path(symbol): Path<String>,
+    Query(q): Query<SentimentQuery>,
+) -> Json<Value> {
+    let start = q.start.as_ref()
+        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .map(|d| d.and_hms_opt(0, 0, 0).unwrap());
+    let end = q.end.as_ref()
+        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .map(|d| d.and_hms_opt(23, 59, 59).unwrap());
+
+    let items = state.sentiment_store.query_by_symbol(&symbol, start, end, q.limit);
+    let summary = state.sentiment_store.summary(&symbol);
+
+    Json(json!({
+        "symbol": symbol,
+        "summary": {
+            "count": summary.count,
+            "avg_score": summary.avg_score,
+            "level": format!("{}", summary.level),
+            "bullish_count": summary.bullish_count,
+            "bearish_count": summary.bearish_count,
+            "neutral_count": summary.neutral_count,
+        },
+        "items": items.iter().map(|it| json!({
+            "id": it.id.to_string(),
+            "source": it.source,
+            "title": it.title,
+            "content": it.content,
+            "sentiment_score": it.sentiment_score,
+            "level": format!("{}", it.level()),
+            "published_at": it.published_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+pub async fn sentiment_summary(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let summaries = state.sentiment_store.all_summaries();
+
+    Json(json!({
+        "total_items": state.sentiment_store.count(),
+        "symbols": summaries.iter().map(|s| json!({
+            "symbol": s.symbol,
+            "count": s.count,
+            "avg_score": s.avg_score,
+            "level": format!("{}", s.level),
+            "bullish_count": s.bullish_count,
+            "bearish_count": s.bearish_count,
+            "neutral_count": s.neutral_count,
+            "latest_title": s.latest_title,
+            "latest_at": s.latest_at.map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()),
+        })).collect::<Vec<_>>(),
+    }))
 }

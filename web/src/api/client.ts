@@ -184,3 +184,83 @@ export interface QmtBridgeStatus {
 export async function qmtBridgeStatus(): Promise<QmtBridgeStatus> {
   return fetchJson('/trade/qmt/status');
 }
+
+// ── Sentiment API ───────────────────────────────────────────────────
+
+export interface SentimentItem {
+  id: string;
+  source: string;
+  title: string;
+  content: string;
+  sentiment_score: number;
+  level: string;
+  published_at: string;
+}
+
+export interface SentimentSummaryEntry {
+  symbol: string;
+  count: number;
+  avg_score: number;
+  level: string;
+  bullish_count: number;
+  bearish_count: number;
+  neutral_count: number;
+  latest_title: string;
+  latest_at: string | null;
+}
+
+export interface SentimentQueryResult {
+  symbol: string;
+  summary: {
+    count: number;
+    avg_score: number;
+    level: string;
+    bullish_count: number;
+    bearish_count: number;
+    neutral_count: number;
+  };
+  items: SentimentItem[];
+}
+
+export interface SentimentOverview {
+  total_items: number;
+  symbols: SentimentSummaryEntry[];
+}
+
+export async function sentimentSubmit(params: {
+  symbol: string;
+  source: string;
+  title: string;
+  content?: string;
+  sentiment_score: number;
+  published_at?: string;
+}) {
+  return fetchJson('/sentiment/submit', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function sentimentBatchSubmit(items: Array<{
+  symbol: string;
+  source: string;
+  title: string;
+  content?: string;
+  sentiment_score: number;
+  published_at?: string;
+}>) {
+  return fetchJson('/sentiment/batch', {
+    method: 'POST',
+    body: JSON.stringify(items),
+  });
+}
+
+export async function sentimentQuery(symbol: string, limit?: number): Promise<SentimentQueryResult> {
+  const params = new URLSearchParams();
+  if (limit) params.set('limit', String(limit));
+  return fetchJson(`/sentiment/${symbol}?${params}`);
+}
+
+export async function sentimentSummary(): Promise<SentimentOverview> {
+  return fetchJson('/sentiment/summary');
+}

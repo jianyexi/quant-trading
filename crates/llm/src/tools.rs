@@ -110,6 +110,27 @@ impl ToolExecutor {
                 });
                 Ok(result.to_string())
             }
+            "get_sentiment" => {
+                let symbol = args["symbol"].as_str().unwrap_or("unknown");
+                let _recent_n = args["recent_n"].as_u64().unwrap_or(10);
+                // Returns placeholder data; real data is served via the sentiment API.
+                // The LLM chat handler should inject actual sentiment store data here.
+                let result = json!({
+                    "symbol": symbol,
+                    "sentiment_available": true,
+                    "note": "Use /api/sentiment/{symbol} endpoint for real-time sentiment data. This tool provides the interface for LLM analysis.",
+                    "summary": {
+                        "avg_score": 0.0,
+                        "level": "中性",
+                        "count": 0,
+                        "bullish_count": 0,
+                        "bearish_count": 0,
+                        "neutral_count": 0,
+                    },
+                    "recent_items": []
+                });
+                Ok(result.to_string())
+            }
             other => anyhow::bail!("Unknown tool: {}", other),
         }
     }
@@ -286,5 +307,27 @@ pub fn get_all_tools() -> Vec<ToolDefinition> {
         run_backtest_tool(),
         get_portfolio_tool(),
         screen_stocks_tool(),
+        get_sentiment_tool(),
     ]
+}
+
+pub fn get_sentiment_tool() -> ToolDefinition {
+    tool(
+        "get_sentiment",
+        "Get sentiment/news data and analysis for a stock. Returns recent sentiment items, aggregate score, and sentiment level (bullish/bearish/neutral). Use this to understand market sentiment for trading decisions.",
+        json!({
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Stock code, e.g. 600519.SH or 000858.SZ"
+                },
+                "recent_n": {
+                    "type": "integer",
+                    "description": "Number of recent items to return (default: 10)"
+                }
+            },
+            "required": ["symbol"]
+        }),
+    )
 }

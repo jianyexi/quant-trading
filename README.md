@@ -1,6 +1,6 @@
 # Quant Trading System
 
-A full-featured quantitative trading system built in **Rust**, targeting the **Chinese A-share market**. Supports backtesting, paper trading, **QMT 实盘下单** (live trading via 迅投量化), intelligent stock screening, actor-based auto-trading engine, and an integrated **LLM-powered AI assistant** for conversational market analysis.
+A full-featured quantitative trading system built in **Rust**, targeting the **Chinese A-share market**. Supports backtesting, paper trading, **QMT 实盘下单** (live trading via 迅投量化), intelligent stock screening, **sentiment data integration** (舆情数据), actor-based auto-trading engine, and an integrated **LLM-powered AI assistant** for conversational market analysis.
 
 ## ✨ Features
 
@@ -10,11 +10,12 @@ A full-featured quantitative trading system built in **Rust**, targeting the **C
 | 🧪 **Backtesting** | Event-driven engine with Sharpe ratio, max drawdown, win rate, equity curve, trade log |
 | 📈 **Indicators** | SMA, EMA, MACD, RSI, Bollinger Bands, KDJ — all composable |
 | 🔍 **Stock Screener** | 3-phase pipeline: multi-factor scoring → strategy signal voting → LLM analysis |
+| 📰 **Sentiment Data** | Ingest sentiment/news data via API, adjust trading signals based on market mood |
 | 🤖 **Auto-Trading** | Actor model engine (Data → Strategy → Risk → Order) with real-time status |
 | 🔴 **QMT 实盘** | Live trading via QMT (迅投量化) Python bridge — real order placement to broker |
 | 📝 **Paper Trading** | Simulated order execution with commission/stamp tax modeling |
 | 💬 **LLM Assistant** | OpenAI-compatible AI chat with tool calling for market analysis |
-| 🖥️ **Web UI** | React + TypeScript dashboard: 8 pages for market, backtest, screener, auto-trade, chat |
+| 🖥️ **Web UI** | React + TypeScript dashboard: 9 pages for market, backtest, screener, sentiment, auto-trade, chat |
 | 🌐 **Web API** | REST + WebSocket API (Axum) with SPA fallback |
 | 💻 **CLI** | Full subcommand CLI with interactive chat REPL |
 | 🛡️ **Risk Management** | T+1, price limits (±10%/±20%), stamp tax, lot sizing, concentration limits |
@@ -219,6 +220,10 @@ QMT (迅投量化) integration enables real order placement through your broker.
 | GET | `/api/trade/qmt/status` | QMT bridge connection status |
 | POST | `/api/screen/scan` | Run stock screener (multi-factor + voting) |
 | GET | `/api/screen/factors/:symbol` | Factor scores for a single stock |
+| POST | `/api/sentiment/submit` | Submit a single sentiment item |
+| POST | `/api/sentiment/batch` | Batch submit sentiment items |
+| GET | `/api/sentiment/:symbol` | Query sentiment data for a stock |
+| GET | `/api/sentiment/summary` | Global sentiment overview across all stocks |
 
 ## 🖥️ Web UI Pages
 
@@ -232,6 +237,7 @@ QMT (迅投量化) integration enables real order placement through your broker.
 | AI 对话 | `/chat` | LLM-powered market analysis chat |
 | 智能选股 | `/screener` | Multi-factor scan, strategy votes, LLM analysis |
 | 自动交易 | `/autotrade` | Start/stop engine, mode selector (Paper/QMT), real-time stats |
+| 舆情数据 | `/sentiment` | Sentiment data submission, overview, per-stock analysis |
 
 ## 📈 Built-in Strategies
 
@@ -241,6 +247,7 @@ QMT (迅投量化) integration enables real order placement through your broker.
 | **RsiMeanReversion** | Buy oversold, sell overbought | period=14, overbought=70, oversold=30 |
 | **MacdMomentum** | MACD histogram zero-crossing | fast=12, slow=26, signal=9 |
 | **MultiFactorModel** | 6-factor composite scoring with threshold-crossing signals | buy_threshold=0.30, sell_threshold=-0.30 |
+| **SentimentAware** | Multi-factor + sentiment data fusion, adjusts signals based on market mood | sentiment_weight=0.20, min_items=3 |
 
 ### Multi-Factor Model Details
 
@@ -258,6 +265,37 @@ The `MultiFactorModel` strategy computes 6 sub-scores on each bar, weighted into
 - **BUY** when composite crosses above `+0.30`
 - **SELL** when composite crosses below `-0.30`
 - Threshold-crossing prevents repeated signals in the same direction
+
+### Sentiment-Aware Strategy (舆情增强策略)
+
+The `SentimentAware` strategy wraps any base strategy (default: MultiFactorModel) and adjusts trading signals using external sentiment data:
+
+| Scenario | Action |
+|----------|--------|
+| **BUY signal + bullish sentiment** | Boost confidence (stronger buy) |
+| **BUY signal + bearish sentiment (strong)** | Suppress weak buy signals (confidence < 0.3 → skip) |
+| **SELL signal + bearish sentiment** | Boost confidence (stronger sell) |
+| **SELL signal + bullish sentiment (strong)** | Suppress weak sell signals |
+| **No sentiment data** | Pass through base strategy signal unchanged |
+
+**Sentiment data ingestion** via REST API:
+```bash
+# Submit single item
+curl -X POST http://localhost:8080/api/sentiment/submit \
+  -H 'Content-Type: application/json' \
+  -d '{"symbol":"600519.SH","source":"新闻","title":"茅台业绩超预期","sentiment_score":0.7}'
+
+# Batch submit
+curl -X POST http://localhost:8080/api/sentiment/batch \
+  -H 'Content-Type: application/json' \
+  -d '[{"symbol":"600519.SH","source":"研报","title":"..","sentiment_score":0.5}]'
+
+# Query sentiment
+curl http://localhost:8080/api/sentiment/600519.SH?limit=10
+
+# Get overview
+curl http://localhost:8080/api/sentiment/summary
+```
 
 ## 🔍 Stock Screener Factors
 
@@ -286,11 +324,11 @@ The `MultiFactorModel` strategy computes 6 sub-scores on each bar, weighted into
 ## 🧪 Tests
 
 ```bash
-# Run all 41 tests
+# Run all 46 tests
 cargo test --release
 
 # Test breakdown:
-# - 14 strategy tests (indicators, screener, multi-factor model)
+# - 19 strategy tests (indicators, screener, multi-factor model, sentiment)
 # - 12 broker tests (paper, qmt, engine, orders)
 # - 15 risk tests (checks, rules, position sizing)
 ```
