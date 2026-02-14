@@ -48,6 +48,12 @@ fn trade_routes() -> Router<AppState> {
         .route("/status", get(handlers::trade_status))
 }
 
+fn screen_routes() -> Router<AppState> {
+    Router::new()
+        .route("/scan", post(handlers::screen_scan))
+        .route("/factors/:symbol", get(handlers::screen_factors))
+}
+
 pub fn create_router(state: AppState, web_dist: &str) -> Router {
     let api_routes = Router::new()
         .route("/api/health", get(handlers::health))
@@ -59,6 +65,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/portfolio", portfolio_routes())
         .nest("/api/chat", chat_routes())
         .nest("/api/trade", trade_routes())
+        .nest("/api/screen", screen_routes())
         .layer(middleware::from_fn(api_key_auth))
         .with_state(state);
 

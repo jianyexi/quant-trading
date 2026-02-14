@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 
@@ -17,6 +18,7 @@ use quant_llm::{
 use quant_broker::engine::{EngineConfig, TradingEngine};
 use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum};
 use quant_strategy::indicators::{SMA, RSI};
+use quant_strategy::screener::{ScreenerConfig, StockScreener};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -46,6 +48,11 @@ enum Commands {
     Trade {
         #[command(subcommand)]
         action: TradeAction,
+    },
+    /// Stock screening / selection
+    Screen {
+        #[command(subcommand)]
+        action: ScreenAction,
     },
     /// Portfolio management
     Portfolio {
@@ -148,6 +155,28 @@ enum PortfolioAction {
     Show,
 }
 
+#[derive(Subcommand)]
+enum ScreenAction {
+    /// Scan all stocks and find top candidates (full pipeline)
+    Scan {
+        /// Number of top recommendations
+        #[arg(short = 'n', long, default_value_t = 10)]
+        top: usize,
+        /// Minimum strategy consensus votes (1-3)
+        #[arg(long, default_value_t = 2)]
+        min_votes: u32,
+        /// Include LLM analysis (requires API key)
+        #[arg(long)]
+        llm: bool,
+    },
+    /// Show factor scores for a specific stock
+    Factors {
+        /// Stock symbol
+        #[arg(short, long)]
+        symbol: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -222,6 +251,14 @@ async fn main() -> anyhow::Result<()> {
                 println!("🚀 Live trading with strategy: {strategy}");
                 println!("  ⚠️  Live trading requires broker API configuration.");
                 println!("  Configure your broker connection in config/default.toml first.");
+            }
+        },
+        Commands::Screen { action } => match action {
+            ScreenAction::Scan { top, min_votes, llm } => {
+                cmd_screen_scan(top, min_votes, llm, &config).await;
+            }
+            ScreenAction::Factors { symbol } => {
+                cmd_screen_factors(&symbol);
             }
         },
         Commands::Portfolio { action } => match action {
@@ -568,6 +605,277 @@ fn generate_realistic_klines(symbol: &str, start: NaiveDate, end: NaiveDate) -> 
     }
 
     klines
+}
+
+// ── Screener Commands ────────────────────────────────────────────────
+
+/// Full stock pool for screening
+fn get_stock_pool() -> Vec<(&'static str, &'static str, f64)> {
+    vec![
+        // 沪深300权重股
+        ("600519.SH", "贵州茅台", 1700.0),
+        ("000858.SZ", "五粮液", 150.0),
+        ("601318.SH", "中国平安", 48.0),
+        ("000001.SZ", "平安银行", 11.5),
+        ("600036.SH", "招商银行", 34.0),
+        ("300750.SZ", "宁德时代", 195.0),
+        ("600276.SH", "恒瑞医药", 45.0),
+        ("000333.SZ", "美的集团", 60.0),
+        ("601888.SH", "中国中免", 85.0),
+        ("002594.SZ", "比亚迪", 230.0),
+        // 更多成分股
+        ("601012.SH", "隆基绿能", 22.0),
+        ("600900.SH", "长江电力", 28.0),
+        ("000568.SZ", "泸州老窖", 185.0),
+        ("600809.SH", "山西汾酒", 220.0),
+        ("002475.SZ", "立讯精密", 32.0),
+        ("600030.SH", "中信证券", 20.0),
+        ("601166.SH", "兴业银行", 17.0),
+        ("000661.SZ", "长春高新", 165.0),
+        ("002714.SZ", "牧原股份", 42.0),
+        ("600585.SH", "海螺水泥", 26.0),
+        ("000725.SZ", "京东方A", 4.5),
+        ("601398.SH", "工商银行", 5.8),
+        ("600000.SH", "浦发银行", 8.2),
+        ("002304.SZ", "洋河股份", 88.0),
+        ("300059.SZ", "东方财富", 16.0),
+        ("603259.SH", "药明康德", 52.0),
+        ("000002.SZ", "万科A", 8.5),
+        ("600887.SH", "伊利股份", 30.0),
+        ("601899.SH", "紫金矿业", 14.0),
+        ("002352.SZ", "顺丰控股", 38.0),
+    ]
+}
+
+async fn cmd_screen_scan(top: usize, min_votes: u32, use_llm: bool, config: &AppConfig) {
+    println!("🔍 Stock Screener — 自动选股系统");
+    println!("  ═══════════════════════════════════════════════════════════════");
+    println!("  Phase 1: 多因子评分 (动量/趋势/RSI/MACD/波动率/成交量)");
+    println!("  Phase 2: 策略信号聚合 (SMA交叉/RSI反转/MACD动量 投票)");
+    if use_llm {
+        println!("  Phase 3: LLM智能分析 (AI综合研判)");
+    }
+    println!("  Top N: {},  最低共识: {}/3 策略", top, min_votes);
+    println!("  ═══════════════════════════════════════════════════════════════");
+    println!();
+
+    let pool = get_stock_pool();
+    let total = pool.len();
+
+    // Generate 60-day kline data for each stock
+    println!("  📦 Phase 0: 加载行情数据 ({} 只股票)...", total);
+    let end_date = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
+    let start_date = end_date - chrono::Duration::days(120); // ~60 trading days
+
+    let mut stock_data: HashMap<String, (String, Vec<Kline>)> = HashMap::new();
+    for (symbol, name, _price) in &pool {
+        let klines = generate_realistic_klines(symbol, start_date, end_date);
+        if !klines.is_empty() {
+            stock_data.insert(symbol.to_string(), (name.to_string(), klines));
+        }
+    }
+    println!("  ✅ 加载完成: {} 只股票, 每只 ~60 根日线", stock_data.len());
+    println!();
+
+    // Run screener
+    println!("  🔄 Phase 1: 多因子评分...");
+    let screener_config = ScreenerConfig {
+        top_n: top,
+        phase1_cutoff: 20,
+        min_consensus: min_votes,
+        ..ScreenerConfig::default()
+    };
+    let screener = StockScreener::new(screener_config);
+    let result = screener.screen(&stock_data);
+
+    println!("  ✅ 扫描 {} 只 → Phase 1 通过 {} 只 → Phase 2 通过 {} 只",
+        result.total_scanned, result.phase1_passed, result.phase2_passed);
+    println!();
+
+    if result.candidates.is_empty() {
+        println!("  ⚠️  没有找到满足条件的股票。尝试降低 --min-votes 参数。");
+        return;
+    }
+
+    // Display results
+    println!("  ═══════════════════════════════════════════════════════════════════════════════════");
+    println!("  🏆 Top {} 推荐股票", result.candidates.len());
+    println!("  ═══════════════════════════════════════════════════════════════════════════════════");
+    println!();
+    println!("  {:<4} {:<12} {:<10} {:>8} {:>8} {:>8} {:>6} {:>8} {:<8}",
+        "排名", "代码", "名称", "价格", "因子分", "综合分", "投票", "RSI", "推荐");
+    println!("  {}", "─".repeat(82));
+
+    for (i, c) in result.candidates.iter().enumerate() {
+        let vote_str = format!("{}/3", c.strategy_vote.consensus_count);
+        println!("  {:<4} {:<12} {:<10} {:>8.2} {:>8.1} {:>8.1} {:>6} {:>8.1} {:<8}",
+            i + 1,
+            c.symbol,
+            c.name,
+            c.price,
+            c.factor_score,
+            c.composite_score,
+            vote_str,
+            c.factors.rsi_14,
+            c.recommendation);
+    }
+
+    // Detailed analysis for each candidate
+    println!();
+    println!("  ═══════════════════════════════════════════════════════════════════════════════════");
+    println!("  📊 详细分析");
+    println!("  ═══════════════════════════════════════════════════════════════════════════════════");
+
+    for (i, c) in result.candidates.iter().enumerate() {
+        println!();
+        println!("  ┌─ #{} {} {} ── ¥{:.2} ── {} ──────────────", i + 1, c.symbol, c.name, c.price, c.recommendation);
+        println!("  │ 技术指标:");
+        println!("  │   5日涨幅: {:>+7.2}%   20日涨幅: {:>+7.2}%   RSI(14): {:.1}",
+            c.factors.momentum_5d * 100.0, c.factors.momentum_20d * 100.0, c.factors.rsi_14);
+        println!("  │   MACD柱: {:>+8.4}   布林位置: {:.2}       KDJ J值: {:.1}",
+            c.factors.macd_histogram, c.factors.bollinger_position, c.factors.kdj_j);
+        println!("  │   MA趋势: {:>+8.4}   成交量比: {:.2}x      波动率: {:.1}%",
+            c.factors.ma_trend, c.factors.volume_ratio, c.factors.volatility_20d * 100.0);
+        println!("  │ 策略投票:");
+        println!("  │   SMA交叉: {}   RSI反转: {}   MACD动量: {}",
+            format_vote(&c.strategy_vote.sma_cross),
+            format_vote(&c.strategy_vote.rsi_reversal),
+            format_vote(&c.strategy_vote.macd_trend));
+        println!("  │ 推荐理由:");
+        for reason in &c.reasons {
+            println!("  │   ✦ {}", reason);
+        }
+        println!("  └──────────────────────────────────────────────────────────────");
+    }
+
+    // Phase 3: LLM analysis (optional)
+    if use_llm && !config.llm.api_key.is_empty() {
+        println!();
+        println!("  🤖 Phase 3: LLM 智能分析...");
+        let prompt = screener.generate_llm_prompt(&result.candidates);
+
+        let client = LlmClient::new(
+            &config.llm.api_url,
+            &config.llm.api_key,
+            &config.llm.model,
+            config.llm.temperature,
+            config.llm.max_tokens,
+        );
+
+        let messages = vec![quant_llm::client::ChatMessage {
+            role: "user".to_string(),
+            content: Some(prompt),
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+
+        match client.chat(&messages, None).await {
+            Ok(resp) => {
+                if let Some(choice) = resp.choices.first() {
+                    if let Some(content) = &choice.message.content {
+                        println!();
+                        println!("  ═══════════════════════════════════════════════════════════════");
+                        println!("  🤖 AI 分析报告");
+                        println!("  ═══════════════════════════════════════════════════════════════");
+                        for line in content.lines() {
+                            println!("  {}", line);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  ⚠️  LLM 分析失败: {e}");
+            }
+        }
+    } else if use_llm {
+        println!();
+        println!("  ⚠️  LLM 分析需要在 config/default.toml 中配置 api_key");
+    }
+}
+
+fn format_vote(vote: &quant_strategy::screener::VoteResult) -> String {
+    match vote {
+        quant_strategy::screener::VoteResult::Buy(c) => format!("🟢买入({:.3})", c),
+        quant_strategy::screener::VoteResult::Sell(c) => format!("🔴卖出({:.3})", c),
+        quant_strategy::screener::VoteResult::Neutral => "⚪中性".to_string(),
+    }
+}
+
+fn cmd_screen_factors(symbol: &str) {
+    println!("📊 因子分析: {symbol}");
+    println!();
+
+    let end_date = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
+    let start_date = end_date - chrono::Duration::days(120);
+    let klines = generate_realistic_klines(symbol, start_date, end_date);
+
+    if klines.len() < 30 {
+        println!("  ❌ 数据不足 (需要至少30根K线)");
+        return;
+    }
+
+    // Use the screen method to also get strategy votes
+    let mut stock_data: HashMap<String, (String, Vec<Kline>)> = HashMap::new();
+    let name = match symbol {
+        "600519.SH" => "贵州茅台",
+        "000858.SZ" => "五粮液",
+        "601318.SH" => "中国平安",
+        "000001.SZ" => "平安银行",
+        "600036.SH" => "招商银行",
+        "300750.SZ" => "宁德时代",
+        _ => "未知",
+    };
+    stock_data.insert(symbol.to_string(), (name.to_string(), klines));
+
+    let config_1vote = ScreenerConfig {
+        top_n: 1,
+        phase1_cutoff: 1,
+        min_consensus: 0,
+        ..ScreenerConfig::default()
+    };
+    let screener_1 = StockScreener::new(config_1vote);
+    let result = screener_1.screen(&stock_data);
+
+    if let Some(c) = result.candidates.first() {
+        println!("  ═══════════════════════════════════════════════════════════════");
+        println!("  {} {} ── ¥{:.2}", c.symbol, c.name, c.price);
+        println!("  ═══════════════════════════════════════════════════════════════");
+        println!();
+        println!("  📈 动量因子:");
+        println!("    5日涨幅:    {:>+8.2}%", c.factors.momentum_5d * 100.0);
+        println!("    20日涨幅:   {:>+8.2}%", c.factors.momentum_20d * 100.0);
+        println!();
+        println!("  📊 趋势因子:");
+        println!("    MA趋势:     {:>+8.4}  (MA5-MA20)/MA20", c.factors.ma_trend);
+        println!("    MACD柱:     {:>+8.4}", c.factors.macd_histogram);
+        println!();
+        println!("  🔄 均值回归:");
+        println!("    RSI(14):    {:>8.1}", c.factors.rsi_14);
+        println!("    布林位置:   {:>8.2}  (0=下轨, 0.5=中轨, 1=上轨)", c.factors.bollinger_position);
+        println!("    KDJ J值:   {:>8.1}", c.factors.kdj_j);
+        println!();
+        println!("  📦 量价因子:");
+        println!("    成交量比:   {:>8.2}x  (5日均量/20日均量)", c.factors.volume_ratio);
+        println!();
+        println!("  ⚡ 波动率:");
+        println!("    20日年化:   {:>8.1}%", c.factors.volatility_20d * 100.0);
+        println!();
+        println!("  🎯 综合评分:  {:.1} / 100", c.factor_score);
+        println!();
+        println!("  📡 策略信号:");
+        println!("    SMA交叉(5/20):    {}", format_vote(&c.strategy_vote.sma_cross));
+        println!("    RSI反转(14):      {}", format_vote(&c.strategy_vote.rsi_reversal));
+        println!("    MACD动量(12/26):  {}", format_vote(&c.strategy_vote.macd_trend));
+        println!("    策略共识:         {}/3", c.strategy_vote.consensus_count);
+        println!();
+        println!("  💡 推荐: {}", c.recommendation);
+        for reason in &c.reasons {
+            println!("    ✦ {}", reason);
+        }
+        println!("  ═══════════════════════════════════════════════════════════════");
+    } else {
+        println!("  ❌ 无法计算因子 (数据不足或处理错误)");
+    }
 }
 
 fn cmd_backtest_report(id: &str) {

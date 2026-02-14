@@ -3,10 +3,11 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use chrono::Datelike;
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use quant_core::models::Kline;
 use crate::state::AppState;
 
 // ── Query Parameters ────────────────────────────────────────────────
@@ -489,4 +490,187 @@ pub async fn trade_status(
             "recent_trades": []
         }))
     }
+}
+
+// ── Screener Handlers ───────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct ScreenRequest {
+    pub top_n: Option<usize>,
+    pub min_votes: Option<u32>,
+}
+
+pub async fn screen_scan(
+    State(_state): State<AppState>,
+    Json(req): Json<ScreenRequest>,
+) -> Json<Value> {
+    use std::collections::HashMap;
+    use quant_strategy::screener::{ScreenerConfig, StockScreener};
+
+    let top_n = req.top_n.unwrap_or(10);
+    let min_votes = req.min_votes.unwrap_or(2);
+
+    let stocks: Vec<(&str, &str, f64)> = vec![
+        ("600519.SH", "贵州茅台", 1700.0),
+        ("000858.SZ", "五粮液", 150.0),
+        ("601318.SH", "中国平安", 48.0),
+        ("000001.SZ", "平安银行", 11.5),
+        ("600036.SH", "招商银行", 34.0),
+        ("300750.SZ", "宁德时代", 195.0),
+        ("600276.SH", "恒瑞医药", 45.0),
+        ("000333.SZ", "美的集团", 60.0),
+        ("601888.SH", "中国中免", 85.0),
+        ("002594.SZ", "比亚迪", 230.0),
+        ("601012.SH", "隆基绿能", 22.0),
+        ("600900.SH", "长江电力", 28.0),
+        ("000568.SZ", "泸州老窖", 185.0),
+        ("600809.SH", "山西汾酒", 220.0),
+        ("002475.SZ", "立讯精密", 32.0),
+        ("600030.SH", "中信证券", 20.0),
+        ("601166.SH", "兴业银行", 17.0),
+        ("000661.SZ", "长春高新", 165.0),
+        ("002714.SZ", "牧原股份", 42.0),
+        ("600585.SH", "海螺水泥", 26.0),
+    ];
+
+    let end_date = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
+    let start_date = end_date - chrono::Duration::days(120);
+
+    let mut stock_data: HashMap<String, (String, Vec<Kline>)> = HashMap::new();
+    for (symbol, name, base_price) in &stocks {
+        let klines = generate_screening_klines(symbol, name, *base_price, start_date, end_date);
+        stock_data.insert(symbol.to_string(), (name.to_string(), klines));
+    }
+
+    let config = ScreenerConfig {
+        top_n,
+        phase1_cutoff: 20,
+        min_consensus: min_votes,
+        ..ScreenerConfig::default()
+    };
+
+    let screener = StockScreener::new(config);
+    let result = screener.screen(&stock_data);
+
+    Json(json!(result))
+}
+
+pub async fn screen_factors(
+    State(_state): State<AppState>,
+    Path(symbol): Path<String>,
+) -> Json<Value> {
+    use std::collections::HashMap;
+    use quant_strategy::screener::{ScreenerConfig, StockScreener};
+
+    let (name, base_price) = match symbol.as_str() {
+        "600519.SH" => ("贵州茅台", 1700.0),
+        "000858.SZ" => ("五粮液", 150.0),
+        "601318.SH" => ("中国平安", 48.0),
+        "000001.SZ" => ("平安银行", 11.5),
+        "600036.SH" => ("招商银行", 34.0),
+        "300750.SZ" => ("宁德时代", 195.0),
+        _ => ("未知", 100.0),
+    };
+
+    let end_date = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
+    let start_date = end_date - chrono::Duration::days(120);
+    let klines = generate_screening_klines(&symbol, name, base_price, start_date, end_date);
+
+    let mut stock_data: HashMap<String, (String, Vec<Kline>)> = HashMap::new();
+    stock_data.insert(symbol.clone(), (name.to_string(), klines));
+
+    let config = ScreenerConfig {
+        top_n: 1,
+        phase1_cutoff: 1,
+        min_consensus: 0,
+        ..ScreenerConfig::default()
+    };
+
+    let screener = StockScreener::new(config);
+    let result = screener.screen(&stock_data);
+
+    if let Some(c) = result.candidates.first() {
+        Json(json!(c))
+    } else {
+        Json(json!({"error": "No data for symbol", "symbol": symbol}))
+    }
+}
+
+/// Generate kline data for API screening
+fn generate_screening_klines(
+    symbol: &str,
+    _name: &str,
+    base_price: f64,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Vec<Kline> {
+    use chrono::Datelike;
+
+    let mut klines = Vec::new();
+    let mut current = start;
+    let daily_vol = 0.015;
+    let amplitude = 0.15;
+
+    let seed: u64 = symbol.bytes().fold(42u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    let mut rng_state = seed;
+
+    let total_days = {
+        let mut d = start;
+        let mut count = 0;
+        while d <= end {
+            if d.weekday() != chrono::Weekday::Sat && d.weekday() != chrono::Weekday::Sun {
+                count += 1;
+            }
+            d += chrono::Duration::days(1);
+        }
+        count as f64
+    };
+
+    let mut bar_idx: f64 = 0.0;
+    let mut close = base_price;
+
+    while current <= end {
+        if current.weekday() == chrono::Weekday::Sat || current.weekday() == chrono::Weekday::Sun {
+            current += chrono::Duration::days(1);
+            continue;
+        }
+
+        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let r1 = ((rng_state >> 33) as f64) / (u32::MAX as f64) - 0.5;
+        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let r2 = ((rng_state >> 33) as f64) / (u32::MAX as f64) - 0.5;
+        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let r3 = ((rng_state >> 33) as f64) / (u32::MAX as f64);
+
+        let t = bar_idx / total_days;
+        let cycle1 = (t * std::f64::consts::PI * 6.0).sin();
+        let cycle2 = (t * std::f64::consts::PI * 14.0).sin();
+        let cycle3 = (t * std::f64::consts::PI * 2.0).sin();
+        let target = base_price * (1.0 + amplitude * (0.5 * cycle1 + 0.3 * cycle2 + 0.2 * cycle3));
+
+        let pull = 0.03 * (target - close) / close;
+        let noise = daily_vol * r1 * 2.0;
+        let daily_return = pull + noise;
+
+        let open = close;
+        close = open * (1.0 + daily_return);
+
+        let intra = open.abs() * daily_vol * (0.3 + r3 * 0.5);
+        let high = open.max(close) + intra * (0.3 + r2.abs());
+        let low = (open.min(close) - intra * (0.3 + (0.5 - r2).abs())).max(open.min(close) * 0.95);
+
+        let base_vol = if base_price > 500.0 { 5e6 } else if base_price > 50.0 { 20e6 } else { 60e6 };
+        let volume = base_vol * (0.6 + r3 * 0.8) * (1.0 + daily_return.abs() * 15.0);
+
+        klines.push(Kline {
+            symbol: symbol.to_string(),
+            datetime: current.and_hms_opt(15, 0, 0).unwrap(),
+            open, high, low, close, volume,
+        });
+
+        bar_idx += 1.0;
+        current += chrono::Duration::days(1);
+    }
+
+    klines
 }
