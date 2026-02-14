@@ -134,6 +134,9 @@ quant serve
 # Run backtest (CSI 300 stock with SMA strategy)
 quant backtest run --strategy sma_cross --symbol 600519.SH --start 2024-01-01 --end 2024-12-31
 
+# Multi-factor model backtest
+quant backtest run --strategy multi_factor --symbol 600519.SH --start 2024-01-01 --end 2024-12-31
+
 # Paper trading (quick simulation)
 quant trade paper --strategy sma_cross --symbol 600519.SH
 
@@ -237,6 +240,24 @@ QMT (迅投量化) integration enables real order placement through your broker.
 | **DualMaCrossover** | Golden/death cross on two moving averages | fast=5, slow=20 |
 | **RsiMeanReversion** | Buy oversold, sell overbought | period=14, overbought=70, oversold=30 |
 | **MacdMomentum** | MACD histogram zero-crossing | fast=12, slow=26, signal=9 |
+| **MultiFactorModel** | 6-factor composite scoring with threshold-crossing signals | buy_threshold=0.30, sell_threshold=-0.30 |
+
+### Multi-Factor Model Details
+
+The `MultiFactorModel` strategy computes 6 sub-scores on each bar, weighted into a composite signal in [-1, +1]:
+
+| Factor | Weight | Indicators | Signal |
+|--------|--------|------------|--------|
+| **Trend** | 25% | SMA(5/20) cross + EMA(10) slope | Fast > Slow → bullish |
+| **Momentum** | 25% | RSI(14) + MACD(12/26/9) histogram | RSI > 50 + rising MACD → bullish |
+| **Volatility** | 15% | Bollinger Bands(20, 2σ) %B | Near lower band → buy, upper → sell |
+| **Oscillator** | 15% | KDJ(9,3,3) K/D cross + J extreme | Golden cross + J<20 → buy |
+| **Volume** | 10% | Volume MA(5) / MA(20) × price direction | High vol + price up → bullish |
+| **Price Action** | 10% | Close position in 20-day H/L range | Breakout → bullish, breakdown → bearish |
+
+- **BUY** when composite crosses above `+0.30`
+- **SELL** when composite crosses below `-0.30`
+- Threshold-crossing prevents repeated signals in the same direction
 
 ## 🔍 Stock Screener Factors
 
@@ -265,13 +286,13 @@ QMT (迅投量化) integration enables real order placement through your broker.
 ## 🧪 Tests
 
 ```bash
-# Run all 37 tests
+# Run all 41 tests
 cargo test --release
 
 # Test breakdown:
+# - 14 strategy tests (indicators, screener, multi-factor model)
 # - 12 broker tests (paper, qmt, engine, orders)
 # - 15 risk tests (checks, rules, position sizing)
-# - 10 strategy tests (indicators, screener)
 ```
 
 ## 💬 LLM Tool Calling

@@ -98,6 +98,15 @@ pub async fn list_strategies() -> Json<Value> {
                 "parameters": [
                     {"key": "lookback", "label": "Lookback Period", "type": "number", "default": 60, "min": 20, "max": 120}
                 ]
+            },
+            {
+                "name": "multi_factor",
+                "display_name": "多因子模型",
+                "description": "6因子综合评分策略: 趋势+动量+波动率+KDJ+量价+价格行为",
+                "parameters": [
+                    {"key": "buy_threshold", "label": "买入阈值", "type": "number", "default": 0.30, "min": 0.1, "max": 0.6},
+                    {"key": "sell_threshold", "label": "卖出阈值", "type": "number", "default": -0.30, "min": -0.6, "max": -0.1}
+                ]
             }
         ]
     }))
@@ -469,6 +478,7 @@ pub async fn trade_start(
         match strat_name.as_str() {
             "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
             "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
+            "multi_factor" => Box::new(quant_strategy::builtin::MultiFactorStrategy::with_defaults()),
             _ => Box::new(DualMaCrossover::new(5, 20)),
         }
     }).await;

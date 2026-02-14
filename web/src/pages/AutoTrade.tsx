@@ -6,6 +6,7 @@ const STRATEGIES = [
   { value: 'sma_cross', label: 'SMA 交叉 (5/20)', desc: '双均线金叉/死叉' },
   { value: 'rsi_reversal', label: 'RSI 反转 (14)', desc: '超买超卖反转' },
   { value: 'macd_trend', label: 'MACD 动量 (12/26/9)', desc: 'MACD柱状图交叉' },
+  { value: 'multi_factor', label: '多因子模型', desc: '6因子综合评分 (趋势+动量+波动+KDJ+量价+价格行为)' },
 ];
 
 const STOCK_PRESETS = [

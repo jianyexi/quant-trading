@@ -16,7 +16,7 @@ use quant_llm::{
     tools::{get_all_tools, ToolExecutor},
 };
 use quant_broker::engine::{EngineConfig, TradingEngine};
-use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum};
+use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy};
 use quant_strategy::indicators::{SMA, RSI};
 use quant_strategy::screener::{ScreenerConfig, StockScreener};
 use tracing_subscriber::EnvFilter;
@@ -425,9 +425,10 @@ fn cmd_backtest_run(strategy: &str, symbol: &str, start: &str, end: &str, capita
         "sma_cross" => Box::new(DualMaCrossover::new(5, 20)),
         "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
         "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
+        "multi_factor" => Box::new(MultiFactorStrategy::with_defaults()),
         other => {
             println!("  ❌ Unknown strategy: {other}");
-            println!("  Available: sma_cross, rsi_reversal, macd_trend");
+            println!("  Available: sma_cross, rsi_reversal, macd_trend, multi_factor");
             return;
         }
     };
@@ -988,7 +989,7 @@ async fn cmd_trade_paper(strategy: &str, symbol: &str, config: &AppConfig) {
 // ── Auto Trading Command ────────────────────────────────────────────
 
 async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, position_size: f64, config: &AppConfig) {
-    use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum};
+    use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy};
 
     let symbols: Vec<String> = symbols_str.split(',').map(|s| s.trim().to_string()).collect();
 
@@ -1018,6 +1019,7 @@ async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, positi
         match strategy_name.as_str() {
             "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
             "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
+            "multi_factor" => Box::new(MultiFactorStrategy::with_defaults()),
             _ => Box::new(DualMaCrossover::new(5, 20)),
         }
     }).await;
@@ -1158,6 +1160,7 @@ async fn cmd_trade_qmt(strategy: &str, symbols_str: &str, interval: u64, positio
         match strategy_name.as_str() {
             "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
             "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
+            "multi_factor" => Box::new(MultiFactorStrategy::with_defaults()),
             _ => Box::new(DualMaCrossover::new(5, 20)),
         }
     }).await;
