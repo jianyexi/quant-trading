@@ -291,39 +291,118 @@ pub async fn list_stocks() -> Json<Value> {
 
 // ── Backtest Handlers ───────────────────────────────────────────────
 
+/// Stock-specific parameters for realistic price simulation
+struct StockParams {
+    base_price: f64,       // Starting price (yuan)
+    annual_drift: f64,     // Annual expected return (e.g. 0.05 = +5%/yr)
+    annual_vol: f64,       // Annual volatility (e.g. 0.25 = 25%)
+    avg_volume: f64,       // Average daily volume
+    volume_vol: f64,       // Volume variability factor (0-1)
+}
+
+fn stock_params(symbol: &str) -> StockParams {
+    match symbol {
+        // 贵州茅台: ~1500 yuan, low vol blue-chip
+        "600519.SH" => StockParams { base_price: 1500.0, annual_drift: -0.05, annual_vol: 0.22, avg_volume: 3_500_000.0, volume_vol: 0.4 },
+        // 五粮液: ~108 yuan
+        "000858.SZ" => StockParams { base_price: 115.0, annual_drift: -0.08, annual_vol: 0.28, avg_volume: 8_000_000.0, volume_vol: 0.5 },
+        // 中国平安: ~40 yuan
+        "601318.SH" => StockParams { base_price: 42.0, annual_drift: 0.02, annual_vol: 0.25, avg_volume: 15_000_000.0, volume_vol: 0.45 },
+        // 平安银行: ~11 yuan
+        "000001.SZ" => StockParams { base_price: 11.5, annual_drift: -0.03, annual_vol: 0.22, avg_volume: 25_000_000.0, volume_vol: 0.5 },
+        // 招商银行: ~35 yuan
+        "600036.SH" => StockParams { base_price: 35.0, annual_drift: 0.04, annual_vol: 0.20, avg_volume: 12_000_000.0, volume_vol: 0.4 },
+        // 宁德时代: ~200 yuan, higher vol growth stock
+        "300750.SZ" => StockParams { base_price: 195.0, annual_drift: 0.0, annual_vol: 0.35, avg_volume: 6_000_000.0, volume_vol: 0.55 },
+        // 恒瑞医药: ~48 yuan
+        "600276.SH" => StockParams { base_price: 48.0, annual_drift: 0.03, annual_vol: 0.28, avg_volume: 10_000_000.0, volume_vol: 0.45 },
+        _ => StockParams { base_price: 50.0, annual_drift: 0.0, annual_vol: 0.25, avg_volume: 5_000_000.0, volume_vol: 0.5 },
+    }
+}
+
+/// Simple deterministic PRNG (xorshift64) for reproducible simulation
+struct Rng(u64);
+impl Rng {
+    fn new(seed: u64) -> Self { Self(seed.wrapping_add(0x9E3779B97F4A7C15)) }
+    fn next_u64(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    /// Approximate standard normal via Box-Muller
+    fn next_normal(&mut self) -> f64 {
+        let u1 = (self.next_u64() as f64) / (u64::MAX as f64);
+        let u2 = (self.next_u64() as f64) / (u64::MAX as f64);
+        let u1 = u1.max(1e-15); // avoid log(0)
+        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+    }
+    /// Uniform [0,1)
+    fn next_f64(&mut self) -> f64 {
+        (self.next_u64() as f64) / (u64::MAX as f64)
+    }
+}
+
+/// Generate realistic klines using Geometric Brownian Motion.
+/// Prices follow: dS = μ·S·dt + σ·S·dW  (daily discretization)
+/// Intraday OHLC is simulated from open→close with high/low excursions.
 fn generate_backtest_klines(symbol: &str, start: &str, end: &str) -> Vec<Kline> {
     let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d")
         .unwrap_or_else(|_| NaiveDate::from_ymd_opt(2024, 1, 1).unwrap());
     let end_date = NaiveDate::parse_from_str(end, "%Y-%m-%d")
         .unwrap_or_else(|_| NaiveDate::from_ymd_opt(2024, 12, 31).unwrap());
 
-    let base_price = match symbol {
-        "600519.SH" => 1650.0,
-        "000858.SZ" => 148.0,
-        "601318.SH" => 52.0,
-        "000001.SZ" => 12.5,
-        "600036.SH" => 35.0,
-        "300750.SZ" => 220.0,
-        "600276.SH" => 28.0,
-        _ => 100.0,
-    };
+    let params = stock_params(symbol);
+    let dt = 1.0 / 252.0; // One trading day
+    let daily_drift = (params.annual_drift - 0.5 * params.annual_vol.powi(2)) * dt;
+    let daily_vol = params.annual_vol * dt.sqrt();
+
+    // Deterministic seed from symbol hash so same symbol always produces same path
+    let seed: u64 = symbol.bytes().fold(42u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    let mut rng = Rng::new(seed);
 
     let mut klines = Vec::new();
-    let mut price = base_price;
+    let mut price = params.base_price;
     let mut date = start_date;
 
+    // A-share: ±10% daily limit (±20% for 创业板 300xxx)
+    let limit_pct = if symbol.starts_with("300") { 0.20 } else { 0.10 };
+
     while date <= end_date {
+        // Skip weekends
         if date.weekday() == chrono::Weekday::Sat || date.weekday() == chrono::Weekday::Sun {
             date += chrono::Duration::days(1);
             continue;
         }
-        let i = klines.len() as f64;
-        let change = ((i * 7.3 + 13.7).sin() * 0.02 + (i * 3.1).cos() * 0.008) * price;
+
         let open = price;
-        let close = price + change;
-        let high = open.max(close) + ((i * 5.1).sin().abs()) * 0.005 * price;
-        let low = open.min(close) - ((i * 4.3).cos().abs()) * 0.005 * price;
-        let volume = 5_000_000.0 + ((i * 2.7).sin() * 3_000_000.0).abs();
+
+        // GBM: log-return ~ N(daily_drift, daily_vol²)
+        let z = rng.next_normal();
+        let log_return = daily_drift + daily_vol * z;
+        let mut close = open * log_return.exp();
+
+        // Enforce daily price limit
+        let upper = open * (1.0 + limit_pct);
+        let lower = open * (1.0 - limit_pct);
+        close = close.clamp(lower, upper);
+
+        // Simulate intraday high/low as excursions beyond open-close range
+        let body_high = open.max(close);
+        let body_low = open.min(close);
+        let body_range = (body_high - body_low).max(open * 0.001);
+
+        // Wicks: random excursion 0–100% of body range beyond OHLC body
+        let upper_wick = rng.next_f64() * body_range;
+        let lower_wick = rng.next_f64() * body_range;
+        let high = (body_high + upper_wick).min(upper);
+        let low = (body_low - lower_wick).max(lower).max(0.01);
+
+        // Volume: log-normal around avg with correlation to |return|
+        let vol_z = rng.next_normal();
+        let return_magnitude = log_return.abs() / daily_vol; // normalized
+        let vol_multiplier = (params.volume_vol * vol_z + 0.3 * return_magnitude).exp();
+        let volume = params.avg_volume * vol_multiplier;
 
         let datetime = date.and_hms_opt(15, 0, 0).unwrap();
         klines.push(Kline {
@@ -333,8 +412,9 @@ fn generate_backtest_klines(symbol: &str, start: &str, end: &str) -> Vec<Kline> 
             high: (high * 100.0).round() / 100.0,
             low: (low * 100.0).round() / 100.0,
             close: (close * 100.0).round() / 100.0,
-            volume,
+            volume: (volume / 100.0).round() * 100.0,
         });
+
         price = close;
         date += chrono::Duration::days(1);
     }
