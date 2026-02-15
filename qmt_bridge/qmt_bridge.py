@@ -311,6 +311,38 @@ def api_order_result(order_id: str):
     return jsonify({"error": "No callback received yet for this order"}), 404
 
 
+@app.route("/order_status/<order_id>", methods=["GET"])
+def api_order_status(order_id: str):
+    """
+    Get order status from QMT. First checks callback cache, then queries QMT directly.
+    Returns: { order_id, order_status, traded_volume, traded_price }
+    """
+    # Check callback cache first
+    with _order_lock:
+        cached = _order_results.get(order_id)
+    if cached:
+        return jsonify(cached)
+
+    # Fall back to querying QMT directly for today's orders
+    if not _connected or _trader is None:
+        return jsonify({"error": "Not connected to QMT"}), 503
+
+    try:
+        orders = _trader.query_stock_orders(_account_id)
+        for o in orders:
+            if str(o.order_id) == order_id:
+                return jsonify({
+                    "order_id": o.order_id,
+                    "stock_code": o.stock_code,
+                    "order_status": o.order_status,
+                    "traded_volume": o.traded_volume,
+                    "traded_price": o.traded_price,
+                })
+        return jsonify({"error": "Order not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 def main():

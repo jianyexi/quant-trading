@@ -47,6 +47,7 @@ fn trade_routes() -> Router<AppState> {
         .route("/start", post(handlers::trade_start))
         .route("/stop", post(handlers::trade_stop))
         .route("/status", get(handlers::trade_status))
+        .route("/performance", get(handlers::trade_performance))
         .route("/risk", get(handlers::risk_status))
         .route("/risk/reset-circuit", post(handlers::risk_reset_circuit))
         .route("/risk/reset-daily", post(handlers::risk_reset_daily))

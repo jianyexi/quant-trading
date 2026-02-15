@@ -70,6 +70,40 @@ pub struct EngineStatus {
     pub total_rejected: u64,
     pub pnl: f64,
     pub recent_trades: Vec<ExecutionReport>,
+    /// Performance metrics
+    pub performance: PerformanceMetrics,
+}
+
+/// Real-time performance metrics.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PerformanceMetrics {
+    /// Current portfolio value
+    pub portfolio_value: f64,
+    /// Initial capital
+    pub initial_capital: f64,
+    /// Total return percentage
+    pub total_return_pct: f64,
+    /// Peak portfolio value
+    pub peak_value: f64,
+    /// Current drawdown percentage
+    pub drawdown_pct: f64,
+    /// Max drawdown observed
+    pub max_drawdown_pct: f64,
+    /// Win rate (filled buy orders that were profitable on sell)
+    pub win_rate: f64,
+    /// Number of winning trades
+    pub wins: u64,
+    /// Number of losing trades
+    pub losses: u64,
+    /// Profit factor (gross profit / gross loss)
+    pub profit_factor: f64,
+    /// Average trade PnL
+    pub avg_trade_pnl: f64,
+    /// Risk status
+    pub risk_daily_pnl: f64,
+    pub risk_daily_paused: bool,
+    pub risk_circuit_open: bool,
+    pub risk_drawdown_halted: bool,
 }
 
 /// Engine configuration
@@ -132,6 +166,11 @@ struct EngineStats {
     total_orders: u64,
     total_fills: u64,
     total_rejected: u64,
+    wins: u64,
+    losses: u64,
+    gross_profit: f64,
+    gross_loss: f64,
+    max_drawdown_pct: f64,
     recent_trades: Vec<ExecutionReport>,
 }
 
@@ -303,6 +342,13 @@ impl TradingEngine {
             initial_capital: self.config.initial_capital,
         });
         let pnl = account.portfolio.total_value - self.config.initial_capital;
+        let risk_status = self.risk_enforcer.status();
+        let total_trades = stats.wins + stats.losses;
+        let peak = risk_status.peak_value;
+        let drawdown_pct = if peak > 0.0 { (peak - account.portfolio.total_value) / peak } else { 0.0 };
+        let drawdown_pct = drawdown_pct.max(0.0);
+        let max_dd = stats.max_drawdown_pct.max(drawdown_pct);
+
         EngineStatus {
             running: self.is_running(),
             strategy: self.config.strategy_name.clone(),
@@ -313,6 +359,31 @@ impl TradingEngine {
             total_rejected: stats.total_rejected,
             pnl,
             recent_trades: stats.recent_trades.iter().rev().take(20).cloned().collect(),
+            performance: PerformanceMetrics {
+                portfolio_value: account.portfolio.total_value,
+                initial_capital: self.config.initial_capital,
+                total_return_pct: if self.config.initial_capital > 0.0 {
+                    pnl / self.config.initial_capital * 100.0
+                } else { 0.0 },
+                peak_value: peak,
+                drawdown_pct: drawdown_pct * 100.0,
+                max_drawdown_pct: max_dd * 100.0,
+                win_rate: if total_trades > 0 {
+                    stats.wins as f64 / total_trades as f64 * 100.0
+                } else { 0.0 },
+                wins: stats.wins,
+                losses: stats.losses,
+                profit_factor: if stats.gross_loss.abs() > 0.0 {
+                    stats.gross_profit / stats.gross_loss.abs()
+                } else if stats.gross_profit > 0.0 { f64::INFINITY } else { 0.0 },
+                avg_trade_pnl: if total_trades > 0 {
+                    (stats.gross_profit - stats.gross_loss.abs()) / total_trades as f64
+                } else { 0.0 },
+                risk_daily_pnl: risk_status.daily_pnl,
+                risk_daily_paused: risk_status.daily_paused,
+                risk_circuit_open: risk_status.circuit_open,
+                risk_drawdown_halted: risk_status.drawdown_halted,
+            },
         }
     }
 

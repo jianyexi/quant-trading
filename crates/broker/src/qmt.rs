@@ -124,6 +124,62 @@ impl QmtBroker {
         };
         (side, price_type)
     }
+
+    /// Sync order status from QMT bridge. Returns updated OrderStatus.
+    pub async fn sync_order_status(&self, order_id: Uuid) -> Result<OrderStatus> {
+        let qmt_id = {
+            let map = self.order_map.lock()
+                .map_err(|e| QuantError::BrokerError(e.to_string()))?;
+            map.get(&order_id).copied()
+                .ok_or_else(|| QuantError::BrokerError(
+                    format!("No QMT order ID mapped for {}", order_id)
+                ))?
+        };
+
+        let url = format!("{}/order_result/{}", self.config.bridge_url, qmt_id);
+        let max_retries = 3u32;
+        let mut last_err = String::new();
+
+        for attempt in 0..max_retries {
+            match self.client.get(&url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    #[derive(Deserialize)]
+                    struct OrderResult {
+                        order_status: Option<i32>,
+                        traded_volume: Option<f64>,
+                        error_msg: Option<String>,
+                    }
+                    match resp.json::<OrderResult>().await {
+                        Ok(r) => {
+                            // QMT order_status codes: typically 5=filled, 6=cancelled, 8=rejected
+                            let status = match r.order_status.unwrap_or(-1) {
+                                5 => OrderStatus::Filled,
+                                6 => OrderStatus::Cancelled,
+                                8 => OrderStatus::Rejected,
+                                _ => OrderStatus::Submitted,
+                            };
+                            return Ok(status);
+                        }
+                        Err(e) => last_err = format!("Parse error: {}", e),
+                    }
+                }
+                Ok(resp) if resp.status().as_u16() == 404 => {
+                    return Ok(OrderStatus::Submitted); // no callback yet
+                }
+                Ok(resp) => last_err = format!("HTTP {}", resp.status()),
+                Err(e) => last_err = format!("Request failed: {}", e),
+            }
+
+            if attempt < max_retries - 1 {
+                let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt));
+                tokio::time::sleep(delay).await;
+            }
+        }
+
+        Err(QuantError::BrokerError(format!(
+            "sync_order_status failed after {} retries: {}", max_retries, last_err
+        )))
+    }
 }
 
 #[async_trait]

@@ -21,6 +21,9 @@ A full-featured quantitative trading system built in **Rust**, targeting the **C
 | 🌐 **Web API** | REST + WebSocket API (Axum) with SPA fallback |
 | 💻 **CLI** | Full subcommand CLI with interactive chat REPL |
 | 🛡️ **Risk Management** | T+1, price limits (±10%/±20%), stamp tax, lot sizing, concentration limits |
+| 🔒 **Risk Enforcement** | Stop-loss, daily loss limit, max drawdown protection, circuit breaker, all configurable |
+| 📋 **Trade Journal** | SQLite-backed persistent audit trail for all signals, orders, fills, rejections |
+| 📊 **Performance Metrics** | Real-time portfolio value, return %, drawdown, win rate, profit factor |
 
 ## 🏗️ Architecture
 
@@ -40,8 +43,13 @@ quant-trading/
 │   │   ├── paper.rs                #   PaperBroker (simulated, auto-fill)
 │   │   ├── qmt.rs                  #   QmtBroker (live trading via HTTP bridge)
 │   │   ├── engine.rs               #   Actor-based TradingEngine (generic over Broker)
+│   │   ├── journal.rs              #   SQLite trade journal for persistent audit trail
 │   │   └── orders.rs               #   Order state machine
 │   ├── risk/                       # Pre-trade risk checks, position sizing, Chinese market rules
+│   │   ├── checks.rs               #   Pre-trade order validation (concentration, cash, position)
+│   │   ├── enforcement.rs          #   Runtime risk enforcement (stop-loss, daily loss, drawdown, circuit breaker)
+│   │   ├── position.rs             #   Position sizing (fixed, percentage, Kelly criterion)
+│   │   └── rules.rs                #   Chinese market rules (T+1, price limits, stamp tax, lot sizing)
 │   ├── llm/                        # LLM chat client with tool calling + conversation context
 │   ├── api/                        # Axum REST API + WebSocket + SPA fallback
 │   └── cli/                        # CLI application (clap)
@@ -256,7 +264,11 @@ QMT (迅投量化) integration enables real order placement through your broker.
 | WS | `/api/chat/stream` | Streaming chat via WebSocket |
 | POST | `/api/trade/start` | Start auto-trade engine (`mode`: paper / qmt) |
 | POST | `/api/trade/stop` | Stop auto-trade engine |
-| GET | `/api/trade/status` | Engine status (signals, fills, PnL) |
+| GET | `/api/trade/status` | Engine status (signals, fills, PnL, performance) |
+| GET | `/api/trade/performance` | Real-time performance metrics (return, drawdown, win rate) |
+| GET | `/api/trade/risk` | Risk enforcement status (daily PnL, circuit breaker, drawdown) |
+| POST | `/api/trade/risk/reset-circuit` | Reset circuit breaker |
+| POST | `/api/trade/risk/reset-daily` | Reset daily loss counter |
 | GET | `/api/trade/qmt/status` | QMT bridge connection status |
 | POST | `/api/screen/scan` | Run stock screener (multi-factor + voting) |
 | GET | `/api/screen/factors/:symbol` | Factor scores for a single stock |
@@ -267,6 +279,8 @@ QMT (迅投量化) integration enables real order placement through your broker.
 | GET | `/api/research/dl-models` | Full DL factor model knowledge base |
 | GET | `/api/research/dl-models/summary` | Knowledge base summary statistics |
 | POST | `/api/research/dl-models/collect` | Auto-collect latest research via LLM |
+| GET | `/api/journal` | Trade journal entries (filter by symbol, type, date) |
+| GET | `/api/journal/snapshots` | Daily performance snapshots |
 
 ## 🖥️ Web UI Pages
 
@@ -399,14 +413,14 @@ python train_factor_model.py --output factor_model.onnx
 ## 🧪 Tests
 
 ```bash
-# Run all 46 tests
+# Run all tests
 cargo test --release
 
 # Test breakdown:
 # - 32 strategy tests (indicators, screener, multi-factor, sentiment, ml_factor, dl_models)
-# - 12 broker tests (paper, qmt, engine, orders)
-# - 15 risk tests (checks, rules, position sizing)
-# Total: 59 tests
+# - 17 broker tests (paper, qmt, engine, orders, journal)
+# - 25 risk tests (checks, rules, position sizing, enforcement)
+# Total: 74 tests
 ```
 
 ## 💬 LLM Tool Calling

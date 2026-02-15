@@ -134,22 +134,56 @@ pub async fn list_strategies() -> Json<Value> {
 // ── Dashboard ───────────────────────────────────────────────────────
 
 pub async fn get_dashboard(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Json<Value> {
-    Json(json!({
-        "portfolio_value": 1_284_305.00,
-        "daily_pnl": 32_411.20,
-        "daily_pnl_percent": 2.59,
-        "open_positions": 5,
-        "win_rate": 68.5,
-        "recent_trades": [
-            {"time": "14:32:01", "symbol": "600519.SH", "name": "贵州茅台", "side": "BUY", "quantity": 100, "price": 1689.25, "pnl": 3125.00},
-            {"time": "13:45:22", "symbol": "000858.SZ", "name": "五粮液", "side": "SELL", "quantity": 300, "price": 148.10, "pnl": -873.00},
-            {"time": "12:18:45", "symbol": "601318.SH", "name": "中国平安", "side": "BUY", "quantity": 500, "price": 52.60, "pnl": 1420.00},
-            {"time": "11:05:33", "symbol": "600036.SH", "name": "招商银行", "side": "SELL", "quantity": 400, "price": 35.30, "pnl": 560.00},
-            {"time": "10:22:17", "symbol": "000001.SZ", "name": "平安银行", "side": "BUY", "quantity": 1000, "price": 12.90, "pnl": -225.00}
-        ]
-    }))
+    let engine_guard = state.engine.lock().await;
+    if let Some(ref eng) = *engine_guard {
+        let status = eng.status().await;
+        let perf = &status.performance;
+        let trades: Vec<Value> = status.recent_trades.iter().map(|t| {
+            json!({
+                "time": t.timestamp.format("%H:%M:%S").to_string(),
+                "symbol": t.symbol,
+                "side": if t.side == quant_core::types::OrderSide::Buy { "BUY" } else { "SELL" },
+                "quantity": t.quantity as i64,
+                "price": t.price,
+                "status": t.status,
+            })
+        }).collect();
+        Json(json!({
+            "portfolio_value": perf.portfolio_value,
+            "daily_pnl": perf.risk_daily_pnl,
+            "daily_pnl_percent": if perf.initial_capital > 0.0 {
+                perf.risk_daily_pnl / perf.initial_capital * 100.0
+            } else { 0.0 },
+            "open_positions": eng.broker().get_positions().await.map(|p| p.len()).unwrap_or(0),
+            "win_rate": perf.win_rate,
+            "total_return_pct": perf.total_return_pct,
+            "drawdown_pct": perf.drawdown_pct,
+            "max_drawdown_pct": perf.max_drawdown_pct,
+            "profit_factor": perf.profit_factor,
+            "engine_running": status.running,
+            "strategy": status.strategy,
+            "total_fills": status.total_fills,
+            "recent_trades": trades,
+        }))
+    } else {
+        Json(json!({
+            "portfolio_value": 0.0,
+            "daily_pnl": 0.0,
+            "daily_pnl_percent": 0.0,
+            "open_positions": 0,
+            "win_rate": 0.0,
+            "total_return_pct": 0.0,
+            "drawdown_pct": 0.0,
+            "max_drawdown_pct": 0.0,
+            "profit_factor": 0.0,
+            "engine_running": false,
+            "strategy": "",
+            "total_fills": 0,
+            "recent_trades": [],
+        }))
+    }
 }
 
 // ── Market Handlers ─────────────────────────────────────────────────
@@ -619,6 +653,18 @@ pub async fn risk_reset_daily(
         Json(json!({ "status": "daily_loss_reset" }))
     } else {
         Json(json!({ "error": "engine_not_running" }))
+    }
+}
+
+pub async fn trade_performance(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let engine_guard = state.engine.lock().await;
+    if let Some(ref eng) = *engine_guard {
+        let status = eng.status().await;
+        Json(serde_json::to_value(&status.performance).unwrap_or(json!({})))
+    } else {
+        Json(json!(quant_broker::engine::PerformanceMetrics::default()))
     }
 }
 
