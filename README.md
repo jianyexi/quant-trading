@@ -12,6 +12,9 @@ A full-featured quantitative trading system built in **Rust**, targeting the **C
 | 🔍 **Stock Screener** | 3-phase pipeline: multi-factor scoring → strategy signal voting → LLM analysis |
 | 📰 **Sentiment Data** | Ingest sentiment/news data via API, adjust trading signals based on market mood |
 | 🧠 **ML Factor Model** | 24-feature engineering in Rust + GPU-accelerated inference via Python sidecar (LightGBM/ONNX/PyTorch) |
+| 🔄 **Auto-Retrain** | Walk-forward CV, journal-based labels, early stopping, class balancing, hot model reload |
+| 🎯 **Ensemble Learning** | Multi-model ensemble (LightGBM + ONNX), weighted average predictions |
+| ⚖️ **Dynamic Weights** | Factor weights auto-adapt based on rolling directional accuracy |
 | 🤖 **Auto-Trading** | Actor model engine (Data → Strategy → Risk → Order) with real-time status |
 | 🔴 **QMT 实盘** | Live trading via QMT (迅投量化) Python bridge — real order placement to broker |
 | 📝 **Paper Trading** | Simulated order execution with commission/stamp tax modeling |
@@ -269,6 +272,8 @@ QMT (迅投量化) integration enables real order placement through your broker.
 | GET | `/api/trade/risk` | Risk enforcement status (daily PnL, circuit breaker, drawdown) |
 | POST | `/api/trade/risk/reset-circuit` | Reset circuit breaker |
 | POST | `/api/trade/risk/reset-daily` | Reset daily loss counter |
+| POST | `/api/trade/retrain` | Trigger ML model retrain (walk-forward CV + export) |
+| GET | `/api/trade/model-info` | Latest retrain report + feature importance |
 | GET | `/api/trade/qmt/status` | QMT bridge connection status |
 | POST | `/api/screen/scan` | Run stock screener (multi-factor + voting) |
 | GET | `/api/screen/factors/:symbol` | Factor scores for a single stock |
@@ -417,10 +422,10 @@ python train_factor_model.py --output factor_model.onnx
 cargo test --release
 
 # Test breakdown:
-# - 32 strategy tests (indicators, screener, multi-factor, sentiment, ml_factor, dl_models)
+# - 37 strategy tests (indicators, screener, multi-factor, sentiment, ml_factor, dl_models, dynamic_weights)
 # - 17 broker tests (paper, qmt, engine, orders, journal)
 # - 25 risk tests (checks, rules, position sizing, enforcement)
-# Total: 74 tests
+# Total: 79 tests
 ```
 
 ## 💬 LLM Tool Calling

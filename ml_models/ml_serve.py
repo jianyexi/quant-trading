@@ -35,6 +35,10 @@ MODEL = None
 MODEL_TYPE = None  # "lightgbm", "onnx", "pytorch"
 DEVICE = "cpu"
 NUM_FEATURES = 24
+
+# Ensemble support: list of (model, model_type, weight) tuples
+ENSEMBLE_MODELS = []
+ENSEMBLE_ENABLED = False
 FEATURE_NAMES = [
     "ret_1d", "ret_5d", "ret_10d", "ret_20d",
     "volatility_5d", "volatility_20d",
@@ -176,6 +180,38 @@ def predict_single(features):
     return 0.5
 
 
+def predict_ensemble(features):
+    """Run ensemble prediction — weighted average of all loaded models."""
+    if not ENSEMBLE_MODELS:
+        return predict_single(features)
+
+    features_arr = np.array(features, dtype=np.float32).reshape(1, -1)
+    total_weight = 0.0
+    weighted_sum = 0.0
+
+    for model, mtype, weight in ENSEMBLE_MODELS:
+        try:
+            if mtype == "lightgbm":
+                prob = float(model.predict(features_arr)[0])
+            elif mtype == "onnx":
+                input_name = model.get_inputs()[0].name
+                outputs = model.run(None, {input_name: features_arr})
+                if len(outputs) >= 2 and outputs[1].shape[-1] >= 2:
+                    prob = float(outputs[1][0, 1])
+                else:
+                    prob = float(outputs[0][0])
+            else:
+                prob = 0.5
+            weighted_sum += prob * weight
+            total_weight += weight
+        except Exception:
+            continue
+
+    if total_weight > 0:
+        return weighted_sum / total_weight
+    return predict_single(features)
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
@@ -220,7 +256,7 @@ def predict():
         return jsonify({"error": f"Expected {NUM_FEATURES} features, got {len(features)}"}), 400
 
     start = time.time()
-    prob = predict_single(features)
+    prob = predict_ensemble(features) if ENSEMBLE_ENABLED else predict_single(features)
     latency_ms = (time.time() - start) * 1000
 
     return jsonify({
@@ -228,6 +264,7 @@ def predict():
         "signal": "buy" if prob > 0.6 else ("sell" if prob < 0.35 else "hold"),
         "latency_ms": round(latency_ms, 2),
         "device": DEVICE,
+        "ensemble": ENSEMBLE_ENABLED,
     })
 
 
@@ -282,6 +319,64 @@ def api_reload():
         })
     except Exception as e:
         return jsonify({"error": f"Reload failed: {e}"}), 500
+
+
+@app.route("/ensemble/load", methods=["POST"])
+def api_ensemble_load():
+    """
+    Load multiple models for ensemble prediction.
+    Body: { "models": [{"path": "model1.lgb.txt", "weight": 1.0}, ...] }
+    """
+    global ENSEMBLE_MODELS, ENSEMBLE_ENABLED
+    data = request.get_json(silent=True)
+    if not data or "models" not in data:
+        return jsonify({"error": "models list required"}), 400
+
+    loaded = []
+    ENSEMBLE_MODELS = []
+
+    for entry in data["models"]:
+        path = entry.get("path", "")
+        weight = float(entry.get("weight", 1.0))
+        if not os.path.exists(path):
+            loaded.append({"path": path, "status": "not_found"})
+            continue
+
+        try:
+            if path.endswith(".lgb.txt") or path.endswith(".lgb"):
+                import lightgbm as lgb
+                m = lgb.Booster(model_file=path)
+                ENSEMBLE_MODELS.append((m, "lightgbm", weight))
+                loaded.append({"path": path, "type": "lightgbm", "weight": weight, "status": "ok"})
+            elif path.endswith(".onnx"):
+                import onnxruntime as ort
+                m = ort.InferenceSession(path)
+                ENSEMBLE_MODELS.append((m, "onnx", weight))
+                loaded.append({"path": path, "type": "onnx", "weight": weight, "status": "ok"})
+            else:
+                loaded.append({"path": path, "status": "unsupported_format"})
+        except Exception as e:
+            loaded.append({"path": path, "status": f"error: {e}"})
+
+    ENSEMBLE_ENABLED = len(ENSEMBLE_MODELS) > 0
+    print(f"🎯 Ensemble loaded: {len(ENSEMBLE_MODELS)} models, enabled={ENSEMBLE_ENABLED}")
+
+    return jsonify({
+        "ensemble_enabled": ENSEMBLE_ENABLED,
+        "models_loaded": len(ENSEMBLE_MODELS),
+        "details": loaded,
+    })
+
+
+@app.route("/ensemble/status", methods=["GET"])
+def api_ensemble_status():
+    """Get ensemble status."""
+    return jsonify({
+        "ensemble_enabled": ENSEMBLE_ENABLED,
+        "models_count": len(ENSEMBLE_MODELS),
+        "models": [{"type": t, "weight": w} for _, t, w in ENSEMBLE_MODELS],
+        "primary_model_type": MODEL_TYPE,
+    })
 
 
 if __name__ == "__main__":
