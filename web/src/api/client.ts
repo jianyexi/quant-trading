@@ -39,6 +39,7 @@ export async function runBacktest(params: {
   start: string;
   end: string;
   capital?: number;
+  period?: string;
 }) {
   return fetchJson('/backtest/run', {
     method: 'POST',

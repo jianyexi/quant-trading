@@ -28,6 +28,7 @@ interface BacktestConfig {
   start: string;
   end: string;
   capital: number;
+  period: string;
 }
 
 interface EquityPoint {
@@ -77,6 +78,15 @@ const STRATEGIES = [
   { value: 'multi_factor', label: '多因子模型' },
 ];
 
+const PERIODS = [
+  { value: 'daily', label: '日线' },
+  { value: '60', label: '60分钟' },
+  { value: '30', label: '30分钟' },
+  { value: '15', label: '15分钟' },
+  { value: '5', label: '5分钟' },
+  { value: '1', label: '1分钟' },
+];
+
 function loadSavedConfig(): Partial<BacktestConfig> {
   try {
     // Try backtest-specific key first, then fall back to strategy config
@@ -95,6 +105,7 @@ const defaultConfig: BacktestConfig = {
   start: '2024-01-01',
   end: '2024-12-31',
   capital: 1000000,
+  period: 'daily',
 };
 
 export default function Backtest() {
@@ -120,6 +131,7 @@ export default function Backtest() {
         start: config.start,
         end: config.end,
         capital: config.capital,
+        period: config.period,
       })) as BacktestResultData;
       setResult(res);
       setConfigOpen(false);
@@ -232,6 +244,18 @@ export default function Backtest() {
                 <input type="number" value={config.capital} min={1000} step={10000}
                   onChange={(e) => updateConfig('capital', Number(e.target.value))}
                   className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#3b82f6]" />
+              </div>
+              <div>
+                <label className="block text-sm text-[#94a3b8] mb-1.5">K线周期</label>
+                <select
+                  value={config.period}
+                  onChange={(e) => updateConfig('period', e.target.value)}
+                  className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#3b82f6]"
+                >
+                  {PERIODS.map((p) => (
+                    <option key={p.value} value={p.value}>{p.label}</option>
+                  ))}
+                </select>
               </div>
             </div>
 

@@ -17,6 +17,8 @@ pub struct KlineQuery {
     pub start: Option<String>,
     pub end: Option<String>,
     pub limit: Option<usize>,
+    /// "daily" (default), "1", "5", "15", "30", "60" for minute-level
+    pub period: Option<String>,
 }
 
 // ── Backtest Request ────────────────────────────────────────────────
@@ -28,6 +30,8 @@ pub struct BacktestRequest {
     pub start: String,
     pub end: String,
     pub capital: Option<f64>,
+    /// "daily" (default), "1", "5", "15", "30", "60"
+    pub period: Option<String>,
 }
 
 // ── Chat Request ────────────────────────────────────────────────────
@@ -188,26 +192,30 @@ pub async fn get_dashboard(
 
 // ── Market Handlers ─────────────────────────────────────────────────
 
-fn generate_kline_data(symbol: &str, limit: usize, start: Option<&str>, end: Option<&str>) -> Vec<Value> {
+fn generate_kline_data(symbol: &str, limit: usize, start: Option<&str>, end: Option<&str>, period: &str) -> Vec<Value> {
+    let is_minute = matches!(period, "1" | "5" | "15" | "30" | "60");
+    let dt_format = if is_minute { "%Y-%m-%d %H:%M" } else { "%Y-%m-%d" };
+
     // Determine date range
     let end_date = end
         .and_then(|e| chrono::NaiveDate::parse_from_str(e, "%Y-%m-%d").ok())
         .unwrap_or_else(|| chrono::Local::now().naive_local().date());
+    let default_days = if is_minute { 5 } else { (limit as i64) * 7 / 5 + 10 };
     let start_date = start
         .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-        .unwrap_or_else(|| end_date - chrono::Duration::days((limit as i64) * 7 / 5 + 10));
+        .unwrap_or_else(|| end_date - chrono::Duration::days(default_days));
 
     let start_str = start_date.format("%Y-%m-%d").to_string();
     let end_str = end_date.format("%Y-%m-%d").to_string();
 
-    // Try real data first
-    if let Ok(klines) = fetch_real_klines(symbol, &start_str, &end_str) {
+    // Try real data
+    if let Ok(klines) = fetch_real_klines_with_period(symbol, &start_str, &end_str, period) {
         if !klines.is_empty() {
             let take = klines.len().min(limit);
             let skip = klines.len().saturating_sub(take);
             return klines[skip..].iter().map(|k| {
                 json!({
-                    "date": k.datetime.format("%Y-%m-%d").to_string(),
+                    "date": k.datetime.format(dt_format).to_string(),
                     "open": k.open,
                     "high": k.high,
                     "low": k.low,
@@ -218,7 +226,10 @@ fn generate_kline_data(symbol: &str, limit: usize, start: Option<&str>, end: Opt
         }
     }
 
-    // Fallback: use GBM synthetic
+    // Fallback: GBM synthetic (daily only)
+    if is_minute {
+        return vec![]; // No synthetic minute data
+    }
     let klines = generate_backtest_klines(symbol, &start_str, &end_str);
     let take = klines.len().min(limit);
     let skip = klines.len().saturating_sub(take);
@@ -240,9 +251,11 @@ pub async fn get_kline(
     State(_state): State<AppState>,
 ) -> Json<Value> {
     let limit = params.limit.unwrap_or(60);
-    let data = generate_kline_data(&symbol, limit, params.start.as_deref(), params.end.as_deref());
+    let period = params.period.as_deref().unwrap_or("daily");
+    let data = generate_kline_data(&symbol, limit, params.start.as_deref(), params.end.as_deref(), period);
     Json(json!({
         "symbol": symbol,
+        "period": period,
         "start": params.start.unwrap_or_default(),
         "end": params.end.unwrap_or_default(),
         "data": data
@@ -349,11 +362,15 @@ fn call_market_data(args: &[&str]) -> std::result::Result<Value, String> {
     Ok(parsed)
 }
 
-/// Fetch real historical klines via akshare.
-fn fetch_real_klines(symbol: &str, start: &str, end: &str) -> std::result::Result<Vec<Kline>, String> {
+/// Fetch real historical klines via akshare. `period`: "daily", "1", "5", "15", "30", "60"
+fn fetch_real_klines_with_period(symbol: &str, start: &str, end: &str, period: &str) -> std::result::Result<Vec<Kline>, String> {
     use chrono::NaiveDateTime;
 
-    let parsed = call_market_data(&["klines", symbol, start, end])?;
+    let parsed = if period == "daily" {
+        call_market_data(&["klines", symbol, start, end])?
+    } else {
+        call_market_data(&["klines", symbol, start, end, period])?
+    };
     let arr = parsed.as_array().ok_or("Expected JSON array")?;
     if arr.is_empty() {
         return Err("akshare returned empty data".into());
@@ -375,6 +392,11 @@ fn fetch_real_klines(symbol: &str, start: &str, end: &str) -> std::result::Resul
         });
     }
     Ok(klines)
+}
+
+/// Convenience wrapper for daily klines (used by backtest/screener)
+fn fetch_real_klines(symbol: &str, start: &str, end: &str) -> std::result::Result<Vec<Kline>, String> {
+    fetch_real_klines_with_period(symbol, start, end, "daily")
 }
 
 /// Fetch real-time quote for a symbol.
@@ -544,12 +566,18 @@ pub async fn run_backtest(
     use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy, MultiFactorConfig};
 
     let capital = req.capital.unwrap_or(1_000_000.0);
+    let period = req.period.as_deref().unwrap_or("daily");
 
     // Try fetching real market data first, fall back to synthetic GBM
-    let (klines, data_source) = match fetch_real_klines(&req.symbol, &req.start, &req.end) {
+    let (klines, data_source) = match fetch_real_klines_with_period(&req.symbol, &req.start, &req.end, period) {
         Ok(k) if !k.is_empty() => {
             let n = k.len();
-            (k, format!("akshare ({}条真实K线)", n))
+            let label = if period == "daily" { "日线" } else { &format!("{}分钟线", period) };
+            (k, format!("akshare ({}条真实{})", n, label))
+        }
+        Ok(_) | Err(_) if period != "daily" => {
+            // No synthetic fallback for minute data
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("无法获取{}分钟级数据", period)})));
         }
         Ok(_) => {
             let k = generate_backtest_klines(&req.symbol, &req.start, &req.end);
@@ -586,8 +614,9 @@ pub async fn run_backtest(
     let result = engine.run(strategy.as_mut(), &klines);
 
     // Build equity curve JSON
+    let eq_fmt = if period == "daily" { "%Y-%m-%d" } else { "%Y-%m-%d %H:%M" };
     let equity_curve: Vec<Value> = result.equity_curve.iter().map(|(dt, val)| {
-        json!({ "date": dt.format("%Y-%m-%d").to_string(), "value": (*val * 100.0).round() / 100.0 })
+        json!({ "date": dt.format(eq_fmt).to_string(), "value": (*val * 100.0).round() / 100.0 })
     }).collect();
 
     // Build trades JSON
@@ -628,6 +657,7 @@ pub async fn run_backtest(
         "equity_curve": equity_curve,
         "trades": trades,
         "data_source": data_source,
+        "period": period,
         "status": "completed"
     })))
 }

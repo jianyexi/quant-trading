@@ -32,11 +32,40 @@ def exchange_suffix(code: str) -> str:
 
 def cmd_klines(args):
     if len(args) < 3:
-        return {"error": "usage: klines <symbol> <start> <end>"}
+        return {"error": "usage: klines <symbol> <start> <end> [period]"}
     raw_symbol, start, end = args[0], normalize_date(args[1]), normalize_date(args[2])
+    period = args[3] if len(args) > 3 else "daily"
     symbol = normalize_symbol(raw_symbol)
+    full_symbol = raw_symbol if "." in raw_symbol else exchange_suffix(raw_symbol)
 
     import akshare as ak
+
+    # Minute-level data uses a different API
+    if period in ("1", "5", "15", "30", "60"):
+        # Convert dates to datetime format for minute API
+        start_dt = start[:4] + "-" + start[4:6] + "-" + start[6:8] + " 09:30:00"
+        end_dt = end[:4] + "-" + end[4:6] + "-" + end[6:8] + " 15:00:00"
+        df = ak.stock_zh_a_hist_min_em(
+            symbol=symbol, period=period,
+            start_date=start_dt, end_date=end_dt, adjust="qfq",
+        )
+        if df is None or df.empty:
+            return []
+        records = []
+        for _, row in df.iterrows():
+            dt_str = str(row["时间"])
+            records.append({
+                "symbol": full_symbol,
+                "datetime": dt_str,
+                "open": round(float(row["开盘"]), 2),
+                "high": round(float(row["最高"]), 2),
+                "low": round(float(row["最低"]), 2),
+                "close": round(float(row["收盘"]), 2),
+                "volume": float(row["成交量"]),
+            })
+        return records
+
+    # Daily data
     df = ak.stock_zh_a_hist(
         symbol=symbol, period="daily",
         start_date=start, end_date=end, adjust="qfq",
@@ -48,7 +77,7 @@ def cmd_klines(args):
         date_str = str(row["日期"])
         dt = date_str + " 15:00:00" if len(date_str) == 10 else date_str
         records.append({
-            "symbol": raw_symbol if "." in raw_symbol else exchange_suffix(raw_symbol),
+            "symbol": full_symbol,
             "datetime": dt,
             "open": round(float(row["开盘"]), 2),
             "high": round(float(row["最高"]), 2),
