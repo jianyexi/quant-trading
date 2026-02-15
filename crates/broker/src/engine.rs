@@ -72,6 +72,18 @@ pub struct EngineStatus {
     pub recent_trades: Vec<ExecutionReport>,
     /// Performance metrics
     pub performance: PerformanceMetrics,
+    /// Pipeline latency (microseconds)
+    pub latency: PipelineLatency,
+}
+
+/// Pipeline latency metrics (microseconds per stage).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineLatency {
+    pub last_factor_compute_us: u64,
+    pub last_risk_check_us: u64,
+    pub last_order_submit_us: u64,
+    pub avg_factor_compute_us: u64,
+    pub total_bars_processed: u64,
 }
 
 /// Real-time performance metrics.
@@ -172,6 +184,12 @@ struct EngineStats {
     gross_loss: f64,
     max_drawdown_pct: f64,
     recent_trades: Vec<ExecutionReport>,
+    // Latency tracking
+    last_factor_us: u64,
+    last_risk_us: u64,
+    last_order_us: u64,
+    total_factor_us: u64,
+    total_bars: u64,
 }
 
 // ── Trading Engine ──────────────────────────────────────────────────
@@ -383,6 +401,15 @@ impl TradingEngine {
                 risk_daily_paused: risk_status.daily_paused,
                 risk_circuit_open: risk_status.circuit_open,
                 risk_drawdown_halted: risk_status.drawdown_halted,
+            },
+            latency: PipelineLatency {
+                last_factor_compute_us: stats.last_factor_us,
+                last_risk_check_us: stats.last_risk_us,
+                last_order_submit_us: stats.last_order_us,
+                avg_factor_compute_us: if stats.total_bars > 0 {
+                    stats.total_factor_us / stats.total_bars
+                } else { 0 },
+                total_bars_processed: stats.total_bars,
             },
         }
     }
@@ -685,7 +712,23 @@ async fn strategy_actor<F>(
                     s
                 });
 
-                if let Some(signal) = strategy.on_bar(&event.kline) {
+                let t0 = std::time::Instant::now();
+                let signal_opt = strategy.on_bar(&event.kline);
+                let factor_us = t0.elapsed().as_micros() as u64;
+
+                // Record latency stats
+                {
+                    let mut s = stats.lock().await;
+                    s.last_factor_us = factor_us;
+                    s.total_factor_us += factor_us;
+                    s.total_bars += 1;
+                }
+
+                if factor_us > 1000 {
+                    warn!("⏱️ Slow factor compute: {}μs for {}", factor_us, event.kline.symbol);
+                }
+
+                if let Some(signal) = signal_opt {
                     if signal.is_buy() || signal.is_sell() {
                         {
                             let mut s = stats.lock().await;
@@ -693,8 +736,8 @@ async fn strategy_actor<F>(
                         }
                         let action_str = if signal.is_buy() { "BUY" } else { "SELL" };
                         info!(
-                            "📡 Signal: {} {} @ {:.2} (confidence: {:.4})",
-                            action_str, signal.symbol, event.kline.close, signal.confidence
+                            "📡 Signal: {} {} @ {:.2} (confidence: {:.4}, factor_time={}μs)",
+                            action_str, signal.symbol, event.kline.close, signal.confidence, factor_us
                         );
                         // Record signal in journal
                         if let Some(ref j) = journal {
@@ -895,8 +938,10 @@ async fn order_actor(
                 let side_str = if order.side == OrderSide::Buy { "BUY" } else { "SELL" };
 
                 // Submit order to broker (PaperBroker auto-fills; QmtBroker submits to exchange)
+                let t0 = std::time::Instant::now();
                 match broker.submit_order(&order).await {
                     Ok(submitted) => {
+                        let order_us = t0.elapsed().as_micros() as u64;
                         enforcer.record_success();
                         let status_str = format!("{:?}", submitted.status);
                         let report = ExecutionReport {
@@ -910,8 +955,8 @@ async fn order_actor(
                             status: status_str,
                         };
                         info!(
-                            "🔔 {}: {} {} x{:.0} @ {:.2}",
-                            report.status, side_str, order.symbol, order.quantity, order.price
+                            "🔔 {}: {} {} x{:.0} @ {:.2} (submit={}μs)",
+                            report.status, side_str, order.symbol, order.quantity, order.price, order_us
                         );
                         // Record in journal
                         if let Some(ref j) = journal {
@@ -922,6 +967,7 @@ async fn order_actor(
                         let mut s = stats.lock().await;
                         s.total_orders += 1;
                         s.total_fills += 1;
+                        s.last_order_us = order_us;
                         s.recent_trades.push(report);
                     }
                     Err(e) => {

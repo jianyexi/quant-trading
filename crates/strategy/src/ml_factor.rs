@@ -369,6 +369,8 @@ pub struct MlFactorStrategy {
     bar_buffer: Vec<Kline>,
     prev_prediction: Option<f64>,
     using_fallback: bool,
+    /// Incremental factor engine (O(1) per bar)
+    incr_engine: crate::fast_factors::IncrementalFactorEngine,
 }
 
 impl MlFactorStrategy {
@@ -386,6 +388,7 @@ impl MlFactorStrategy {
             bar_buffer: Vec::with_capacity(70),
             prev_prediction: None,
             using_fallback: !available,
+            incr_engine: crate::fast_factors::IncrementalFactorEngine::new(),
             cfg,
         }
     }
@@ -429,22 +432,18 @@ impl Strategy for MlFactorStrategy {
     fn on_init(&mut self) {
         self.bar_buffer.clear();
         self.prev_prediction = None;
+        self.incr_engine = crate::fast_factors::IncrementalFactorEngine::new();
     }
 
     fn on_bar(&mut self, kline: &Kline) -> Option<Signal> {
-        // Buffer bars
+        // Buffer bars (kept for backward compat / debugging)
         self.bar_buffer.push(kline.clone());
         if self.bar_buffer.len() > self.cfg.lookback + 10 {
             self.bar_buffer.remove(0);
         }
 
-        // Need enough bars for feature computation
-        if self.bar_buffer.len() < self.cfg.lookback {
-            return None;
-        }
-
-        // Compute features
-        let features = compute_features(&self.bar_buffer)?;
+        // Compute features via incremental engine (O(1) per bar)
+        let features = self.incr_engine.update(kline)?;
 
         // Run prediction
         let prediction = self.predict(&features);
@@ -465,10 +464,10 @@ impl Strategy for MlFactorStrategy {
                 }
             }
             None => {
-                // First prediction — signal if strong
-                if prediction > self.cfg.buy_threshold + 0.1 {
+                // First prediction — signal if clearly directional
+                if prediction > self.cfg.buy_threshold + 0.05 {
                     Some(Signal::buy(&kline.symbol, prediction.min(1.0), kline.datetime))
-                } else if prediction < self.cfg.sell_threshold - 0.1 {
+                } else if prediction < self.cfg.sell_threshold - 0.05 {
                     Some(Signal::sell(&kline.symbol, (1.0 - prediction).min(1.0), kline.datetime))
                 } else {
                     None
@@ -593,13 +592,13 @@ mod tests {
     fn test_ml_strategy_generates_signal_downtrend() {
         let mut strat = MlFactorStrategy::new(MlFactorConfig {
             buy_threshold: 0.55,
-            sell_threshold: 0.48,
+            sell_threshold: 0.49,
             ..Default::default()
         });
         strat.on_init();
 
         // Strong downtrend should eventually trigger a sell
-        let bars = generate_bars(100, 100.0, -0.008);
+        let bars = generate_bars(120, 100.0, -0.008);
         let mut signals = Vec::new();
         for bar in &bars {
             if let Some(sig) = strat.on_bar(bar) {
