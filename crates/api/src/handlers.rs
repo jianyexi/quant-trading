@@ -188,46 +188,50 @@ pub async fn get_dashboard(
 
 // ── Market Handlers ─────────────────────────────────────────────────
 
-fn generate_kline_data(symbol: &str, limit: usize) -> Vec<Value> {
-    let (base_price, name) = match symbol {
-        "600519.SH" => (1650.0, "贵州茅台"),
-        "000858.SZ" => (148.0, "五粮液"),
-        "601318.SH" => (52.0, "中国平安"),
-        "000001.SZ" => (12.5, "平安银行"),
-        "600036.SH" => (35.0, "招商银行"),
-        "300750.SZ" => (220.0, "宁德时代"),
-        "600276.SH" => (28.0, "恒瑞医药"),
-        _ => (100.0, "未知"),
-    };
-    let _ = name;
-    let mut data = Vec::with_capacity(limit);
-    let mut price = base_price;
-    let base_date = chrono::NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
-    for i in 0..limit {
-        let change = (((i as f64 * 7.3 + 13.7).sin() * 0.02)
-            + ((i as f64 * 3.1).cos() * 0.008))
-            * price;
-        let open = price;
-        let close = price + change;
-        let high = open.max(close) + (((i as f64 * 5.1).sin().abs()) * 0.005 * price);
-        let low = open.min(close) - (((i as f64 * 4.3).cos().abs()) * 0.005 * price);
-        let volume = (5_000_000.0 + ((i as f64 * 2.7).sin() * 3_000_000.0).abs()) as u64;
-        let date = base_date + chrono::Duration::days(i as i64);
-        // Skip weekends
-        if date.weekday() == chrono::Weekday::Sat || date.weekday() == chrono::Weekday::Sun {
-            continue;
+fn generate_kline_data(symbol: &str, limit: usize, start: Option<&str>, end: Option<&str>) -> Vec<Value> {
+    // Determine date range
+    let end_date = end
+        .and_then(|e| chrono::NaiveDate::parse_from_str(e, "%Y-%m-%d").ok())
+        .unwrap_or_else(|| chrono::Local::now().naive_local().date());
+    let start_date = start
+        .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .unwrap_or_else(|| end_date - chrono::Duration::days((limit as i64) * 7 / 5 + 10));
+
+    let start_str = start_date.format("%Y-%m-%d").to_string();
+    let end_str = end_date.format("%Y-%m-%d").to_string();
+
+    // Try real data first
+    if let Ok(klines) = fetch_real_klines(symbol, &start_str, &end_str) {
+        if !klines.is_empty() {
+            let take = klines.len().min(limit);
+            let skip = klines.len().saturating_sub(take);
+            return klines[skip..].iter().map(|k| {
+                json!({
+                    "date": k.datetime.format("%Y-%m-%d").to_string(),
+                    "open": k.open,
+                    "high": k.high,
+                    "low": k.low,
+                    "close": k.close,
+                    "volume": k.volume as u64
+                })
+            }).collect();
         }
-        data.push(json!({
-            "date": date.format("%Y-%m-%d").to_string(),
-            "open": (open * 100.0).round() / 100.0,
-            "high": (high * 100.0).round() / 100.0,
-            "low": (low * 100.0).round() / 100.0,
-            "close": (close * 100.0).round() / 100.0,
-            "volume": volume
-        }));
-        price = close;
     }
-    data
+
+    // Fallback: use GBM synthetic
+    let klines = generate_backtest_klines(symbol, &start_str, &end_str);
+    let take = klines.len().min(limit);
+    let skip = klines.len().saturating_sub(take);
+    klines[skip..].iter().map(|k| {
+        json!({
+            "date": k.datetime.format("%Y-%m-%d").to_string(),
+            "open": k.open,
+            "high": k.high,
+            "low": k.low,
+            "close": k.close,
+            "volume": k.volume as u64
+        })
+    }).collect()
 }
 
 pub async fn get_kline(
@@ -236,7 +240,7 @@ pub async fn get_kline(
     State(_state): State<AppState>,
 ) -> Json<Value> {
     let limit = params.limit.unwrap_or(60);
-    let data = generate_kline_data(&symbol, limit);
+    let data = generate_kline_data(&symbol, limit, params.start.as_deref(), params.end.as_deref());
     Json(json!({
         "symbol": symbol,
         "start": params.start.unwrap_or_default(),
@@ -290,6 +294,85 @@ pub async fn list_stocks() -> Json<Value> {
 }
 
 // ── Backtest Handlers ───────────────────────────────────────────────
+
+/// Fetch real historical klines via the Python akshare bridge script.
+/// Returns Ok(klines) on success, Err(reason) on failure — caller falls back to synthetic data.
+fn fetch_real_klines(symbol: &str, start: &str, end: &str) -> std::result::Result<Vec<Kline>, String> {
+    use std::process::Command;
+    use chrono::NaiveDateTime;
+
+    // Locate Python and script
+    let python = find_python().ok_or_else(|| "Python not found".to_string())?;
+    let script = std::path::Path::new("scripts/fetch_klines.py");
+    if !script.exists() {
+        return Err("scripts/fetch_klines.py not found".into());
+    }
+
+    let output = Command::new(&python)
+        .arg(script)
+        .arg(symbol)
+        .arg(start)
+        .arg(end)
+        .output()
+        .map_err(|e| format!("Failed to run Python: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Python script failed: {}", stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Invalid JSON from Python: {}", e))?;
+
+    // Check for error object
+    if let Some(err) = parsed.get("error") {
+        return Err(format!("akshare error: {}", err));
+    }
+
+    let arr = parsed.as_array().ok_or("Expected JSON array")?;
+    if arr.is_empty() {
+        return Err("akshare returned empty data".into());
+    }
+
+    let mut klines = Vec::with_capacity(arr.len());
+    for item in arr {
+        let sym = item["symbol"].as_str().unwrap_or(symbol).to_string();
+        let dt_str = item["datetime"].as_str().unwrap_or("");
+        let datetime = NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%d %H:%M:%S")
+            .map_err(|e| format!("Bad datetime '{}': {}", dt_str, e))?;
+        klines.push(Kline {
+            symbol: sym,
+            datetime,
+            open: item["open"].as_f64().unwrap_or(0.0),
+            high: item["high"].as_f64().unwrap_or(0.0),
+            low: item["low"].as_f64().unwrap_or(0.0),
+            close: item["close"].as_f64().unwrap_or(0.0),
+            volume: item["volume"].as_f64().unwrap_or(0.0),
+        });
+    }
+    Ok(klines)
+}
+
+/// Find a working Python 3 interpreter
+fn find_python() -> Option<String> {
+    // Try common locations on Windows
+    let candidates = [
+        std::env::var("PYTHON_PATH").unwrap_or_default(),
+        r"C:\Users\jianyxi\AppData\Local\Programs\Python\Python312\python.exe".into(),
+        "python3".into(),
+        "python".into(),
+    ];
+    for path in &candidates {
+        if path.is_empty() { continue; }
+        if let Ok(output) = std::process::Command::new(path).arg("--version").output() {
+            if output.status.success() {
+                return Some(path.clone());
+            }
+        }
+    }
+    None
+}
 
 /// Stock-specific parameters for realistic price simulation
 struct StockParams {
@@ -430,8 +513,22 @@ pub async fn run_backtest(
 
     let capital = req.capital.unwrap_or(1_000_000.0);
 
-    // Generate kline data for the requested date range
-    let klines = generate_backtest_klines(&req.symbol, &req.start, &req.end);
+    // Try fetching real market data first, fall back to synthetic GBM
+    let (klines, data_source) = match fetch_real_klines(&req.symbol, &req.start, &req.end) {
+        Ok(k) if !k.is_empty() => {
+            let n = k.len();
+            (k, format!("akshare ({}条真实K线)", n))
+        }
+        Ok(_) => {
+            let k = generate_backtest_klines(&req.symbol, &req.start, &req.end);
+            (k, "synthetic (akshare返回空数据)".to_string())
+        }
+        Err(reason) => {
+            let k = generate_backtest_klines(&req.symbol, &req.start, &req.end);
+            (k, format!("synthetic ({})", reason))
+        }
+    };
+
     if klines.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "No kline data for date range"})));
     }
@@ -498,6 +595,7 @@ pub async fn run_backtest(
         "avg_loss": (m.avg_loss * 100.0).round() / 100.0,
         "equity_curve": equity_curve,
         "trades": trades,
+        "data_source": data_source,
         "status": "completed"
     })))
 }

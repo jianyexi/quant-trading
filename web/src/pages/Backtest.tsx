@@ -66,6 +66,7 @@ interface BacktestResultData {
   avg_loss?: number;
   equity_curve?: EquityPoint[];
   trades?: TradeRecord[];
+  data_source?: string;
   status: string;
 }
 
@@ -246,9 +247,18 @@ export default function Backtest() {
           {/* Summary */}
           <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-4">
             <div className="flex items-center justify-between text-sm">
-              <span className="text-[#94a3b8]">
-                {result.strategy} · {result.symbol} · {result.start} ~ {result.end}
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-[#94a3b8]">
+                  {result.strategy} · {result.symbol} · {result.start} ~ {result.end}
+                </span>
+                {result.data_source != null && (
+                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                    result.data_source.startsWith('akshare') ? 'bg-green-500/15 text-green-400' : 'bg-yellow-500/15 text-yellow-400'
+                  }`}>
+                    {result.data_source.startsWith('akshare') ? '📡 真实数据' : '🔬 模拟数据'}
+                  </span>
+                )}
+              </div>
               <span className={`font-bold ${result.total_return_percent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                 ¥{result.initial_capital.toLocaleString()} → ¥{result.final_value.toLocaleString()}
               </span>
