@@ -291,34 +291,133 @@ pub async fn list_stocks() -> Json<Value> {
 
 // ── Backtest Handlers ───────────────────────────────────────────────
 
+fn generate_backtest_klines(symbol: &str, start: &str, end: &str) -> Vec<Kline> {
+    let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d")
+        .unwrap_or_else(|_| NaiveDate::from_ymd_opt(2024, 1, 1).unwrap());
+    let end_date = NaiveDate::parse_from_str(end, "%Y-%m-%d")
+        .unwrap_or_else(|_| NaiveDate::from_ymd_opt(2024, 12, 31).unwrap());
+
+    let base_price = match symbol {
+        "600519.SH" => 1650.0,
+        "000858.SZ" => 148.0,
+        "601318.SH" => 52.0,
+        "000001.SZ" => 12.5,
+        "600036.SH" => 35.0,
+        "300750.SZ" => 220.0,
+        "600276.SH" => 28.0,
+        _ => 100.0,
+    };
+
+    let mut klines = Vec::new();
+    let mut price = base_price;
+    let mut date = start_date;
+
+    while date <= end_date {
+        if date.weekday() == chrono::Weekday::Sat || date.weekday() == chrono::Weekday::Sun {
+            date += chrono::Duration::days(1);
+            continue;
+        }
+        let i = klines.len() as f64;
+        let change = ((i * 7.3 + 13.7).sin() * 0.02 + (i * 3.1).cos() * 0.008) * price;
+        let open = price;
+        let close = price + change;
+        let high = open.max(close) + ((i * 5.1).sin().abs()) * 0.005 * price;
+        let low = open.min(close) - ((i * 4.3).cos().abs()) * 0.005 * price;
+        let volume = 5_000_000.0 + ((i * 2.7).sin() * 3_000_000.0).abs();
+
+        let datetime = date.and_hms_opt(15, 0, 0).unwrap();
+        klines.push(Kline {
+            symbol: symbol.to_string(),
+            datetime,
+            open: (open * 100.0).round() / 100.0,
+            high: (high * 100.0).round() / 100.0,
+            low: (low * 100.0).round() / 100.0,
+            close: (close * 100.0).round() / 100.0,
+            volume,
+        });
+        price = close;
+        date += chrono::Duration::days(1);
+    }
+    klines
+}
+
 pub async fn run_backtest(
     State(_state): State<AppState>,
     Json(req): Json<BacktestRequest>,
 ) -> (StatusCode, Json<Value>) {
+    use quant_backtest::engine::{BacktestConfig, BacktestEngine};
+    use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy, MultiFactorConfig};
+
     let capital = req.capital.unwrap_or(1_000_000.0);
-    // Simulate slightly different results per strategy
-    let (ret, sharpe, dd, wr, trades, pf) = match req.strategy.as_str() {
-        "sma_cross" => (18.5, 1.32, 10.2, 55.0, 38, 1.65),
-        "rsi_reversal" => (22.3, 1.58, 8.7, 62.0, 45, 1.92),
-        "macd_trend" => (15.8, 1.15, 14.5, 52.0, 32, 1.48),
-        "bollinger_bands" => (20.1, 1.45, 11.3, 58.0, 42, 1.78),
-        "dual_momentum" => (25.0, 1.72, 9.5, 60.0, 28, 2.05),
-        _ => (12.0, 0.95, 15.0, 48.0, 50, 1.20),
+
+    // Generate kline data for the requested date range
+    let klines = generate_backtest_klines(&req.symbol, &req.start, &req.end);
+    if klines.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "No kline data for date range"})));
+    }
+
+    let bt_config = BacktestConfig {
+        initial_capital: capital,
+        commission_rate: 0.001,
+        stamp_tax_rate: 0.001,
+        slippage_ticks: 1,
     };
+
+    let engine = BacktestEngine::new(bt_config);
+
+    // Instantiate strategy
+    let mut strategy: Box<dyn quant_core::traits::Strategy> = match req.strategy.as_str() {
+        "sma_cross" | "DualMaCrossover" => Box::new(DualMaCrossover::new(5, 20)),
+        "rsi_reversal" | "RsiMeanReversion" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
+        "macd_trend" | "MacdMomentum" => Box::new(MacdMomentum::new(12, 26, 9)),
+        "multi_factor" | "MultiFactorModel" => Box::new(MultiFactorStrategy::new(MultiFactorConfig::default())),
+        _ => Box::new(DualMaCrossover::new(5, 20)),
+    };
+
+    let result = engine.run(strategy.as_mut(), &klines);
+
+    // Build equity curve JSON
+    let equity_curve: Vec<Value> = result.equity_curve.iter().map(|(dt, val)| {
+        json!({ "date": dt.format("%Y-%m-%d").to_string(), "value": (*val * 100.0).round() / 100.0 })
+    }).collect();
+
+    // Build trades JSON
+    let trades: Vec<Value> = result.trades.iter().map(|t| {
+        json!({
+            "date": t.timestamp.format("%Y-%m-%d %H:%M").to_string(),
+            "symbol": t.symbol,
+            "side": if t.side == quant_core::types::OrderSide::Buy { "BUY" } else { "SELL" },
+            "price": (t.price * 100.0).round() / 100.0,
+            "quantity": t.quantity as i64,
+            "commission": (t.commission * 100.0).round() / 100.0,
+        })
+    }).collect();
+
+    let m = &result.metrics;
+    let id = format!("bt-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap());
+
     (StatusCode::OK, Json(json!({
-        "id": format!("bt-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap()),
+        "id": id,
         "strategy": req.strategy,
         "symbol": req.symbol,
         "start": req.start,
         "end": req.end,
         "initial_capital": capital,
-        "final_value": capital * (1.0 + ret / 100.0),
-        "total_return_percent": ret,
-        "sharpe_ratio": sharpe,
-        "max_drawdown_percent": dd,
-        "win_rate_percent": wr,
-        "total_trades": trades,
-        "profit_factor": pf,
+        "final_value": (result.final_portfolio.total_value * 100.0).round() / 100.0,
+        "total_return_percent": (m.total_return * 10000.0).round() / 100.0,
+        "annual_return_percent": (m.annual_return * 10000.0).round() / 100.0,
+        "sharpe_ratio": (m.sharpe_ratio * 100.0).round() / 100.0,
+        "max_drawdown_percent": (m.max_drawdown * 10000.0).round() / 100.0,
+        "max_drawdown_duration_days": m.max_drawdown_duration,
+        "win_rate_percent": (m.win_rate * 10000.0).round() / 100.0,
+        "total_trades": m.total_trades,
+        "winning_trades": m.winning_trades,
+        "losing_trades": m.losing_trades,
+        "profit_factor": (m.profit_factor * 100.0).round() / 100.0,
+        "avg_win": (m.avg_win * 100.0).round() / 100.0,
+        "avg_loss": (m.avg_loss * 100.0).round() / 100.0,
+        "equity_curve": equity_curve,
+        "trades": trades,
         "status": "completed"
     })))
 }
