@@ -1,10 +1,13 @@
 {
   "paramValues": {
+    "DualMaCrossover": {
+      "fast_period": 32
+    },
     "MlFactor": {
       "buy_threshold": 0.6
     }
   },
-  "selectedStrategy": "MlFactor",
+  "selectedStrategy": "DualMaCrossover",
   "tradingConfig": {
     "initialCapital": 1000000,
     "symbol": "600519.SH"

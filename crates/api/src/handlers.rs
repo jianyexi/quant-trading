@@ -253,30 +253,45 @@ pub async fn get_quote(
     Path(symbol): Path<String>,
     State(_state): State<AppState>,
 ) -> Json<Value> {
-    let (price, name) = match symbol.as_str() {
-        "600519.SH" => (1688.50, "贵州茅台"),
-        "000858.SZ" => (142.85, "五粮液"),
-        "601318.SH" => (52.36, "中国平安"),
-        "000001.SZ" => (12.58, "平安银行"),
-        "600036.SH" => (35.72, "招商银行"),
-        "300750.SZ" => (225.40, "宁德时代"),
-        _ => (100.0, "未知"),
-    };
-    Json(json!({
-        "symbol": symbol,
-        "name": name,
-        "price": price,
-        "change": price * 0.012,
-        "change_percent": 1.19,
-        "volume": 12_580_000,
-        "turnover": price * 12_580_000.0,
-        "timestamp": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()
-    }))
+    match fetch_real_quote(&symbol) {
+        Ok(quote) => {
+            Json(json!({
+                "symbol": quote["symbol"].as_str().unwrap_or(&symbol),
+                "name": quote["name"].as_str().unwrap_or(""),
+                "price": quote["price"].as_f64().unwrap_or(0.0),
+                "change": quote["change"].as_f64().unwrap_or(0.0),
+                "change_percent": quote["change_percent"].as_f64().unwrap_or(0.0),
+                "volume": quote["volume"].as_f64().unwrap_or(0.0) as u64,
+                "turnover": quote["turnover"].as_f64().unwrap_or(0.0),
+                "open": quote["open"].as_f64().unwrap_or(0.0),
+                "high": quote["high"].as_f64().unwrap_or(0.0),
+                "low": quote["low"].as_f64().unwrap_or(0.0),
+                "date": quote["date"].as_str().unwrap_or(""),
+                "timestamp": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()
+            }))
+        }
+        Err(e) => {
+            Json(json!({
+                "symbol": symbol,
+                "name": "",
+                "price": 0,
+                "error": e
+            }))
+        }
+    }
 }
 
 // ── Stock list ──────────────────────────────────────────────────────
 
 pub async fn list_stocks() -> Json<Value> {
+    // Try fetching real stock list
+    if let Ok(data) = call_market_data(&["stock_list"]) {
+        if data.get("stocks").is_some() {
+            return Json(data);
+        }
+    }
+
+    // Fallback: static curated list (names only, no fake prices)
     Json(json!({
         "stocks": [
             {"symbol": "600519.SH", "name": "贵州茅台", "industry": "白酒", "market": "SSE"},
@@ -293,43 +308,52 @@ pub async fn list_stocks() -> Json<Value> {
     }))
 }
 
-// ── Backtest Handlers ───────────────────────────────────────────────
+// ── Python Market Data Bridge ─────────────────────────────────────
 
-/// Fetch real historical klines via the Python akshare bridge script.
-/// Returns Ok(klines) on success, Err(reason) on failure — caller falls back to synthetic data.
-fn fetch_real_klines(symbol: &str, start: &str, end: &str) -> std::result::Result<Vec<Kline>, String> {
+/// Call scripts/market_data.py with given command and args, return parsed JSON.
+fn call_market_data(args: &[&str]) -> std::result::Result<Value, String> {
     use std::process::Command;
-    use chrono::NaiveDateTime;
 
-    // Locate Python and script
     let python = find_python().ok_or_else(|| "Python not found".to_string())?;
-    let script = std::path::Path::new("scripts/fetch_klines.py");
+    let script = std::path::Path::new("scripts/market_data.py");
     if !script.exists() {
-        return Err("scripts/fetch_klines.py not found".into());
+        return Err(format!("scripts/market_data.py not found (cwd={:?})", std::env::current_dir()));
     }
 
     let output = Command::new(&python)
         .arg(script)
-        .arg(symbol)
-        .arg(start)
-        .arg(end)
+        .args(args)
+        .env("PYTHONIOENCODING", "utf-8")
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
         .output()
-        .map_err(|e| format!("Failed to run Python: {}", e))?;
+        .map_err(|e| format!("Failed to run Python '{}': {}", python, e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python script failed: {}", stderr));
+        return Err(format!("Python exit {}: stdout={}, stderr={}", output.status, stdout, stderr));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Invalid JSON from Python: {}", e))?;
+    if stdout.trim().is_empty() {
+        return Err("Python returned empty output".into());
+    }
 
-    // Check for error object
+    let parsed: Value = serde_json::from_str(stdout.trim())
+        .map_err(|e| format!("Invalid JSON: {} (raw: {})", e, &stdout[..stdout.len().min(200)]))?;
+
     if let Some(err) = parsed.get("error") {
-        return Err(format!("akshare error: {}", err));
+        return Err(format!("akshare: {}", err));
     }
+    Ok(parsed)
+}
 
+/// Fetch real historical klines via akshare.
+fn fetch_real_klines(symbol: &str, start: &str, end: &str) -> std::result::Result<Vec<Kline>, String> {
+    use chrono::NaiveDateTime;
+
+    let parsed = call_market_data(&["klines", symbol, start, end])?;
     let arr = parsed.as_array().ok_or("Expected JSON array")?;
     if arr.is_empty() {
         return Err("akshare returned empty data".into());
@@ -342,8 +366,7 @@ fn fetch_real_klines(symbol: &str, start: &str, end: &str) -> std::result::Resul
         let datetime = NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%d %H:%M:%S")
             .map_err(|e| format!("Bad datetime '{}': {}", dt_str, e))?;
         klines.push(Kline {
-            symbol: sym,
-            datetime,
+            symbol: sym, datetime,
             open: item["open"].as_f64().unwrap_or(0.0),
             high: item["high"].as_f64().unwrap_or(0.0),
             low: item["low"].as_f64().unwrap_or(0.0),
@@ -354,9 +377,18 @@ fn fetch_real_klines(symbol: &str, start: &str, end: &str) -> std::result::Resul
     Ok(klines)
 }
 
+/// Fetch real-time quote for a symbol.
+fn fetch_real_quote(symbol: &str) -> std::result::Result<Value, String> {
+    call_market_data(&["quote", symbol])
+}
+
+/// Fetch stock info for a symbol.
+fn fetch_real_stock_info(symbol: &str) -> std::result::Result<Value, String> {
+    call_market_data(&["stock_info", symbol])
+}
+
 /// Find a working Python 3 interpreter
 fn find_python() -> Option<String> {
-    // Try common locations on Windows
     let candidates = [
         std::env::var("PYTHON_PATH").unwrap_or_default(),
         r"C:\Users\jianyxi\AppData\Local\Programs\Python\Python312\python.exe".into(),
@@ -604,49 +636,86 @@ pub async fn get_backtest_results(
     Path(id): Path<String>,
     State(_state): State<AppState>,
 ) -> Json<Value> {
+    // Results are not persisted yet — return not found
     Json(json!({
         "id": id,
-        "status": "completed",
-        "total_return_percent": 25.0,
-        "annualized_return_percent": 18.5,
-        "sharpe_ratio": 1.45,
-        "max_drawdown_percent": 12.3,
-        "win_rate_percent": 58.0,
-        "total_trades": 42,
-        "profit_factor": 1.85
+        "status": "not_found",
+        "error": "Backtest results are not persisted. Please run a new backtest."
     }))
 }
 
 // ── Order Handlers ──────────────────────────────────────────────────
 
 pub async fn list_orders(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Json<Value> {
-    Json(json!({
-        "orders": [
-            {"id": "ORD-001", "time": "2024-06-14 14:32:01", "symbol": "600519.SH", "side": "buy", "price": 1689.25, "quantity": 100, "status": "filled"},
-            {"id": "ORD-002", "time": "2024-06-14 13:45:22", "symbol": "000858.SZ", "side": "sell", "price": 148.10, "quantity": 300, "status": "filled"},
-            {"id": "ORD-003", "time": "2024-06-14 11:05:33", "symbol": "600036.SH", "side": "sell", "price": 35.30, "quantity": 400, "status": "filled"}
-        ]
-    }))
+    // Return recent trades from trading engine status
+    let engine = state.engine.lock().await;
+    if let Some(eng) = engine.as_ref() {
+        let status = eng.status().await;
+        let orders: Vec<Value> = status.recent_trades.iter().map(|t| {
+            json!({
+                "id": t.order_id.to_string(),
+                "time": t.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+                "symbol": t.symbol,
+                "side": format!("{:?}", t.side).to_lowercase(),
+                "price": (t.price * 100.0).round() / 100.0,
+                "quantity": t.quantity as i64,
+                "status": "filled",
+            })
+        }).collect();
+        return Json(json!({ "orders": orders }));
+    }
+    Json(json!({ "orders": [] }))
 }
 
 // ── Portfolio Handlers ──────────────────────────────────────────────
 
 pub async fn get_portfolio(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Json<Value> {
+    let engine = state.engine.lock().await;
+    if let Some(eng) = engine.as_ref() {
+        let status = eng.status().await;
+        let account = eng.broker().get_account().await.ok();
+        if let Some(acct) = account {
+            let mut positions_json: Vec<Value> = Vec::new();
+            for (sym, pos) in &acct.portfolio.positions {
+                // Try to get current price from market
+                let current_price = fetch_real_quote(sym)
+                    .ok()
+                    .and_then(|q| q["price"].as_f64())
+                    .unwrap_or(pos.current_price);
+                let pnl = (current_price - pos.avg_cost) * pos.quantity;
+                positions_json.push(json!({
+                    "symbol": sym,
+                    "name": "",
+                    "shares": pos.quantity as i64,
+                    "avg_cost": (pos.avg_cost * 100.0).round() / 100.0,
+                    "current_price": (current_price * 100.0).round() / 100.0,
+                    "pnl": (pnl * 100.0).round() / 100.0,
+                }));
+            }
+            return Json(json!({
+                "total_value": (acct.portfolio.total_value * 100.0).round() / 100.0,
+                "cash": (acct.portfolio.cash * 100.0).round() / 100.0,
+                "total_pnl": ((acct.portfolio.total_value - acct.initial_capital) * 100.0).round() / 100.0,
+                "positions": positions_json,
+            }));
+        }
+        // Engine exists but no account
+        return Json(json!({
+            "total_value": status.performance.portfolio_value,
+            "cash": 0,
+            "total_pnl": status.pnl,
+            "positions": []
+        }));
+    }
     Json(json!({
-        "total_value": 1_284_305.00,
-        "cash": 245_680.00,
-        "total_pnl": 284_305.00,
-        "positions": [
-            {"symbol": "600519.SH", "name": "贵州茅台", "shares": 100, "avg_cost": 1620.00, "current_price": 1688.50, "pnl": 6850.00},
-            {"symbol": "000858.SZ", "name": "五粮液", "shares": 500, "avg_cost": 148.30, "current_price": 142.85, "pnl": -2725.00},
-            {"symbol": "601318.SH", "name": "中国平安", "shares": 1000, "avg_cost": 49.80, "current_price": 52.36, "pnl": 2560.00},
-            {"symbol": "000001.SZ", "name": "平安银行", "shares": 2000, "avg_cost": 13.10, "current_price": 12.58, "pnl": -1040.00},
-            {"symbol": "600036.SH", "name": "招商银行", "shares": 800, "avg_cost": 32.50, "current_price": 35.72, "pnl": 2576.00}
-        ]
+        "total_value": 0,
+        "cash": 0,
+        "total_pnl": 0,
+        "positions": []
     }))
 }
 
@@ -984,36 +1053,39 @@ pub async fn screen_scan(
     let top_n = req.top_n.unwrap_or(10);
     let min_votes = req.min_votes.unwrap_or(2);
 
-    let stocks: Vec<(&str, &str, f64)> = vec![
-        ("600519.SH", "贵州茅台", 1700.0),
-        ("000858.SZ", "五粮液", 150.0),
-        ("601318.SH", "中国平安", 48.0),
-        ("000001.SZ", "平安银行", 11.5),
-        ("600036.SH", "招商银行", 34.0),
-        ("300750.SZ", "宁德时代", 195.0),
-        ("600276.SH", "恒瑞医药", 45.0),
-        ("000333.SZ", "美的集团", 60.0),
-        ("601888.SH", "中国中免", 85.0),
-        ("002594.SZ", "比亚迪", 230.0),
-        ("601012.SH", "隆基绿能", 22.0),
-        ("600900.SH", "长江电力", 28.0),
-        ("000568.SZ", "泸州老窖", 185.0),
-        ("600809.SH", "山西汾酒", 220.0),
-        ("002475.SZ", "立讯精密", 32.0),
-        ("600030.SH", "中信证券", 20.0),
-        ("601166.SH", "兴业银行", 17.0),
-        ("000661.SZ", "长春高新", 165.0),
-        ("002714.SZ", "牧原股份", 42.0),
-        ("600585.SH", "海螺水泥", 26.0),
+    let symbols: Vec<(&str, &str)> = vec![
+        ("600519.SH", "贵州茅台"), ("000858.SZ", "五粮液"),
+        ("601318.SH", "中国平安"), ("000001.SZ", "平安银行"),
+        ("600036.SH", "招商银行"), ("300750.SZ", "宁德时代"),
+        ("600276.SH", "恒瑞医药"), ("000333.SZ", "美的集团"),
+        ("601888.SH", "中国中免"), ("002594.SZ", "比亚迪"),
+        ("601012.SH", "隆基绿能"), ("600900.SH", "长江电力"),
+        ("000568.SZ", "泸州老窖"), ("600809.SH", "山西汾酒"),
+        ("002475.SZ", "立讯精密"), ("600030.SH", "中信证券"),
+        ("601166.SH", "兴业银行"), ("000661.SZ", "长春高新"),
+        ("002714.SZ", "牧原股份"), ("600585.SH", "海螺水泥"),
     ];
 
-    let end_date = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
-    let start_date = end_date - chrono::Duration::days(120);
+    let today = chrono::Local::now().naive_local().date();
+    let end_str = today.format("%Y-%m-%d").to_string();
+    let start_date = today - chrono::Duration::days(150);
+    let start_str = start_date.format("%Y-%m-%d").to_string();
 
     let mut stock_data: HashMap<String, (String, Vec<Kline>)> = HashMap::new();
-    for (symbol, name, base_price) in &stocks {
-        let klines = generate_screening_klines(symbol, name, *base_price, start_date, end_date);
-        stock_data.insert(symbol.to_string(), (name.to_string(), klines));
+    for (symbol, name) in &symbols {
+        // Fetch real klines; skip if unavailable
+        match fetch_real_klines(symbol, &start_str, &end_str) {
+            Ok(klines) if !klines.is_empty() => {
+                stock_data.insert(symbol.to_string(), (name.to_string(), klines));
+            }
+            _ => {
+                // Fallback to GBM synthetic for this stock
+                let klines = generate_backtest_klines(symbol, &start_str, &end_str);
+                if !klines.is_empty() {
+                    stock_data.insert(symbol.to_string(), (name.to_string(), klines));
+                }
+            }
+        }
     }
 
     let config = ScreenerConfig {
@@ -1036,22 +1108,25 @@ pub async fn screen_factors(
     use std::collections::HashMap;
     use quant_strategy::screener::{ScreenerConfig, StockScreener};
 
-    let (name, base_price) = match symbol.as_str() {
-        "600519.SH" => ("贵州茅台", 1700.0),
-        "000858.SZ" => ("五粮液", 150.0),
-        "601318.SH" => ("中国平安", 48.0),
-        "000001.SZ" => ("平安银行", 11.5),
-        "600036.SH" => ("招商银行", 34.0),
-        "300750.SZ" => ("宁德时代", 195.0),
-        _ => ("未知", 100.0),
+    let today = chrono::Local::now().naive_local().date();
+    let end_str = today.format("%Y-%m-%d").to_string();
+    let start_date = today - chrono::Duration::days(150);
+    let start_str = start_date.format("%Y-%m-%d").to_string();
+
+    // Get stock name from info API
+    let name = fetch_real_stock_info(&symbol)
+        .ok()
+        .and_then(|v| v["name"].as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| symbol.clone());
+
+    // Fetch real klines
+    let klines = match fetch_real_klines(&symbol, &start_str, &end_str) {
+        Ok(k) if !k.is_empty() => k,
+        _ => generate_backtest_klines(&symbol, &start_str, &end_str),
     };
 
-    let end_date = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
-    let start_date = end_date - chrono::Duration::days(120);
-    let klines = generate_screening_klines(&symbol, name, base_price, start_date, end_date);
-
     let mut stock_data: HashMap<String, (String, Vec<Kline>)> = HashMap::new();
-    stock_data.insert(symbol.clone(), (name.to_string(), klines));
+    stock_data.insert(symbol.clone(), (name, klines));
 
     let config = ScreenerConfig {
         top_n: 1,
@@ -1068,85 +1143,6 @@ pub async fn screen_factors(
     } else {
         Json(json!({"error": "No data for symbol", "symbol": symbol}))
     }
-}
-
-/// Generate kline data for API screening
-fn generate_screening_klines(
-    symbol: &str,
-    _name: &str,
-    base_price: f64,
-    start: NaiveDate,
-    end: NaiveDate,
-) -> Vec<Kline> {
-    use chrono::Datelike;
-
-    let mut klines = Vec::new();
-    let mut current = start;
-    let daily_vol = 0.015;
-    let amplitude = 0.15;
-
-    let seed: u64 = symbol.bytes().fold(42u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-    let mut rng_state = seed;
-
-    let total_days = {
-        let mut d = start;
-        let mut count = 0;
-        while d <= end {
-            if d.weekday() != chrono::Weekday::Sat && d.weekday() != chrono::Weekday::Sun {
-                count += 1;
-            }
-            d += chrono::Duration::days(1);
-        }
-        count as f64
-    };
-
-    let mut bar_idx: f64 = 0.0;
-    let mut close = base_price;
-
-    while current <= end {
-        if current.weekday() == chrono::Weekday::Sat || current.weekday() == chrono::Weekday::Sun {
-            current += chrono::Duration::days(1);
-            continue;
-        }
-
-        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        let r1 = ((rng_state >> 33) as f64) / (u32::MAX as f64) - 0.5;
-        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        let r2 = ((rng_state >> 33) as f64) / (u32::MAX as f64) - 0.5;
-        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        let r3 = ((rng_state >> 33) as f64) / (u32::MAX as f64);
-
-        let t = bar_idx / total_days;
-        let cycle1 = (t * std::f64::consts::PI * 6.0).sin();
-        let cycle2 = (t * std::f64::consts::PI * 14.0).sin();
-        let cycle3 = (t * std::f64::consts::PI * 2.0).sin();
-        let target = base_price * (1.0 + amplitude * (0.5 * cycle1 + 0.3 * cycle2 + 0.2 * cycle3));
-
-        let pull = 0.03 * (target - close) / close;
-        let noise = daily_vol * r1 * 2.0;
-        let daily_return = pull + noise;
-
-        let open = close;
-        close = open * (1.0 + daily_return);
-
-        let intra = open.abs() * daily_vol * (0.3 + r3 * 0.5);
-        let high = open.max(close) + intra * (0.3 + r2.abs());
-        let low = (open.min(close) - intra * (0.3 + (0.5 - r2).abs())).max(open.min(close) * 0.95);
-
-        let base_vol = if base_price > 500.0 { 5e6 } else if base_price > 50.0 { 20e6 } else { 60e6 };
-        let volume = base_vol * (0.6 + r3 * 0.8) * (1.0 + daily_return.abs() * 15.0);
-
-        klines.push(Kline {
-            symbol: symbol.to_string(),
-            datetime: current.and_hms_opt(15, 0, 0).unwrap(),
-            open, high, low, close, volume,
-        });
-
-        bar_idx += 1.0;
-        current += chrono::Duration::days(1);
-    }
-
-    klines
 }
 
 // ── Sentiment API ──────────────────────────────────────────────────
