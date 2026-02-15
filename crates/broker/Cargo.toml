@@ -17,3 +17,4 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 sqlx = { workspace = true }
 reqwest = { workspace = true }
+rusqlite = { workspace = true }

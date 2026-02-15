@@ -47,6 +47,9 @@ fn trade_routes() -> Router<AppState> {
         .route("/start", post(handlers::trade_start))
         .route("/stop", post(handlers::trade_stop))
         .route("/status", get(handlers::trade_status))
+        .route("/risk", get(handlers::risk_status))
+        .route("/risk/reset-circuit", post(handlers::risk_reset_circuit))
+        .route("/risk/reset-daily", post(handlers::risk_reset_daily))
         .route("/qmt/status", get(handlers::qmt_bridge_status))
 }
 
@@ -71,6 +74,12 @@ fn research_routes() -> Router<AppState> {
         .route("/dl-models/collect", post(handlers::research_dl_collect))
 }
 
+fn journal_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(handlers::get_journal))
+        .route("/snapshots", get(handlers::get_journal_snapshots))
+}
+
 pub fn create_router(state: AppState, web_dist: &str) -> Router {
     let api_routes = Router::new()
         .route("/api/health", get(handlers::health))
@@ -85,6 +94,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/screen", screen_routes())
         .nest("/api/sentiment", sentiment_routes())
         .nest("/api/research", research_routes())
+        .nest("/api/journal", journal_routes())
         .layer(middleware::from_fn(api_key_auth))
         .with_state(state);
 

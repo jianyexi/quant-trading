@@ -35,6 +35,12 @@ max_concentration = 0.2
 max_daily_loss = 0.05
 # Maximum drawdown limit (0.15 = 15%)
 max_drawdown = 0.15
+# Stop-loss per position (0.05 = 5% loss triggers auto-sell)
+stop_loss_pct = 0.05
+# Consecutive order failures to trip circuit breaker
+circuit_breaker_failures = 5
+# Auto-halt engine on max drawdown breach
+halt_on_drawdown = true
 
 [qmt]
 # QMT Python bridge URL (qmt_bridge.py sidecar)

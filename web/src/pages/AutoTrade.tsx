@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Square, RefreshCw, Activity, TrendingUp, TrendingDown, AlertCircle, Loader2, Radio } from 'lucide-react';
-import { tradeStart, tradeStop, tradeStatus, qmtBridgeStatus, type TradeStatus, type QmtBridgeStatus } from '../api/client';
+import { Play, Square, RefreshCw, Activity, TrendingUp, TrendingDown, AlertCircle, Loader2, Radio, FileText } from 'lucide-react';
+import { tradeStart, tradeStop, tradeStatus, qmtBridgeStatus, getJournal, type TradeStatus, type QmtBridgeStatus, type JournalEntry } from '../api/client';
 
 const STRATEGIES = [
   { value: 'sma_cross', label: 'SMA 交叉 (5/20)', desc: '双均线金叉/死叉' },
@@ -30,6 +30,9 @@ export default function AutoTrade() {
   const [positionSize, setPositionSize] = useState(0.15);
   const [mode, setMode] = useState<'paper' | 'qmt'>('paper');
   const [qmtStatus, setQmtStatus] = useState<QmtBridgeStatus | null>(null);
+  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
+  const [journalTotal, setJournalTotal] = useState(0);
+  const [showJournal, setShowJournal] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Fetch initial status
@@ -99,6 +102,22 @@ export default function AutoTrade() {
   };
 
   const isRunning = status?.running ?? false;
+
+  const fetchJournal = async () => {
+    try {
+      const j = await getJournal({ limit: 50 });
+      setJournalEntries(j.entries);
+      setJournalTotal(j.total);
+    } catch { /* ignore */ }
+  };
+
+  const entryTypeLabel = (t: string) => {
+    const map: Record<string, string> = {
+      signal: '📡 信号', order_submitted: '📤 下单', order_filled: '✅ 成交',
+      risk_rejected: '🚫 风控拒绝', engine_started: '🚀 启动', engine_stopped: '🛑 停止',
+    };
+    return map[t] || t;
+  };
 
   return (
     <div className="space-y-6">
@@ -323,6 +342,60 @@ export default function AutoTrade() {
           </table>
         </div>
       )}
+
+      {/* Journal Toggle */}
+      <div className="rounded-xl border border-[#334155] bg-[#1e293b] p-4">
+        <button
+          onClick={() => { setShowJournal(!showJournal); if (!showJournal) fetchJournal(); }}
+          className="flex items-center gap-2 text-sm font-medium text-[#f8fafc] hover:text-[#3b82f6]"
+        >
+          <FileText className="h-4 w-4" />
+          📝 交易日志 {journalTotal > 0 && `(${journalTotal}条)`}
+        </button>
+
+        {showJournal && (
+          <div className="mt-4">
+            <div className="flex justify-between items-center mb-3">
+              <span className="text-xs text-[#94a3b8]">最近50条记录</span>
+              <button onClick={fetchJournal} className="text-xs text-[#3b82f6] hover:underline">刷新</button>
+            </div>
+            {journalEntries.length === 0 ? (
+              <p className="text-sm text-[#64748b]">暂无交易日志</p>
+            ) : (
+              <div className="overflow-x-auto max-h-80 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-[#1e293b]">
+                    <tr className="border-b border-[#334155]">
+                      <th className="text-left py-1.5 px-2 text-[#94a3b8]">时间</th>
+                      <th className="text-left py-1.5 px-2 text-[#94a3b8]">类型</th>
+                      <th className="text-left py-1.5 px-2 text-[#94a3b8]">股票</th>
+                      <th className="text-left py-1.5 px-2 text-[#94a3b8]">方向</th>
+                      <th className="text-right py-1.5 px-2 text-[#94a3b8]">数量</th>
+                      <th className="text-right py-1.5 px-2 text-[#94a3b8]">价格</th>
+                      <th className="text-left py-1.5 px-2 text-[#94a3b8]">详情</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {journalEntries.map((e) => (
+                      <tr key={e.id} className="border-b border-[#334155]/30 hover:bg-[#334155]/20">
+                        <td className="py-1.5 px-2 text-[#94a3b8] font-mono">{e.timestamp}</td>
+                        <td className="py-1.5 px-2">{entryTypeLabel(e.entry_type)}</td>
+                        <td className="py-1.5 px-2 text-[#3b82f6]">{e.symbol || '—'}</td>
+                        <td className={`py-1.5 px-2 ${e.side === 'BUY' ? 'text-green-400' : e.side === 'SELL' ? 'text-red-400' : 'text-[#94a3b8]'}`}>
+                          {e.side || '—'}
+                        </td>
+                        <td className="py-1.5 px-2 text-right text-[#f8fafc]">{e.quantity?.toFixed(0) ?? '—'}</td>
+                        <td className="py-1.5 px-2 text-right text-[#f8fafc]">{e.price ? `¥${e.price.toFixed(2)}` : '—'}</td>
+                        <td className="py-1.5 px-2 text-[#64748b] max-w-[200px] truncate">{e.reason || e.details || e.status || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

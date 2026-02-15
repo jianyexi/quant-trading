@@ -334,3 +334,44 @@ export async function collectResearch(topic?: string): Promise<CollectResult> {
     body: JSON.stringify({ topic }),
   });
 }
+
+// ── Trade Journal API ───────────────────────────────────────────────
+
+export interface JournalEntry {
+  id: string;
+  timestamp: string;
+  entry_type: string;
+  symbol: string;
+  side: string | null;
+  quantity: number | null;
+  price: number | null;
+  order_id: string | null;
+  status: string | null;
+  reason: string | null;
+  pnl: number | null;
+  portfolio_value: number | null;
+  cash: number | null;
+  details: string | null;
+}
+
+export interface JournalResult {
+  total: number;
+  entries: JournalEntry[];
+  stats: Array<{ type: string; count: number }>;
+}
+
+export async function getJournal(params?: {
+  symbol?: string;
+  entry_type?: string;
+  start?: string;
+  end?: string;
+  limit?: number;
+}): Promise<JournalResult> {
+  const qs = new URLSearchParams();
+  if (params?.symbol) qs.set('symbol', params.symbol);
+  if (params?.entry_type) qs.set('entry_type', params.entry_type);
+  if (params?.start) qs.set('start', params.start);
+  if (params?.end) qs.set('end', params.end);
+  if (params?.limit) qs.set('limit', String(params.limit));
+  return fetchJson(`/journal?${qs}`);
+}

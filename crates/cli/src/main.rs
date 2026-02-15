@@ -1092,6 +1092,14 @@ async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, positi
         stamp_tax_rate: config.trading.stamp_tax_rate,
         max_concentration: config.risk.max_concentration,
         position_size_pct: position_size,
+        data_mode: quant_broker::engine::DataMode::Simulated,
+        risk_config: quant_risk::enforcement::RiskConfig {
+            stop_loss_pct: config.risk.max_drawdown.min(0.10),
+            max_daily_loss_pct: config.risk.max_daily_loss,
+            max_drawdown_pct: config.risk.max_drawdown,
+            circuit_breaker_failures: 5,
+            halt_on_drawdown: true,
+        },
     };
 
     let strategy_name = strategy.to_string();
@@ -1126,7 +1134,7 @@ async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, positi
 
         match input {
             "stop" | "quit" | "exit" => {
-                engine.stop();
+                engine.stop().await;
                 println!();
                 break;
             }
@@ -1238,6 +1246,18 @@ async fn cmd_trade_qmt(strategy: &str, symbols_str: &str, interval: u64, positio
         stamp_tax_rate: config.trading.stamp_tax_rate,
         max_concentration: config.risk.max_concentration,
         position_size_pct: position_size,
+        data_mode: quant_broker::engine::DataMode::Live {
+            tushare_url: config.tushare.base_url.clone(),
+            tushare_token: config.tushare.token.clone(),
+            akshare_url: config.akshare.base_url.clone(),
+        },
+        risk_config: quant_risk::enforcement::RiskConfig {
+            stop_loss_pct: config.risk.max_drawdown.min(0.10),
+            max_daily_loss_pct: config.risk.max_daily_loss,
+            max_drawdown_pct: config.risk.max_drawdown,
+            circuit_breaker_failures: 5,
+            halt_on_drawdown: true,
+        },
     };
 
     let strategy_name = strategy.to_string();
@@ -1273,7 +1293,7 @@ async fn cmd_trade_qmt(strategy: &str, symbols_str: &str, interval: u64, positio
 
         match input {
             "stop" | "quit" | "exit" => {
-                engine.stop();
+                engine.stop().await;
                 println!();
                 break;
             }
@@ -1558,10 +1578,18 @@ fn cmd_sentiment_query(symbol: &str, limit: usize) {
 }
 
 async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
+    // Initialize journal store
+    if !std::path::Path::new("data").exists() {
+        std::fs::create_dir_all("data").ok();
+    }
+    let journal = quant_broker::journal::JournalStore::open("data/trade_journal.db")
+        .expect("Failed to open trade journal");
+
     let state = AppState {
         config: config.clone(),
         engine: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         sentiment_store: quant_strategy::sentiment::SentimentStore::new(),
+        journal: std::sync::Arc::new(journal),
     };
 
     // Resolve web/dist path — try CWD first, then relative to the executable

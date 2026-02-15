@@ -460,6 +460,24 @@ pub async fn trade_start(
         stamp_tax_rate: state.config.trading.stamp_tax_rate,
         max_concentration: state.config.risk.max_concentration,
         position_size_pct: position_size,
+        data_mode: if mode == "qmt" {
+            // Live trading should use live data
+            quant_broker::engine::DataMode::Live {
+                tushare_url: state.config.tushare.base_url.clone(),
+                tushare_token: state.config.tushare.token.clone(),
+                akshare_url: state.config.akshare.base_url.clone(),
+            }
+        } else {
+            // Paper mode uses simulated data by default
+            quant_broker::engine::DataMode::Simulated
+        },
+        risk_config: quant_risk::enforcement::RiskConfig {
+            stop_loss_pct: state.config.risk.max_drawdown.min(0.10),
+            max_daily_loss_pct: state.config.risk.max_daily_loss,
+            max_drawdown_pct: state.config.risk.max_drawdown,
+            circuit_breaker_failures: 5,
+            halt_on_drawdown: true,
+        },
     };
 
     let strat_name = strategy_name.clone();
@@ -525,7 +543,7 @@ pub async fn trade_stop(
 ) -> Json<Value> {
     let mut engine_guard = state.engine.lock().await;
     if let Some(ref mut eng) = *engine_guard {
-        eng.stop();
+        eng.stop().await;
         let status = eng.status().await;
         Json(json!({
             "status": "stopped",
@@ -557,6 +575,50 @@ pub async fn trade_status(
             "pnl": 0.0,
             "recent_trades": []
         }))
+    }
+}
+
+pub async fn risk_status(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let engine_guard = state.engine.lock().await;
+    if let Some(ref eng) = *engine_guard {
+        let status = eng.risk_enforcer().status();
+        Json(serde_json::to_value(&status).unwrap_or(json!({"error": "serialize"})))
+    } else {
+        Json(json!({
+            "daily_pnl": 0.0,
+            "daily_paused": false,
+            "drawdown_halted": false,
+            "circuit_open": false,
+            "consecutive_failures": 0,
+            "peak_value": 0.0,
+            "config": quant_risk::enforcement::RiskConfig::default()
+        }))
+    }
+}
+
+pub async fn risk_reset_circuit(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let engine_guard = state.engine.lock().await;
+    if let Some(ref eng) = *engine_guard {
+        eng.risk_enforcer().reset_circuit_breaker();
+        Json(json!({ "status": "circuit_breaker_reset" }))
+    } else {
+        Json(json!({ "error": "engine_not_running" }))
+    }
+}
+
+pub async fn risk_reset_daily(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let engine_guard = state.engine.lock().await;
+    if let Some(ref eng) = *engine_guard {
+        eng.risk_enforcer().reset_daily();
+        Json(json!({ "status": "daily_loss_reset" }))
+    } else {
+        Json(json!({ "error": "engine_not_running" }))
     }
 }
 
@@ -910,6 +972,48 @@ pub async fn sentiment_summary(
             "latest_at": s.latest_at.map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()),
         })).collect::<Vec<_>>(),
     }))
+}
+
+// ── Trade Journal ───────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct JournalQueryParams {
+    pub symbol: Option<String>,
+    pub entry_type: Option<String>,
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub limit: Option<usize>,
+}
+
+pub async fn get_journal(
+    State(state): State<AppState>,
+    Query(q): Query<JournalQueryParams>,
+) -> Json<Value> {
+    let query = quant_broker::journal::JournalQuery {
+        symbol: q.symbol,
+        entry_type: q.entry_type,
+        start: q.start,
+        end: q.end,
+        limit: q.limit,
+    };
+    let entries = state.journal.query(&query);
+    let stats = state.journal.stats();
+    let total = state.journal.count();
+
+    Json(json!({
+        "total": total,
+        "entries": entries,
+        "stats": stats.iter().map(|(t, c)| json!({"type": t, "count": c})).collect::<Vec<_>>(),
+    }))
+}
+
+pub async fn get_journal_snapshots(
+    State(state): State<AppState>,
+    Query(q): Query<KlineQuery>,
+) -> Json<Value> {
+    let limit = q.limit.unwrap_or(30);
+    let snapshots = state.journal.get_daily_snapshots(limit);
+    Json(json!({ "snapshots": snapshots }))
 }
 
 // ── DL Models Research ──────────────────────────────────────────────
