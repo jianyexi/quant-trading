@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   ComposedChart,
   Bar,
@@ -10,10 +10,9 @@ import {
   CartesianGrid,
   BarChart,
 } from 'recharts';
-import { Search, TrendingUp, TrendingDown } from 'lucide-react';
+import { Search, TrendingUp, TrendingDown, Loader2 } from 'lucide-react';
+import { getQuote, getKline } from '../api/client';
 import type { KlineData } from '../types';
-
-// --- Mock data ---
 
 interface StockInfo {
   symbol: string;
@@ -22,46 +21,17 @@ interface StockInfo {
   change: number;
   changePercent: number;
   volume: number;
-  marketCap: string;
+  turnover: number;
 }
 
 const POPULAR_STOCKS: { symbol: string; name: string }[] = [
   { symbol: '600519.SH', name: '贵州茅台' },
   { symbol: '000858.SZ', name: '五粮液' },
   { symbol: '601318.SH', name: '中国平安' },
-  { symbol: '000001.SZ', name: '平安银行' },
+  { symbol: '300750.SZ', name: '宁德时代' },
+  { symbol: '002594.SZ', name: '比亚迪' },
+  { symbol: '600036.SH', name: '招商银行' },
 ];
-
-const STOCK_INFO_MAP: Record<string, StockInfo> = {
-  '600519.SH': { symbol: '600519.SH', name: '贵州茅台', price: 1688.50, change: 12.30, changePercent: 0.73, volume: 2_834_500, marketCap: '2.12万亿' },
-  '000858.SZ': { symbol: '000858.SZ', name: '五粮液', price: 142.85, change: -1.65, changePercent: -1.14, volume: 5_612_300, marketCap: '5526亿' },
-  '601318.SH': { symbol: '601318.SH', name: '中国平安', price: 52.36, change: 0.48, changePercent: 0.92, volume: 18_923_400, marketCap: '9568亿' },
-  '000001.SZ': { symbol: '000001.SZ', name: '平安银行', price: 12.58, change: -0.12, changePercent: -0.95, volume: 32_145_600, marketCap: '2440亿' },
-};
-
-function generateKlineData(basePrice: number, days: number): KlineData[] {
-  const data: KlineData[] = [];
-  let price = basePrice;
-  const startDate = new Date();
-  startDate.setDate(startDate.getDate() - days);
-
-  for (let i = 0; i < days; i++) {
-    const date = new Date(startDate);
-    date.setDate(date.getDate() + i);
-    if (date.getDay() === 0 || date.getDay() === 6) continue;
-
-    const changePercent = (Math.random() - 0.48) * 0.04;
-    const open = price;
-    const close = +(price * (1 + changePercent)).toFixed(2);
-    const high = +(Math.max(open, close) * (1 + Math.random() * 0.015)).toFixed(2);
-    const low = +(Math.min(open, close) * (1 - Math.random() * 0.015)).toFixed(2);
-    const volume = Math.floor(1_000_000 + Math.random() * 5_000_000);
-
-    data.push({ date: date.toISOString().slice(0, 10), open, high, low, close, volume });
-    price = close;
-  }
-  return data;
-}
 
 const TIME_RANGES = [
   { label: '1M', days: 30 },
@@ -100,17 +70,69 @@ function KlineTooltip({ active, payload }: { active?: boolean; payload?: Tooltip
 export default function MarketData() {
   const [searchInput, setSearchInput] = useState('');
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
+  const [stockInfo, setStockInfo] = useState<StockInfo | null>(null);
+  const [klineData, setKlineData] = useState<KlineData[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [timeRange, setTimeRange] = useState(60);
   const [sortKey, setSortKey] = useState<SortKey>('date');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [page, setPage] = useState(0);
 
-  const stockInfo = selectedSymbol ? STOCK_INFO_MAP[selectedSymbol] ?? null : null;
+  const fetchStockData = useCallback(async (symbol: string, days: number) => {
+    setLoading(true);
+    setError(null);
+    try {
+      // Fetch quote and klines in parallel
+      const end = new Date().toISOString().slice(0, 10);
+      const start = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString().slice(0, 10);
 
-  const klineData = useMemo(
-    () => (stockInfo ? generateKlineData(stockInfo.price * 0.92, timeRange + 20).slice(-timeRange) : []),
-    [stockInfo, timeRange],
-  );
+      const [quoteRes, klineRes] = await Promise.all([
+        getQuote(symbol).catch(() => null),
+        getKline(symbol, start, end, days),
+      ]);
+
+      // Process quote
+      if (quoteRes && typeof quoteRes === 'object') {
+        const q = quoteRes as Record<string, unknown>;
+        setStockInfo({
+          symbol: String(q.symbol ?? symbol),
+          name: String(q.name ?? symbol),
+          price: Number(q.price ?? 0),
+          change: Number(q.change ?? 0),
+          changePercent: Number(q.change_percent ?? 0),
+          volume: Number(q.volume ?? 0),
+          turnover: Number(q.turnover ?? 0),
+        });
+      }
+
+      // Process klines
+      if (klineRes && typeof klineRes === 'object') {
+        const kr = klineRes as { data?: Array<Record<string, unknown>> };
+        if (Array.isArray(kr.data)) {
+          const mapped: KlineData[] = kr.data.map((d) => ({
+            date: String(d.datetime ?? d.date ?? '').slice(0, 10),
+            open: Number(d.open ?? 0),
+            high: Number(d.high ?? 0),
+            low: Number(d.low ?? 0),
+            close: Number(d.close ?? 0),
+            volume: Number(d.volume ?? 0),
+          }));
+          setKlineData(mapped);
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load data');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedSymbol) {
+      fetchStockData(selectedSymbol, timeRange + 20);
+    }
+  }, [selectedSymbol, timeRange, fetchStockData]);
 
   const chartData = useMemo(
     () =>
@@ -166,14 +188,14 @@ export default function MarketData() {
 
   function handleSearch() {
     const s = searchInput.trim().toUpperCase();
-    if (STOCK_INFO_MAP[s]) selectStock(s);
+    if (s) selectStock(s);
   }
 
   const isPositive = (v: number) => v >= 0;
 
   return (
     <div className="text-slate-200">
-      <h1 className="mb-6 text-2xl font-bold tracking-tight">行情数据</h1>
+      <h1 className="mb-6 text-2xl font-bold tracking-tight">行情数据 <span className="text-sm font-normal text-green-400">📡 实时数据</span></h1>
 
       {/* Search Bar */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -203,13 +225,25 @@ export default function MarketData() {
         ))}
       </div>
 
-      {!stockInfo && (
+      {!stockInfo && !loading && (
         <div className="flex h-64 items-center justify-center rounded-xl border border-slate-700 bg-[#1e293b] text-slate-500">
           请选择或搜索一支股票查看行情
         </div>
       )}
 
-      {stockInfo && (
+      {loading && (
+        <div className="flex h-64 items-center justify-center rounded-xl border border-slate-700 bg-[#1e293b] text-slate-400">
+          <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载真实行情数据中...
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">
+          {error}
+        </div>
+      )}
+
+      {stockInfo && !loading && (
         <>
           {/* Stock Info Card */}
           <div className="mb-6 rounded-xl border border-slate-700 bg-[#1e293b] p-5">
@@ -244,8 +278,8 @@ export default function MarketData() {
                   <span>{(stockInfo.volume / 10000).toFixed(0)}万</span>
                 </div>
                 <div>
-                  <span className="text-slate-400">总市值 </span>
-                  <span>{stockInfo.marketCap}</span>
+                  <span className="text-slate-400">成交额 </span>
+                  <span>{stockInfo.turnover >= 1e8 ? (stockInfo.turnover / 1e8).toFixed(1) + '亿' : (stockInfo.turnover / 1e4).toFixed(0) + '万'}</span>
                 </div>
               </div>
             </div>
