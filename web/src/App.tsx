@@ -10,6 +10,7 @@ import Screener from './pages/Screener';
 import AutoTrade from './pages/AutoTrade';
 import Sentiment from './pages/Sentiment';
 import DLModels from './pages/DLModels';
+import RiskManagement from './pages/RiskManagement';
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="backtest" element={<Backtest />} />
           <Route path="screener" element={<Screener />} />
           <Route path="autotrade" element={<AutoTrade />} />
+          <Route path="risk" element={<RiskManagement />} />
           <Route path="sentiment" element={<Sentiment />} />
           <Route path="dl-models" element={<DLModels />} />
           <Route path="portfolio" element={<Portfolio />} />

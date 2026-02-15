@@ -1,0 +1,12 @@
+{
+  "paramValues": {
+    "MlFactor": {
+      "buy_threshold": 0.6
+    }
+  },
+  "selectedStrategy": "MlFactor",
+  "tradingConfig": {
+    "initialCapital": 1000000,
+    "symbol": "600519.SH"
+  }
+}

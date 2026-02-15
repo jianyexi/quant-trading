@@ -10,6 +10,7 @@ import {
   Bot,
   Newspaper,
   Brain,
+  ShieldCheck,
 } from 'lucide-react';
 
 const navItems = [
@@ -19,6 +20,7 @@ const navItems = [
   { to: '/backtest', label: 'Backtest', icon: FlaskConical },
   { to: '/screener', label: '智能选股', icon: Search },
   { to: '/autotrade', label: '自动交易', icon: Bot },
+  { to: '/risk', label: '风控管理', icon: ShieldCheck },
   { to: '/sentiment', label: '舆情数据', icon: Newspaper },
   { to: '/dl-models', label: 'DL模型研究', icon: Brain },
   { to: '/portfolio', label: 'Portfolio', icon: Wallet },
