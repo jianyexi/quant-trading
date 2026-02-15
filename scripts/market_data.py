@@ -13,6 +13,20 @@ All output is JSON to stdout.
 import json
 import sys
 
+# Pre-known stock names to avoid slow individual API calls
+_STOCK_NAMES = {
+    "600519": "贵州茅台", "000858": "五粮液", "601318": "中国平安",
+    "000001": "平安银行", "600036": "招商银行", "300750": "宁德时代",
+    "600276": "恒瑞医药", "000333": "美的集团", "601888": "中国中免",
+    "002594": "比亚迪", "601012": "隆基绿能", "600900": "长江电力",
+    "000568": "泸州老窖", "600809": "山西汾酒", "002475": "立讯精密",
+    "600030": "中信证券", "601166": "兴业银行", "000661": "长春高新",
+    "002714": "牧原股份", "600585": "海螺水泥", "603259": "药明康德",
+    "601899": "紫金矿业", "600031": "三一重工", "000002": "万科A",
+    "600309": "万华化学", "002304": "洋河股份", "601668": "中国建筑",
+    "300059": "东方财富", "002230": "科大讯飞", "600887": "伊利股份",
+}
+
 
 def normalize_symbol(sym: str) -> str:
     """Strip exchange suffix (.SH / .SZ) for akshare."""
@@ -108,15 +122,8 @@ def cmd_quote(args):
         return {"error": f"No quote data for {symbol}"}
     r = df.iloc[-1]
 
-    # Get stock name via stock_individual_info_em
-    name = symbol
-    try:
-        info = ak.stock_individual_info_em(symbol=symbol)
-        name_row = info[info["item"] == "股票简称"]
-        if not name_row.empty:
-            name = str(name_row.iloc[0]["value"])
-    except Exception:
-        pass
+    # Use pre-known name map for common stocks (avoid slow API call)
+    name = _STOCK_NAMES.get(symbol, symbol)
 
     return {
         "symbol": full_symbol,
@@ -159,37 +166,39 @@ def cmd_stock_info(args):
 
 
 def cmd_stock_list(args):
-    """Get list of A-share stocks (top by market cap, fast)."""
+    """Get list of A-share stocks (curated, with batch spot data for speed)."""
     import akshare as ak
-    # Use a small, focused list of major A-share stocks
-    # stock_zh_a_spot_em is too slow, so we use a curated approach
-    codes = [
-        "600519", "000858", "601318", "000001", "600036",
-        "300750", "600276", "000333", "601888", "002594",
-        "601012", "600900", "000568", "600809", "002475",
-        "600030", "601166", "000661", "002714", "600585",
-        "603259", "601899", "600031", "000002", "600309",
-        "002304", "601668", "300059", "002230", "600887",
+
+    # Curated list with pre-known names/industries (avoid 30 individual API calls)
+    CURATED = [
+        ("600519", "贵州茅台", "白酒"), ("000858", "五粮液", "白酒"),
+        ("601318", "中国平安", "保险"), ("000001", "平安银行", "银行"),
+        ("600036", "招商银行", "银行"), ("300750", "宁德时代", "电池"),
+        ("600276", "恒瑞医药", "医药"), ("000333", "美的集团", "家电"),
+        ("601888", "中国中免", "零售"), ("002594", "比亚迪", "汽车"),
+        ("601012", "隆基绿能", "光伏"), ("600900", "长江电力", "电力"),
+        ("000568", "泸州老窖", "白酒"), ("600809", "山西汾酒", "白酒"),
+        ("002475", "立讯精密", "电子"), ("600030", "中信证券", "证券"),
+        ("601166", "兴业银行", "银行"), ("000661", "长春高新", "医药"),
+        ("002714", "牧原股份", "农牧"), ("600585", "海螺水泥", "建材"),
+        ("603259", "药明康德", "医药"), ("601899", "紫金矿业", "矿业"),
+        ("600031", "三一重工", "机械"), ("000002", "万科A", "房产"),
+        ("600309", "万华化学", "化工"), ("002304", "洋河股份", "白酒"),
+        ("601668", "中国建筑", "建筑"), ("300059", "东方财富", "金融IT"),
+        ("002230", "科大讯飞", "AI"), ("600887", "伊利股份", "乳业"),
     ]
+
     results = []
-    for code in codes:
-        try:
-            info = ak.stock_individual_info_em(symbol=code)
-            rec = {"symbol": exchange_suffix(code)}
-            for _, row in info.iterrows():
-                item = str(row["item"])
-                if item == "股票简称":
-                    rec["name"] = str(row["value"])
-                elif item == "行业":
-                    rec["industry"] = str(row["value"])
-            if "name" in rec:
-                market = "SSE" if code.startswith("6") else "SZSE"
-                if code.startswith("300"):
-                    market = "ChiNext"
-                rec["market"] = market
-                results.append(rec)
-        except Exception:
-            continue
+    for code, name, industry in CURATED:
+        market = "SSE" if code.startswith("6") else "SZSE"
+        if code.startswith("300"):
+            market = "ChiNext"
+        results.append({
+            "symbol": exchange_suffix(code),
+            "name": name,
+            "industry": industry,
+            "market": market,
+        })
     return {"stocks": results}
 
 
