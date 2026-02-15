@@ -2,21 +2,24 @@
 """
 Auto-retrain pipeline for ML factor model.
 
+Supports multiple algorithms:
+  - LightGBM (gradient boosting)
+  - XGBoost (gradient boosting)
+  - CatBoost (gradient boosting)
+  - LSTM (deep learning, PyTorch)
+  - Transformer (deep learning, PyTorch)
+
 Collects training data from:
   1. Trade journal (data/trade_journal.db) — real trade outcomes as labels
   2. Historical OHLCV data (CSV or API) — features
   3. Walk-forward cross-validation — prevents overfitting
 
-Outputs:
-  - Retrained model (ONNX / LightGBM)
-  - Feature importance report (JSON)
-  - Walk-forward validation report
-  - Notifies ml_serve to hot-reload
+All models compete on the same walk-forward CV; the best AUC wins.
 
 Usage:
     python auto_retrain.py --data market_data.csv
+    python auto_retrain.py --data market_data.csv --algorithms lgb,xgb,catboost,lstm,transformer
     python auto_retrain.py --journal data/trade_journal.db --data market_data.csv
-    python auto_retrain.py --schedule  # run as daily cron
 """
 
 import argparse
@@ -25,9 +28,10 @@ import os
 import sqlite3
 import sys
 import time
+from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -70,11 +74,9 @@ def collect_journal_labels(journal_db: str) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Parse timestamps
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df = df.dropna(subset=["timestamp"])
 
-    # For filled orders, mark profitable sells as label=1
     fills = df[df["entry_type"] == "order_filled"].copy()
     if not fills.empty:
         fills["label"] = (fills["pnl"].fillna(0) > 0).astype(int)
@@ -89,21 +91,13 @@ def merge_journal_with_ohlcv(
     horizon: int = 5,
     threshold: float = 0.01,
 ) -> tuple:
-    """
-    Merge OHLCV features with journal-based labels where available,
-    fall back to forward-return labels elsewhere.
-    
-    Returns (features, labels) DataFrames.
-    """
+    """Merge OHLCV features with journal-based labels where available."""
     features = compute_features(ohlcv_df)
 
-    # Default: forward return labels
     fwd_ret = ohlcv_df["close"].pct_change(horizon).shift(-horizon)
     labels = (fwd_ret > threshold).astype(int)
 
-    # Override with journal-based labels where available
     if not journal_df.empty:
-        # Align journal to OHLCV dates
         journal_df = journal_df.set_index("timestamp").sort_index()
         for idx in journal_df.index:
             closest = features.index.get_indexer([idx], method="nearest")
@@ -120,51 +114,482 @@ def merge_journal_with_ohlcv(
     return X, y
 
 
-# ── Walk-Forward Cross Validation ───────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════
+# Model Trainers — unified interface for all algorithms
+# ══════════════════════════════════════════════════════════════════════
 
-def walk_forward_cv(
-    X: pd.DataFrame,
-    y: pd.Series,
-    n_splits: int = 5,
-    train_ratio: float = 0.6,
-    params: dict = None,
-) -> dict:
-    """
-    Time-series walk-forward cross-validation.
-    
-    Splits data into n_splits sequential windows, each with train_ratio
-    for training and the rest for validation. No future leakage.
-    
-    Returns dict with per-fold metrics and overall summary.
-    """
-    try:
+class ModelTrainer(ABC):
+    """Base class for all model trainers."""
+    name: str = "base"
+
+    @abstractmethod
+    def train(self, X_train, y_train, X_val, y_val, feature_cols, **kwargs) -> Any:
+        """Train model, return fitted model object."""
+        ...
+
+    @abstractmethod
+    def predict(self, model, X) -> np.ndarray:
+        """Return probabilities [0, 1] for each row."""
+        ...
+
+    @abstractmethod
+    def save(self, model, path: str, feature_cols: List[str]):
+        """Save model to disk."""
+        ...
+
+    def feature_importance(self, model, feature_cols) -> List[Dict]:
+        """Return sorted feature importance list. Optional."""
+        return []
+
+    @staticmethod
+    def available() -> bool:
+        """Check if dependencies are installed."""
+        return True
+
+
+# ── LightGBM ────────────────────────────────────────────────────────
+
+class LightGBMTrainer(ModelTrainer):
+    name = "lightgbm"
+
+    @staticmethod
+    def available() -> bool:
+        try:
+            import lightgbm  # noqa
+            return True
+        except ImportError:
+            return False
+
+    def train(self, X_train, y_train, X_val, y_val, feature_cols, **kwargs):
         import lightgbm as lgb
-        from sklearn.metrics import roc_auc_score, accuracy_score
-    except ImportError:
-        print("ERROR: lightgbm/sklearn required. pip install lightgbm scikit-learn")
-        return {"error": "dependencies missing"}
 
-    if params is None:
+        pos = y_train.sum()
+        neg = len(y_train) - pos
+        spw = neg / max(pos, 1)
+
         params = {
-            "objective": "binary",
-            "metric": "auc",
-            "learning_rate": 0.05,
-            "num_leaves": 31,
-            "max_depth": 6,
+            "objective": "binary", "metric": "auc",
+            "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6,
             "min_child_samples": 20,
-            "feature_fraction": 0.8,
-            "bagging_fraction": 0.8,
-            "bagging_freq": 5,
-            "verbose": -1,
+            "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 5,
+            "scale_pos_weight": spw, "verbose": -1,
         }
+        train_data = lgb.Dataset(X_train, label=y_train, feature_name=feature_cols)
+        val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
+        model = lgb.train(
+            params, train_data, num_boost_round=500, valid_sets=[val_data],
+            callbacks=[lgb.early_stopping(30, verbose=False), lgb.log_evaluation(0)],
+        )
+        return model
+
+    def predict(self, model, X):
+        return model.predict(X)
+
+    def save(self, model, path, feature_cols):
+        model.save_model(path)
+
+    def feature_importance(self, model, feature_cols):
+        imp = model.feature_importance(importance_type="gain")
+        return sorted(
+            [{"feature": f, "importance": round(float(v), 2)} for f, v in zip(feature_cols, imp)],
+            key=lambda x: -x["importance"],
+        )
+
+
+# ── XGBoost ─────────────────────────────────────────────────────────
+
+class XGBoostTrainer(ModelTrainer):
+    name = "xgboost"
+
+    @staticmethod
+    def available() -> bool:
+        try:
+            import xgboost  # noqa
+            return True
+        except ImportError:
+            return False
+
+    def train(self, X_train, y_train, X_val, y_val, feature_cols, **kwargs):
+        import xgboost as xgb
+
+        pos = y_train.sum()
+        neg = len(y_train) - pos
+        spw = neg / max(pos, 1)
+
+        dtrain = xgb.DMatrix(X_train, label=y_train, feature_names=feature_cols)
+        dval = xgb.DMatrix(X_val, label=y_val, feature_names=feature_cols)
+        params = {
+            "objective": "binary:logistic", "eval_metric": "auc",
+            "max_depth": 6, "learning_rate": 0.05,
+            "subsample": 0.8, "colsample_bytree": 0.8,
+            "scale_pos_weight": spw, "verbosity": 0,
+        }
+        model = xgb.train(
+            params, dtrain, num_boost_round=500,
+            evals=[(dval, "val")],
+            early_stopping_rounds=30, verbose_eval=False,
+        )
+        return model
+
+    def predict(self, model, X):
+        import xgboost as xgb
+        return model.predict(xgb.DMatrix(X))
+
+    def save(self, model, path, feature_cols):
+        model.save_model(path)
+
+    def feature_importance(self, model, feature_cols):
+        scores = model.get_score(importance_type="gain")
+        return sorted(
+            [{"feature": f, "importance": round(scores.get(f, 0), 2)} for f in feature_cols],
+            key=lambda x: -x["importance"],
+        )
+
+
+# ── CatBoost ────────────────────────────────────────────────────────
+
+class CatBoostTrainer(ModelTrainer):
+    name = "catboost"
+
+    @staticmethod
+    def available() -> bool:
+        try:
+            import catboost  # noqa
+            return True
+        except ImportError:
+            return False
+
+    def train(self, X_train, y_train, X_val, y_val, feature_cols, **kwargs):
+        from catboost import CatBoostClassifier
+
+        pos = y_train.sum()
+        neg = len(y_train) - pos
+        spw = neg / max(pos, 1)
+
+        model = CatBoostClassifier(
+            iterations=500, depth=6, learning_rate=0.05,
+            loss_function="Logloss", eval_metric="AUC",
+            scale_pos_weight=spw,
+            early_stopping_rounds=30, verbose=0,
+        )
+        model.fit(X_train, y_train, eval_set=(X_val, y_val))
+        return model
+
+    def predict(self, model, X):
+        return model.predict_proba(X)[:, 1]
+
+    def save(self, model, path, feature_cols):
+        model.save_model(path)
+
+    def feature_importance(self, model, feature_cols):
+        imp = model.get_feature_importance()
+        return sorted(
+            [{"feature": f, "importance": round(float(v), 2)} for f, v in zip(feature_cols, imp)],
+            key=lambda x: -x["importance"],
+        )
+
+
+# ── LSTM (PyTorch) ──────────────────────────────────────────────────
+
+class LSTMTrainer(ModelTrainer):
+    name = "lstm"
+
+    @staticmethod
+    def available() -> bool:
+        try:
+            import torch  # noqa
+            return True
+        except ImportError:
+            return False
+
+    def _build_sequences(self, X, y, seq_len=20):
+        """Convert tabular data to sliding-window sequences for LSTM."""
+        seqs, labels = [], []
+        for i in range(seq_len, len(X)):
+            seqs.append(X[i - seq_len:i])
+            labels.append(y[i])
+        return np.array(seqs, dtype=np.float32), np.array(labels, dtype=np.float32)
+
+    def train(self, X_train, y_train, X_val, y_val, feature_cols, **kwargs):
+        import torch
+        import torch.nn as nn
+
+        seq_len = min(20, len(X_train) // 5)
+        X_tr_seq, y_tr_seq = self._build_sequences(X_train, y_train, seq_len)
+        X_va_seq, y_va_seq = self._build_sequences(X_val, y_val, seq_len)
+
+        if len(X_tr_seq) < 50 or len(X_va_seq) < 10:
+            raise ValueError("Not enough data for LSTM sequences")
+
+        n_features = X_train.shape[1]
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        class LSTMModel(nn.Module):
+            def __init__(self, input_dim, hidden=64, layers=2, dropout=0.3):
+                super().__init__()
+                self.lstm = nn.LSTM(input_dim, hidden, layers, batch_first=True, dropout=dropout)
+                self.fc = nn.Sequential(nn.Linear(hidden, 32), nn.ReLU(), nn.Dropout(0.2), nn.Linear(32, 1))
+
+            def forward(self, x):
+                out, _ = self.lstm(x)
+                return self.fc(out[:, -1, :]).squeeze(-1)
+
+        model = LSTMModel(n_features).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+
+        pos = y_tr_seq.sum()
+        neg = len(y_tr_seq) - pos
+        pos_weight = torch.tensor([neg / max(pos, 1)], device=device)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+        X_t = torch.tensor(X_tr_seq, device=device)
+        y_t = torch.tensor(y_tr_seq, device=device)
+        X_v = torch.tensor(X_va_seq, device=device)
+        y_v = torch.tensor(y_va_seq, device=device)
+
+        best_auc, patience, wait = 0.0, 15, 0
+        best_state = None
+
+        for epoch in range(100):
+            model.train()
+            # Mini-batch training
+            bs = min(256, len(X_t))
+            perm = torch.randperm(len(X_t))
+            epoch_loss = 0
+            for i in range(0, len(X_t), bs):
+                idx = perm[i:i + bs]
+                logits = model(X_t[idx])
+                loss = criterion(logits, y_t[idx])
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                epoch_loss += loss.item()
+
+            # Validate
+            model.eval()
+            with torch.no_grad():
+                val_logits = model(X_v)
+                val_probs = torch.sigmoid(val_logits).cpu().numpy()
+            from sklearn.metrics import roc_auc_score
+            try:
+                auc = roc_auc_score(y_va_seq, val_probs)
+            except ValueError:
+                auc = 0.5
+
+            if auc > best_auc:
+                best_auc = auc
+                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+                wait = 0
+            else:
+                wait += 1
+                if wait >= patience:
+                    break
+
+        if best_state:
+            model.load_state_dict(best_state)
+
+        # Store metadata for prediction
+        model._seq_len = seq_len
+        model._device = device
+        return model
+
+    def predict(self, model, X):
+        import torch
+        seq_len = getattr(model, "_seq_len", 20)
+        device = getattr(model, "_device", "cpu")
+
+        seqs, _ = self._build_sequences(X, np.zeros(len(X)), seq_len)
+        if len(seqs) == 0:
+            return np.full(len(X), 0.5)
+
+        model.eval()
+        with torch.no_grad():
+            X_t = torch.tensor(seqs, device=device)
+            logits = model(X_t)
+            probs = torch.sigmoid(logits).cpu().numpy()
+
+        # Pad the beginning (no sequences available)
+        result = np.full(len(X), 0.5)
+        result[seq_len:seq_len + len(probs)] = probs
+        return result
+
+    def save(self, model, path, feature_cols):
+        import torch
+        # Save as TorchScript for ml_serve compatibility
+        model.eval()
+        model_cpu = model.cpu()
+        seq_len = getattr(model, "_seq_len", 20)
+        dummy = torch.randn(1, seq_len, len(feature_cols))
+        scripted = torch.jit.trace(model_cpu, dummy)
+        scripted.save(path)
+
+
+# ── Transformer (PyTorch) ───────────────────────────────────────────
+
+class TransformerTrainer(ModelTrainer):
+    name = "transformer"
+
+    @staticmethod
+    def available() -> bool:
+        try:
+            import torch  # noqa
+            return True
+        except ImportError:
+            return False
+
+    def _build_sequences(self, X, y, seq_len=20):
+        seqs, labels = [], []
+        for i in range(seq_len, len(X)):
+            seqs.append(X[i - seq_len:i])
+            labels.append(y[i])
+        return np.array(seqs, dtype=np.float32), np.array(labels, dtype=np.float32)
+
+    def train(self, X_train, y_train, X_val, y_val, feature_cols, **kwargs):
+        import torch
+        import torch.nn as nn
+
+        seq_len = min(20, len(X_train) // 5)
+        X_tr_seq, y_tr_seq = self._build_sequences(X_train, y_train, seq_len)
+        X_va_seq, y_va_seq = self._build_sequences(X_val, y_val, seq_len)
+
+        if len(X_tr_seq) < 50 or len(X_va_seq) < 10:
+            raise ValueError("Not enough data for Transformer sequences")
+
+        n_features = X_train.shape[1]
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        class FactorTransformer(nn.Module):
+            def __init__(self, input_dim, d_model=64, nhead=4, layers=2, dropout=0.2):
+                super().__init__()
+                self.input_proj = nn.Linear(input_dim, d_model)
+                self.pos_embed = nn.Parameter(torch.randn(1, seq_len, d_model) * 0.02)
+                encoder_layer = nn.TransformerEncoderLayer(
+                    d_model=d_model, nhead=nhead, dim_feedforward=128,
+                    dropout=dropout, batch_first=True,
+                )
+                self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=layers)
+                self.fc = nn.Sequential(nn.Linear(d_model, 32), nn.ReLU(), nn.Dropout(0.2), nn.Linear(32, 1))
+
+            def forward(self, x):
+                x = self.input_proj(x) + self.pos_embed[:, :x.size(1), :]
+                x = self.encoder(x)
+                return self.fc(x[:, -1, :]).squeeze(-1)
+
+        model = FactorTransformer(n_features).to(device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
+
+        pos = y_tr_seq.sum()
+        neg = len(y_tr_seq) - pos
+        pos_weight = torch.tensor([neg / max(pos, 1)], device=device)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+        X_t = torch.tensor(X_tr_seq, device=device)
+        y_t = torch.tensor(y_tr_seq, device=device)
+        X_v = torch.tensor(X_va_seq, device=device)
+        y_v = torch.tensor(y_va_seq, device=device)
+
+        best_auc, patience, wait = 0.0, 15, 0
+        best_state = None
+
+        for epoch in range(80):
+            model.train()
+            bs = min(256, len(X_t))
+            perm = torch.randperm(len(X_t))
+            for i in range(0, len(X_t), bs):
+                idx = perm[i:i + bs]
+                logits = model(X_t[idx])
+                loss = criterion(logits, y_t[idx])
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+
+            model.eval()
+            with torch.no_grad():
+                val_probs = torch.sigmoid(model(X_v)).cpu().numpy()
+            from sklearn.metrics import roc_auc_score
+            try:
+                auc = roc_auc_score(y_va_seq, val_probs)
+            except ValueError:
+                auc = 0.5
+
+            if auc > best_auc:
+                best_auc = auc
+                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+                wait = 0
+            else:
+                wait += 1
+                if wait >= patience:
+                    break
+
+        if best_state:
+            model.load_state_dict(best_state)
+        model._seq_len = seq_len
+        model._device = device
+        return model
+
+    def predict(self, model, X):
+        import torch
+        seq_len = getattr(model, "_seq_len", 20)
+        device = getattr(model, "_device", "cpu")
+
+        seqs, _ = self._build_sequences(X, np.zeros(len(X)), seq_len)
+        if len(seqs) == 0:
+            return np.full(len(X), 0.5)
+
+        model.eval()
+        with torch.no_grad():
+            X_t = torch.tensor(seqs, device=device)
+            probs = torch.sigmoid(model(X_t)).cpu().numpy()
+
+        result = np.full(len(X), 0.5)
+        result[seq_len:seq_len + len(probs)] = probs
+        return result
+
+    def save(self, model, path, feature_cols):
+        import torch
+        model.eval()
+        model_cpu = model.cpu()
+        seq_len = getattr(model, "_seq_len", 20)
+        dummy = torch.randn(1, seq_len, len(feature_cols))
+        scripted = torch.jit.trace(model_cpu, dummy)
+        scripted.save(path)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Registry & Competition
+# ══════════════════════════════════════════════════════════════════════
+
+TRAINER_REGISTRY = {
+    "lgb": LightGBMTrainer,
+    "xgb": XGBoostTrainer,
+    "catboost": CatBoostTrainer,
+    "lstm": LSTMTrainer,
+    "transformer": TransformerTrainer,
+}
+
+MODEL_EXTENSIONS = {
+    "lgb": ".lgb.txt",
+    "xgb": ".xgb.json",
+    "catboost": ".catboost.bin",
+    "lstm": ".lstm.pt",
+    "transformer": ".transformer.pt",
+}
+
+
+def walk_forward_cv_single(
+    trainer: ModelTrainer,
+    X: pd.DataFrame, y: pd.Series,
+    n_splits: int = 5, train_ratio: float = 0.6,
+) -> dict:
+    """Walk-forward CV for a single trainer. Returns summary dict."""
+    from sklearn.metrics import roc_auc_score, accuracy_score
 
     n = len(X)
     fold_size = n // n_splits
     results = []
     feature_cols = list(X.columns)
-
-    print(f"\n📊 Walk-forward CV: {n_splits} folds, {n} total samples")
-    print(f"   Fold size: ~{fold_size}, train ratio: {train_ratio:.0%}")
 
     for fold in range(n_splits):
         start = fold * fold_size
@@ -179,60 +604,36 @@ def walk_forward_cv(
         y_va = y.iloc[split:end].values.astype(int)
 
         if len(np.unique(y_tr)) < 2 or len(np.unique(y_va)) < 2:
-            print(f"   Fold {fold+1}: skipped (single class)")
             continue
 
-        # Handle class imbalance
-        pos_count = y_tr.sum()
-        neg_count = len(y_tr) - pos_count
-        scale_pos_weight = neg_count / max(pos_count, 1)
-        fold_params = {**params, "scale_pos_weight": scale_pos_weight}
+        try:
+            model = trainer.train(X_tr, y_tr, X_va, y_va, feature_cols)
+            pred = trainer.predict(model, X_va)
+            # Align predictions to validation length for sequence models
+            if len(pred) > len(y_va):
+                pred = pred[:len(y_va)]
+            elif len(pred) < len(y_va):
+                # Pad front for sequence models
+                y_va = y_va[len(y_va) - len(pred):]
+            auc = roc_auc_score(y_va, pred)
+            acc = accuracy_score(y_va, (pred > 0.5).astype(int))
+            results.append({"fold": fold + 1, "auc": round(auc, 4), "accuracy": round(acc, 4)})
+        except Exception as e:
+            results.append({"fold": fold + 1, "error": str(e)})
 
-        train_data = lgb.Dataset(X_tr, label=y_tr, feature_name=feature_cols)
-        val_data = lgb.Dataset(X_va, label=y_va, reference=train_data)
+    valid = [r for r in results if "auc" in r]
+    if not valid:
+        return {"algorithm": trainer.name, "error": "no valid folds", "folds": results}
 
-        model = lgb.train(
-            fold_params,
-            train_data,
-            num_boost_round=200,
-            valid_sets=[val_data],
-            callbacks=[
-                lgb.early_stopping(20, verbose=False),
-                lgb.log_evaluation(0),
-            ],
-        )
-
-        pred = model.predict(X_va)
-        auc = roc_auc_score(y_va, pred)
-        acc = accuracy_score(y_va, (pred > 0.5).astype(int))
-
-        results.append({
-            "fold": fold + 1,
-            "train_size": len(y_tr),
-            "val_size": len(y_va),
-            "auc": round(auc, 4),
-            "accuracy": round(acc, 4),
-            "pos_ratio_train": round(pos_count / len(y_tr), 3),
-            "best_iteration": model.best_iteration,
-        })
-        print(f"   Fold {fold+1}: AUC={auc:.4f}, Acc={acc:.4f}, best_iter={model.best_iteration}")
-
-    if not results:
-        return {"error": "no valid folds", "folds": []}
-
-    avg_auc = np.mean([r["auc"] for r in results])
-    avg_acc = np.mean([r["accuracy"] for r in results])
-    std_auc = np.std([r["auc"] for r in results])
-
-    summary = {
-        "n_folds": len(results),
+    avg_auc = np.mean([r["auc"] for r in valid])
+    std_auc = np.std([r["auc"] for r in valid])
+    return {
+        "algorithm": trainer.name,
         "avg_auc": round(avg_auc, 4),
         "std_auc": round(std_auc, 4),
-        "avg_accuracy": round(avg_acc, 4),
+        "n_folds": len(valid),
         "folds": results,
     }
-    print(f"\n   📈 Overall: AUC={avg_auc:.4f} ± {std_auc:.4f}, Acc={avg_acc:.4f}")
-    return summary
 
 
 # ── Full Training Pipeline ──────────────────────────────────────────
@@ -244,23 +645,20 @@ def retrain(
     n_cv_folds: int = 5,
     horizon: int = 5,
     threshold: float = 0.01,
+    algorithms: Optional[List[str]] = None,
     notify_serve: bool = True,
     serve_url: str = "http://127.0.0.1:18091",
 ) -> dict:
     """
-    Full retrain pipeline:
-      1. Load OHLCV data (CSV or synthetic)
-      2. Collect journal labels (if available)
-      3. Walk-forward cross-validation
-      4. Train final model on all data
-      5. Export ONNX + feature importance
-      6. Notify ml_serve to hot-reload
+    Full multi-algorithm retrain pipeline:
+      1. Load OHLCV data
+      2. Collect journal labels
+      3. Walk-forward CV for each algorithm
+      4. Pick best algorithm
+      5. Train final model on all data
+      6. Export + notify
     """
-    try:
-        import lightgbm as lgb
-        from sklearn.metrics import roc_auc_score, accuracy_score
-    except ImportError:
-        return {"error": "lightgbm/sklearn required"}
+    from sklearn.metrics import roc_auc_score, accuracy_score
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report = {"timestamp": timestamp, "status": "started"}
@@ -289,153 +687,185 @@ def retrain(
     print(f"\n🔧 Dataset: {len(X)} samples, {len(feature_cols)} features")
     print(f"   Label dist: {report['label_distribution']}")
 
-    # 4. Walk-forward CV
-    cv_report = walk_forward_cv(X, y, n_splits=n_cv_folds)
-    report["walk_forward_cv"] = cv_report
+    # 4. Determine algorithms to try
+    if algorithms is None:
+        algorithms = ["lgb"]  # default to LightGBM only
 
-    if "error" in cv_report:
-        report["status"] = "cv_failed"
+    trainers = []
+    for algo in algorithms:
+        cls = TRAINER_REGISTRY.get(algo)
+        if cls is None:
+            print(f"⚠️  Unknown algorithm: {algo}")
+            continue
+        if not cls.available():
+            print(f"⚠️  {algo} not available (dependencies not installed)")
+            continue
+        trainers.append(cls())
+
+    if not trainers:
+        report["status"] = "no_trainers"
+        report["error"] = "No valid algorithms available"
         return report
 
-    # 5. Train final model on all data with early stopping
-    print("\n🏋️ Training final model on full dataset...")
+    print(f"\n🏁 Algorithms to compete: {[t.name for t in trainers]}")
+
+    # 5. Walk-forward CV competition
+    cv_results = []
+    for trainer in trainers:
+        print(f"\n{'='*60}")
+        print(f"📊 Walk-forward CV: {trainer.name}")
+        cv = walk_forward_cv_single(trainer, X, y, n_splits=n_cv_folds)
+        cv_results.append(cv)
+        if "avg_auc" in cv:
+            print(f"   ➜ AUC: {cv['avg_auc']:.4f} ± {cv['std_auc']:.4f}")
+        else:
+            print(f"   ➜ FAILED: {cv.get('error', 'unknown')}")
+
+    report["cv_competition"] = cv_results
+
+    # Pick best algorithm by avg AUC
+    valid_cvs = [c for c in cv_results if "avg_auc" in c]
+    if not valid_cvs:
+        report["status"] = "all_cv_failed"
+        return report
+
+    best_cv = max(valid_cvs, key=lambda c: c["avg_auc"])
+    best_algo = best_cv["algorithm"]
+    report["best_algorithm"] = best_algo
+    print(f"\n🏆 Winner: {best_algo} (AUC={best_cv['avg_auc']:.4f})")
+
+    # 6. Train final model with best algorithm
+    best_trainer = next(t for t in trainers if t.name == best_algo)
     split_idx = int(len(X) * 0.85)
     X_arr = X.values.astype(np.float32)
     y_arr = y.values.astype(int)
 
-    pos_count = y_arr[:split_idx].sum()
-    neg_count = split_idx - pos_count
-    scale_pos_weight = neg_count / max(pos_count, 1)
-
-    params = {
-        "objective": "binary",
-        "metric": "auc",
-        "learning_rate": 0.05,
-        "num_leaves": 31,
-        "max_depth": 6,
-        "min_child_samples": 20,
-        "feature_fraction": 0.8,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 5,
-        "verbose": -1,
-        "scale_pos_weight": scale_pos_weight,
-    }
-
-    train_data = lgb.Dataset(X_arr[:split_idx], label=y_arr[:split_idx], feature_name=feature_cols)
-    val_data = lgb.Dataset(X_arr[split_idx:], label=y_arr[split_idx:], reference=train_data)
-
-    model = lgb.train(
-        params,
-        train_data,
-        num_boost_round=500,
-        valid_sets=[val_data],
-        callbacks=[
-            lgb.early_stopping(30, verbose=False),
-            lgb.log_evaluation(50),
-        ],
+    print(f"\n🏋️ Training final {best_algo} model on full dataset...")
+    final_model = best_trainer.train(
+        X_arr[:split_idx], y_arr[:split_idx],
+        X_arr[split_idx:], y_arr[split_idx:],
+        feature_cols,
     )
 
-    val_pred = model.predict(X_arr[split_idx:])
-    final_auc = roc_auc_score(y_arr[split_idx:], val_pred)
-    final_acc = accuracy_score(y_arr[split_idx:], (val_pred > 0.5).astype(int))
+    val_pred = best_trainer.predict(final_model, X_arr[split_idx:])
+    # Align for sequence models
+    val_labels = y_arr[split_idx:]
+    if len(val_pred) < len(val_labels):
+        val_labels = val_labels[len(val_labels) - len(val_pred):]
+    elif len(val_pred) > len(val_labels):
+        val_pred = val_pred[:len(val_labels)]
+
+    final_auc = roc_auc_score(val_labels, val_pred)
+    final_acc = accuracy_score(val_labels, (val_pred > 0.5).astype(int))
     report["final_model"] = {
+        "algorithm": best_algo,
         "auc": round(final_auc, 4),
         "accuracy": round(final_acc, 4),
-        "best_iteration": model.best_iteration,
-        "scale_pos_weight": round(scale_pos_weight, 3),
     }
-    print(f"\n✅ Final model: AUC={final_auc:.4f}, Acc={final_acc:.4f}, iters={model.best_iteration}")
+    print(f"✅ Final {best_algo}: AUC={final_auc:.4f}, Acc={final_acc:.4f}")
 
-    # 6. Feature importance
-    importance = model.feature_importance(importance_type="gain")
-    feat_imp = sorted(zip(feature_cols, importance.tolist()), key=lambda x: -x[1])
-    report["feature_importance"] = [{"feature": f, "importance": round(imp, 2)} for f, imp in feat_imp]
-    print("\n📊 Top 10 features:")
-    for f, imp in feat_imp[:10]:
-        print(f"   {f:25s} {imp:10.1f}")
+    # 7. Feature importance
+    feat_imp = best_trainer.feature_importance(final_model, feature_cols)
+    report["feature_importance"] = feat_imp
+    if feat_imp:
+        print("\n📊 Top 10 features:")
+        for fi in feat_imp[:10]:
+            print(f"   {fi['feature']:25s} {fi['importance']:10.1f}")
 
-    # 7. Export model
+    # 8. Export
     os.makedirs(output_dir, exist_ok=True)
-    model_name = f"factor_model_{timestamp}"
+    ext = MODEL_EXTENSIONS.get(best_algo, ".model")
+    model_name = f"factor_model_{timestamp}{ext}"
+    model_path = os.path.join(output_dir, model_name)
+    best_trainer.save(final_model, model_path, feature_cols)
+    report["model_path"] = model_path
+    print(f"\n💾 Model saved: {model_path}")
 
-    # Save LightGBM native
-    lgb_path = os.path.join(output_dir, f"{model_name}.lgb.txt")
-    model.save_model(lgb_path)
-    report["lgb_model_path"] = lgb_path
+    # Also save to default location for easy loading
+    default_path = os.path.join(output_dir, f"factor_model{ext}")
+    best_trainer.save(final_model, default_path, feature_cols)
 
-    # Try ONNX export
-    onnx_path = os.path.join(output_dir, f"{model_name}.onnx")
-    try:
-        import onnxmltools
-        from onnxmltools.convert import convert_lightgbm
-        from onnxmltools.convert.common.data_types import FloatTensorType
+    # For LightGBM, also try ONNX export
+    if best_algo == "lgb":
+        try:
+            import onnxmltools
+            from onnxmltools.convert import convert_lightgbm
+            from onnxmltools.convert.common.data_types import FloatTensorType
+            onnx_path = os.path.join(output_dir, f"factor_model_{timestamp}.onnx")
+            initial_type = [("features", FloatTensorType([None, len(feature_cols)]))]
+            onnx_model = convert_lightgbm(final_model, initial_types=initial_type, target_opset=11)
+            onnxmltools.utils.save_model(onnx_model, onnx_path)
+            report["onnx_model_path"] = onnx_path
+            print(f"💾 ONNX model: {onnx_path}")
+        except ImportError:
+            pass
 
-        initial_type = [("features", FloatTensorType([None, len(feature_cols)]))]
-        onnx_model = convert_lightgbm(model, initial_types=initial_type, target_opset=11)
-        onnxmltools.utils.save_model(onnx_model, onnx_path)
-        report["onnx_model_path"] = onnx_path
-        print(f"\n💾 ONNX model: {onnx_path}")
-    except ImportError:
-        print("⚠️  onnxmltools not installed, ONNX export skipped")
-
-    # Also save as the default model path for ml_serve
-    default_lgb = os.path.join(output_dir, "factor_model.lgb.txt")
-    model.save_model(default_lgb)
-    print(f"💾 LightGBM model: {default_lgb}")
-
-    # Save feature importance JSON
+    # Save report
     report_path = os.path.join(output_dir, f"retrain_report_{timestamp}.json")
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2, default=str)
     print(f"📄 Report: {report_path}")
 
     # Save feature list
-    feat_list_path = os.path.join(output_dir, "factor_model_features.txt")
-    with open(feat_list_path, "w") as f:
+    feat_path = os.path.join(output_dir, "factor_model_features.txt")
+    with open(feat_path, "w") as f:
         for col in feature_cols:
             f.write(col + "\n")
 
-    # 8. Notify ml_serve to reload
+    # 9. Notify ml_serve to reload
     if notify_serve:
         try:
             import requests
-            resp = requests.post(f"{serve_url}/reload", json={
-                "model_path": default_lgb,
-            }, timeout=5)
+            resp = requests.post(f"{serve_url}/reload", json={"model_path": default_path}, timeout=5)
             if resp.ok:
                 print("🔄 ml_serve notified to reload model")
-            else:
-                print(f"⚠️  ml_serve reload failed: {resp.status_code}")
         except Exception as e:
             print(f"⚠️  Could not notify ml_serve: {e}")
 
+    # If we trained multiple models, set up ensemble
+    all_models_paths = []
+    for trainer in trainers:
+        algo = trainer.name
+        ext_a = MODEL_EXTENSIONS.get(algo, ".model")
+        p = os.path.join(output_dir, f"factor_model_{timestamp}{ext_a}")
+        if algo != best_algo:
+            try:
+                m = trainer.train(
+                    X_arr[:split_idx], y_arr[:split_idx],
+                    X_arr[split_idx:], y_arr[split_idx:],
+                    feature_cols,
+                )
+                trainer.save(m, p, feature_cols)
+                all_models_paths.append({"path": p, "algorithm": algo})
+            except Exception:
+                pass
+        else:
+            all_models_paths.append({"path": model_path, "algorithm": algo})
+    report["all_models"] = all_models_paths
+
     report["status"] = "completed"
-    print(f"\n🎉 Retrain complete! CV AUC: {cv_report['avg_auc']:.4f}, Final AUC: {final_auc:.4f}")
+    print(f"\n🎉 Retrain complete! Best: {best_algo} AUC={final_auc:.4f}")
     return report
 
 
 # ── Main ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Auto-retrain ML Factor Model")
-    parser.add_argument("--data", default=None,
-                        help="Path to OHLCV CSV data")
-    parser.add_argument("--journal", default="data/trade_journal.db",
-                        help="Path to trade journal SQLite DB")
-    parser.add_argument("--output-dir", default="ml_models",
-                        help="Output directory for models")
-    parser.add_argument("--folds", type=int, default=5,
-                        help="Number of walk-forward CV folds")
-    parser.add_argument("--horizon", type=int, default=5,
-                        help="Forward return horizon (bars)")
-    parser.add_argument("--threshold", type=float, default=0.01,
-                        help="Forward return threshold for positive label")
-    parser.add_argument("--no-notify", action="store_true",
-                        help="Don't notify ml_serve to reload")
-    parser.add_argument("--serve-url", default="http://127.0.0.1:18091",
-                        help="ml_serve URL for hot-reload notification")
+    parser = argparse.ArgumentParser(description="Auto-retrain ML Factor Model (multi-algorithm)")
+    parser.add_argument("--data", default=None, help="Path to OHLCV CSV data")
+    parser.add_argument("--journal", default="data/trade_journal.db", help="Path to trade journal DB")
+    parser.add_argument("--output-dir", default="ml_models", help="Output directory")
+    parser.add_argument("--folds", type=int, default=5, help="Walk-forward CV folds")
+    parser.add_argument("--horizon", type=int, default=5, help="Forward return horizon (bars)")
+    parser.add_argument("--threshold", type=float, default=0.01, help="Positive label threshold")
+    parser.add_argument("--algorithms", default="lgb",
+                        help="Comma-separated algorithms: lgb,xgb,catboost,lstm,transformer")
+    parser.add_argument("--no-notify", action="store_true")
+    parser.add_argument("--serve-url", default="http://127.0.0.1:18091")
 
     args = parser.parse_args()
+
+    algos = [a.strip() for a in args.algorithms.split(",")]
 
     retrain(
         data_path=args.data,
@@ -444,6 +874,7 @@ if __name__ == "__main__":
         n_cv_folds=args.folds,
         horizon=args.horizon,
         threshold=args.threshold,
+        algorithms=algos,
         notify_serve=not args.no_notify,
         serve_url=args.serve_url,
     )

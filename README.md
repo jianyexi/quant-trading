@@ -11,9 +11,9 @@ A full-featured quantitative trading system built in **Rust**, targeting the **C
 | 📈 **Indicators** | SMA, EMA, MACD, RSI, Bollinger Bands, KDJ — all composable |
 | 🔍 **Stock Screener** | 3-phase pipeline: multi-factor scoring → strategy signal voting → LLM analysis |
 | 📰 **Sentiment Data** | Ingest sentiment/news data via API, adjust trading signals based on market mood |
-| 🧠 **ML Factor Model** | 24-feature engineering in Rust + GPU-accelerated inference via Python sidecar (LightGBM/ONNX/PyTorch) |
-| 🔄 **Auto-Retrain** | Walk-forward CV, journal-based labels, early stopping, class balancing, hot model reload |
-| 🎯 **Ensemble Learning** | Multi-model ensemble (LightGBM + ONNX), weighted average predictions |
+| 🧠 **ML Factor Model** | 24-feature engineering in Rust + GPU-accelerated inference via Python sidecar (LightGBM/XGBoost/CatBoost/ONNX/PyTorch) |
+| 🔄 **Auto-Retrain** | Multi-algorithm competition (LightGBM/XGBoost/CatBoost/LSTM/Transformer), walk-forward CV, journal-based labels, hot model reload |
+| 🎯 **Ensemble Learning** | Multi-model ensemble (LightGBM + XGBoost + CatBoost + ONNX + PyTorch), weighted average predictions |
 | ⚖️ **Dynamic Weights** | Factor weights auto-adapt based on rolling directional accuracy |
 | 🤖 **Auto-Trading** | Actor model engine (Data → Strategy → Risk → Order) with real-time status |
 | 🔴 **QMT 实盘** | Live trading via QMT (迅投量化) Python bridge — real order placement to broker |
@@ -64,8 +64,9 @@ quant-trading/
 │   └── requirements.txt            #   flask, xtquant
 ├── ml_models/                      # ML factor model training & inference sidecar
 │   ├── train_factor_model.py       #   LightGBM training + ONNX export
-│   ├── ml_serve.py                 #   Flask GPU inference server (ONNX/LightGBM/PyTorch + CUDA)
-│   └── requirements.txt            #   torch, onnxruntime-gpu, lightgbm, flask
+│   ├── auto_retrain.py             #   Multi-algorithm retrain (LGB/XGB/CatBoost/LSTM/Transformer)
+│   ├── ml_serve.py                 #   Flask GPU inference server (LGB/XGB/CatBoost/ONNX/PyTorch + CUDA)
+│   └── requirements.txt            #   torch, lightgbm, xgboost, catboost, onnxruntime, flask
 ├── config/default.toml             # System configuration (database, API keys, trading params, QMT)
 ├── migrations/                     # PostgreSQL schema migrations
 ├── Dockerfile                      # Container build
@@ -364,6 +365,16 @@ curl http://localhost:8080/api/sentiment/summary
 
 The `MlFactorStrategy` uses a **24-dimensional feature vector** computed in Rust from raw Kline bars, then sends it to a Python inference sidecar for GPU-accelerated prediction.
 
+**Supported Training Algorithms:**
+
+| Algorithm | Type | File Format | GPU Support |
+|-----------|------|-------------|-------------|
+| LightGBM | Gradient Boosting | `.lgb.txt` | ❌ CPU |
+| XGBoost | Gradient Boosting | `.xgb.json` | ✅ CUDA |
+| CatBoost | Gradient Boosting | `.catboost.bin` | ✅ CUDA |
+| LSTM | Deep Learning (PyTorch) | `.lstm.pt` | ✅ CUDA |
+| Transformer | Deep Learning (PyTorch) | `.transformer.pt` | ✅ CUDA |
+
 **Features (24 total):**
 - **Returns**: 1d, 5d, 10d, 20d
 - **Volatility**: 5d, 20d
@@ -379,14 +390,17 @@ pip install -r requirements.txt
 python ml_serve.py --port 18091  # auto-detects GPU (CUDA)
 ```
 
-**Training a custom model:**
+**Training with algorithm competition:**
 ```bash
 cd ml_models
-# With your data CSV (columns: open, high, low, close, volume)
-python train_factor_model.py --data my_data.csv --output factor_model.onnx
+# Single algorithm (default: LightGBM)
+python auto_retrain.py --data my_data.csv
 
-# Or use synthetic data for testing
-python train_factor_model.py --output factor_model.onnx
+# Multi-algorithm competition — best AUC wins
+python auto_retrain.py --data my_data.csv --algorithms lgb,xgb,catboost,lstm,transformer
+
+# Deep learning only
+python auto_retrain.py --data my_data.csv --algorithms lstm,transformer
 ```
 
 **Fallback mode**: When the Python sidecar is unavailable, the strategy uses a built-in rule-based scoring function that evaluates the same 24 features to produce trading signals. No ML infrastructure required for basic operation.

@@ -7,8 +7,10 @@ via REST API. Supports GPU acceleration via CUDA (auto-detected).
 
 Supported model formats:
   - LightGBM (.lgb.txt)
+  - XGBoost (.xgb.json)
+  - CatBoost (.catboost.bin)
   - ONNX (.onnx) via onnxruntime with CUDA/CPU
-  - PyTorch (.pt) via torch with CUDA/CPU
+  - PyTorch/TorchScript (.pt) — LSTM, Transformer via torch with CUDA/CPU
 
 Usage:
     python ml_serve.py --model factor_model.onnx [--port 18091] [--device auto]
@@ -18,6 +20,9 @@ Endpoints:
     GET  /model_info   - Model metadata (type, device, features)
     POST /predict      - Run prediction on feature vector
     POST /predict_batch - Run batch predictions
+    POST /reload       - Hot-reload model
+    POST /ensemble/load - Load multiple models for ensemble
+    GET  /ensemble/status - Ensemble status
 """
 
 import argparse
@@ -92,6 +97,10 @@ def load_model(model_path, device):
         load_onnx_model(model_path, device)
     elif model_path.endswith(".lgb.txt") or model_path.endswith(".lgb"):
         load_lightgbm_model(model_path)
+    elif model_path.endswith(".xgb.json") or model_path.endswith(".xgb"):
+        load_xgboost_model(model_path)
+    elif model_path.endswith(".catboost.bin") or model_path.endswith(".catboost"):
+        load_catboost_model(model_path)
     elif model_path.endswith(".pt") or model_path.endswith(".pth"):
         load_pytorch_model(model_path, device)
     else:
@@ -133,6 +142,26 @@ def load_lightgbm_model(model_path):
     print(f"     Features: {MODEL.num_feature()}")
 
 
+def load_xgboost_model(model_path):
+    global MODEL, MODEL_TYPE
+    import xgboost as xgb
+
+    MODEL = xgb.Booster()
+    MODEL.load_model(model_path)
+    MODEL_TYPE = "xgboost"
+    print(f"  ✅ XGBoost model loaded: {model_path}")
+
+
+def load_catboost_model(model_path):
+    global MODEL, MODEL_TYPE
+    from catboost import CatBoostClassifier
+
+    MODEL = CatBoostClassifier()
+    MODEL.load_model(model_path)
+    MODEL_TYPE = "catboost"
+    print(f"  ✅ CatBoost model loaded: {model_path}")
+
+
 def load_pytorch_model(model_path, device):
     global MODEL, MODEL_TYPE, DEVICE
     import torch
@@ -155,13 +184,22 @@ def predict_single(features):
     if MODEL_TYPE == "onnx":
         input_name = MODEL.get_inputs()[0].name
         outputs = MODEL.run(None, {input_name: features})
-        # LightGBM ONNX: output[1] is probabilities [batch, 2]
         if len(outputs) >= 2 and outputs[1].shape[-1] >= 2:
             return float(outputs[1][0, 1])
         return float(outputs[0][0])
 
     elif MODEL_TYPE == "lightgbm":
         prob = MODEL.predict(features)[0]
+        return float(prob)
+
+    elif MODEL_TYPE == "xgboost":
+        import xgboost as xgb
+        dmat = xgb.DMatrix(features)
+        prob = MODEL.predict(dmat)[0]
+        return float(prob)
+
+    elif MODEL_TYPE == "catboost":
+        prob = MODEL.predict_proba(features)[0, 1]
         return float(prob)
 
     elif MODEL_TYPE == "pytorch":
@@ -193,6 +231,11 @@ def predict_ensemble(features):
         try:
             if mtype == "lightgbm":
                 prob = float(model.predict(features_arr)[0])
+            elif mtype == "xgboost":
+                import xgboost as xgb
+                prob = float(model.predict(xgb.DMatrix(features_arr))[0])
+            elif mtype == "catboost":
+                prob = float(model.predict_proba(features_arr)[0, 1])
             elif mtype == "onnx":
                 input_name = model.get_inputs()[0].name
                 outputs = model.run(None, {input_name: features_arr})
@@ -200,6 +243,12 @@ def predict_ensemble(features):
                     prob = float(outputs[1][0, 1])
                 else:
                     prob = float(outputs[0][0])
+            elif mtype == "pytorch":
+                import torch
+                with torch.no_grad():
+                    x = torch.tensor(features_arr, dtype=torch.float32)
+                    out = model(x)
+                    prob = float(torch.sigmoid(out)[0].item())
             else:
                 prob = 0.5
             weighted_sum += prob * weight
@@ -348,11 +397,29 @@ def api_ensemble_load():
                 m = lgb.Booster(model_file=path)
                 ENSEMBLE_MODELS.append((m, "lightgbm", weight))
                 loaded.append({"path": path, "type": "lightgbm", "weight": weight, "status": "ok"})
+            elif path.endswith(".xgb.json") or path.endswith(".xgb"):
+                import xgboost as xgb
+                m = xgb.Booster()
+                m.load_model(path)
+                ENSEMBLE_MODELS.append((m, "xgboost", weight))
+                loaded.append({"path": path, "type": "xgboost", "weight": weight, "status": "ok"})
+            elif path.endswith(".catboost.bin") or path.endswith(".catboost"):
+                from catboost import CatBoostClassifier
+                m = CatBoostClassifier()
+                m.load_model(path)
+                ENSEMBLE_MODELS.append((m, "catboost", weight))
+                loaded.append({"path": path, "type": "catboost", "weight": weight, "status": "ok"})
             elif path.endswith(".onnx"):
                 import onnxruntime as ort
                 m = ort.InferenceSession(path)
                 ENSEMBLE_MODELS.append((m, "onnx", weight))
                 loaded.append({"path": path, "type": "onnx", "weight": weight, "status": "ok"})
+            elif path.endswith(".pt") or path.endswith(".pth"):
+                import torch
+                m = torch.jit.load(path, map_location=DEVICE)
+                m.eval()
+                ENSEMBLE_MODELS.append((m, "pytorch", weight))
+                loaded.append({"path": path, "type": "pytorch", "weight": weight, "status": "ok"})
             else:
                 loaded.append({"path": path, "status": "unsupported_format"})
         except Exception as e:

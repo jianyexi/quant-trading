@@ -1145,16 +1145,25 @@ pub async fn research_dl_collect(
 
 pub async fn ml_retrain(
     State(_state): State<AppState>,
+    body: Option<Json<Value>>,
 ) -> (StatusCode, Json<Value>) {
-    // Spawn retrain process asynchronously
-    let result = tokio::task::spawn_blocking(|| {
+    let algorithms = body
+        .and_then(|b| b.get("algorithms").and_then(|a| a.as_str()).map(|s| s.to_string()))
+        .unwrap_or_else(|| "lgb".to_string());
+
+    let result = tokio::task::spawn_blocking(move || {
         let retrain_script = std::path::Path::new("ml_models/auto_retrain.py");
         if !retrain_script.exists() {
             return Err("auto_retrain.py not found in ml_models/".to_string());
         }
 
         let output = std::process::Command::new("python")
-            .args(["ml_models/auto_retrain.py", "--no-notify"])
+            .args([
+                "ml_models/auto_retrain.py",
+                "--no-notify",
+                "--algorithms",
+                &algorithms,
+            ])
             .output()
             .map_err(|e| format!("Failed to start retrain: {}", e))?;
 
