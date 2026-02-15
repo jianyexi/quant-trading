@@ -1,6 +1,7 @@
 use axum::{
+    extract::Request,
     middleware,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
@@ -9,6 +10,7 @@ use tower_http::services::ServeDir;
 
 use crate::auth::api_key_auth;
 use crate::handlers;
+use crate::log_store::LogLevel;
 use crate::state::AppState;
 use crate::ws;
 
@@ -83,6 +85,40 @@ fn journal_routes() -> Router<AppState> {
         .route("/snapshots", get(handlers::get_journal_snapshots))
 }
 
+fn log_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(handlers::get_logs).delete(handlers::clear_logs))
+}
+
+/// Middleware that logs every API request to the in-memory LogStore.
+async fn request_logger(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    request: Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let method = request.method().to_string();
+    let path = request.uri().path().to_string();
+    // Skip logging the logs endpoint itself to avoid recursion
+    if path == "/api/logs" {
+        return next.run(request).await;
+    }
+    let start = std::time::Instant::now();
+    let response = next.run(request).await;
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let status = response.status().as_u16();
+
+    let (level, message) = if status >= 500 {
+        (LogLevel::Error, format!("{} {} → {} ({}ms)", method, path, status, duration_ms))
+    } else if status >= 400 {
+        (LogLevel::Warn, format!("{} {} → {} ({}ms)", method, path, status, duration_ms))
+    } else {
+        (LogLevel::Info, format!("{} {} → {} ({}ms)", method, path, status, duration_ms))
+    };
+
+    state.log_store.push(level, &method, &path, status, duration_ms, &message, None);
+    response
+}
+
 pub fn create_router(state: AppState, web_dist: &str) -> Router {
     let api_routes = Router::new()
         .route("/api/health", get(handlers::health))
@@ -99,6 +135,8 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/sentiment", sentiment_routes())
         .nest("/api/research", research_routes())
         .nest("/api/journal", journal_routes())
+        .nest("/api/logs", log_routes())
+        .layer(middleware::from_fn_with_state(state.clone(), request_logger))
         .layer(middleware::from_fn(api_key_auth))
         .with_state(state);
 

@@ -11,6 +11,7 @@ import {
   Newspaper,
   Brain,
   ShieldCheck,
+  ScrollText,
 } from 'lucide-react';
 
 const navItems = [
@@ -24,6 +25,7 @@ const navItems = [
   { to: '/sentiment', label: '舆情数据', icon: Newspaper },
   { to: '/dl-models', label: 'DL模型研究', icon: Brain },
   { to: '/portfolio', label: 'Portfolio', icon: Wallet },
+  { to: '/logs', label: '系统日志', icon: ScrollText },
   { to: '/chat', label: 'AI Chat', icon: MessageSquare },
 ];
 

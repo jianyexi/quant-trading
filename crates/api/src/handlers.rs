@@ -248,11 +248,15 @@ fn generate_kline_data(symbol: &str, limit: usize, start: Option<&str>, end: Opt
 pub async fn get_kline(
     Path(symbol): Path<String>,
     Query(params): Query<KlineQuery>,
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Json<Value> {
     let limit = params.limit.unwrap_or(60);
     let period = params.period.as_deref().unwrap_or("daily");
     let data = generate_kline_data(&symbol, limit, params.start.as_deref(), params.end.as_deref(), period);
+    if data.is_empty() {
+        state.log_store.push(crate::log_store::LogLevel::Warn, "GET", &format!("/api/market/kline/{}", symbol), 200, 0,
+            &format!("Kline returned 0 bars for {} period={}", symbol, period), None);
+    }
     Json(json!({
         "symbol": symbol,
         "period": period,
@@ -264,7 +268,7 @@ pub async fn get_kline(
 
 pub async fn get_quote(
     Path(symbol): Path<String>,
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Json<Value> {
     match fetch_real_quote(&symbol) {
         Ok(quote) => {
@@ -284,6 +288,7 @@ pub async fn get_quote(
             }))
         }
         Err(e) => {
+            state.log_store.push(crate::log_store::LogLevel::Error, "GET", &format!("/api/market/quote/{}", symbol), 200, 0, &format!("Quote failed: {}", e), Some(e.clone()));
             Json(json!({
                 "symbol": symbol,
                 "name": "",
@@ -324,15 +329,21 @@ pub async fn list_stocks() -> Json<Value> {
 // ── Python Market Data Bridge ─────────────────────────────────────
 
 /// Call scripts/market_data.py with given command and args, return parsed JSON.
-fn call_market_data(args: &[&str]) -> std::result::Result<Value, String> {
+/// If a `log_store` is provided, errors are recorded with full detail.
+fn call_market_data_logged(args: &[&str], log_store: Option<&crate::log_store::LogStore>) -> std::result::Result<Value, String> {
     use std::process::Command;
 
     let python = find_python().ok_or_else(|| "Python not found".to_string())?;
     let script = std::path::Path::new("scripts/market_data.py");
     if !script.exists() {
-        return Err(format!("scripts/market_data.py not found (cwd={:?})", std::env::current_dir()));
+        let msg = format!("scripts/market_data.py not found (cwd={:?})", std::env::current_dir());
+        if let Some(ls) = log_store {
+            ls.push(crate::log_store::LogLevel::Error, "PYTHON", &format!("market_data.py {}", args.join(" ")), 0, 0, &msg, None);
+        }
+        return Err(msg);
     }
 
+    let start = std::time::Instant::now();
     let output = Command::new(&python)
         .arg(script)
         .args(args)
@@ -340,26 +351,58 @@ fn call_market_data(args: &[&str]) -> std::result::Result<Value, String> {
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .output()
-        .map_err(|e| format!("Failed to run Python '{}': {}", python, e))?;
+        .map_err(|e| {
+            let msg = format!("Failed to run Python '{}': {}", python, e);
+            if let Some(ls) = log_store {
+                ls.push(crate::log_store::LogLevel::Error, "PYTHON", &format!("market_data.py {}", args.join(" ")), 0, 0, &msg, None);
+            }
+            msg
+        })?;
+    let duration_ms = start.elapsed().as_millis() as u64;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let msg = format!("Python exit {}", output.status);
+        if let Some(ls) = log_store {
+            ls.push(crate::log_store::LogLevel::Error, "PYTHON", &format!("market_data.py {}", args.join(" ")), 1, duration_ms, &msg,
+                Some(format!("stderr: {}\nstdout: {}", stderr, &stdout[..stdout.len().min(500)])));
+        }
         return Err(format!("Python exit {}: stdout={}, stderr={}", output.status, stdout, stderr));
     }
 
     if stdout.trim().is_empty() {
-        return Err("Python returned empty output".into());
+        let msg = "Python returned empty output";
+        if let Some(ls) = log_store {
+            ls.push(crate::log_store::LogLevel::Warn, "PYTHON", &format!("market_data.py {}", args.join(" ")), 0, duration_ms, msg, None);
+        }
+        return Err(msg.into());
     }
 
     let parsed: Value = serde_json::from_str(stdout.trim())
-        .map_err(|e| format!("Invalid JSON: {} (raw: {})", e, &stdout[..stdout.len().min(200)]))?;
+        .map_err(|e| {
+            let msg = format!("Invalid JSON: {}", e);
+            if let Some(ls) = log_store {
+                ls.push(crate::log_store::LogLevel::Error, "PYTHON", &format!("market_data.py {}", args.join(" ")), 0, duration_ms, &msg,
+                    Some(format!("raw: {}", &stdout[..stdout.len().min(500)])));
+            }
+            format!("Invalid JSON: {} (raw: {})", e, &stdout[..stdout.len().min(200)])
+        })?;
 
     if let Some(err) = parsed.get("error") {
-        return Err(format!("akshare: {}", err));
+        let msg = format!("akshare: {}", err);
+        if let Some(ls) = log_store {
+            ls.push(crate::log_store::LogLevel::Warn, "PYTHON", &format!("market_data.py {}", args.join(" ")), 0, duration_ms, &msg, None);
+        }
+        return Err(msg);
     }
     Ok(parsed)
+}
+
+/// Convenience wrapper without logging
+fn call_market_data(args: &[&str]) -> std::result::Result<Value, String> {
+    call_market_data_logged(args, None)
 }
 
 /// Fetch real historical klines via akshare. `period`: "daily", "1", "5", "15", "30", "60"
@@ -1553,4 +1596,48 @@ pub async fn load_strategy_config() -> Json<Value> {
         }
         Err(e) => Json(json!({"config": null, "exists": false, "error": format!("{}", e)})),
     }
+}
+
+// ── Logs ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct LogQueryParams {
+    pub level: Option<String>,
+    pub path: Option<String>,
+    pub limit: Option<usize>,
+}
+
+pub async fn get_logs(
+    State(state): State<AppState>,
+    Query(q): Query<LogQueryParams>,
+) -> Json<Value> {
+    use crate::log_store::LogLevel;
+
+    let level = q.level.as_deref().and_then(|l| match l {
+        "error" => Some(LogLevel::Error),
+        "warn" => Some(LogLevel::Warn),
+        "info" => Some(LogLevel::Info),
+        _ => None,
+    });
+    let limit = q.limit.unwrap_or(200);
+    let entries = state.log_store.query(level, q.path.as_deref(), limit);
+    let (info_count, warn_count, error_count) = state.log_store.summary();
+    let total = state.log_store.count();
+
+    Json(json!({
+        "total": total,
+        "entries": entries,
+        "summary": {
+            "info": info_count,
+            "warn": warn_count,
+            "error": error_count,
+        }
+    }))
+}
+
+pub async fn clear_logs(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    state.log_store.clear();
+    Json(json!({"status": "cleared"}))
 }

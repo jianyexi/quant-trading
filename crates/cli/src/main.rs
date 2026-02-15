@@ -1590,6 +1590,7 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
         engine: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         sentiment_store: quant_strategy::sentiment::SentimentStore::new(),
         journal: std::sync::Arc::new(journal),
+        log_store: std::sync::Arc::new(quant_api::LogStore::new()),
     };
 
     // Resolve web/dist path — try CWD first, then relative to the executable
