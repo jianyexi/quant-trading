@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   ChevronDown,
   ChevronUp,
@@ -79,7 +79,9 @@ const STRATEGIES = [
 
 function loadSavedConfig(): Partial<BacktestConfig> {
   try {
-    const raw = localStorage.getItem('quant-strategy-config');
+    // Try backtest-specific key first, then fall back to strategy config
+    const raw = localStorage.getItem('quant-backtest-config')
+      ?? localStorage.getItem('quant-strategy-config');
     if (raw) return JSON.parse(raw) as Partial<BacktestConfig>;
   } catch {
     // ignore
@@ -102,6 +104,11 @@ export default function Backtest() {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<BacktestResultData | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Auto-save config to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem('quant-backtest-config', JSON.stringify(config));
+  }, [config]);
 
   const handleRun = async () => {
     setRunning(true);
