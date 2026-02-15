@@ -1213,7 +1213,41 @@ pub async fn ml_model_info() -> Json<Value> {
         "default_model": "ml_models/factor_model.lgb.txt",
         "retrain_script": "ml_models/auto_retrain.py",
         "latest_report": latest_report,
+        "supported_algorithms": ["lgb", "xgb", "catboost", "lstm", "transformer"],
     });
 
     Json(info)
+}
+
+// ── Strategy Config Persistence ─────────────────────────────────────
+
+const STRATEGY_CONFIG_PATH: &str = "data/strategy_config.json";
+
+pub async fn save_strategy_config(
+    Json(body): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    // Ensure data directory exists
+    if let Err(e) = std::fs::create_dir_all("data") {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Cannot create data dir: {}", e)})));
+    }
+
+    match std::fs::write(STRATEGY_CONFIG_PATH, serde_json::to_string_pretty(&body).unwrap_or_default()) {
+        Ok(_) => (StatusCode::OK, Json(json!({"status": "saved", "path": STRATEGY_CONFIG_PATH}))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Save failed: {}", e)}))),
+    }
+}
+
+pub async fn load_strategy_config() -> Json<Value> {
+    let path = std::path::Path::new(STRATEGY_CONFIG_PATH);
+    if !path.exists() {
+        return Json(json!({"config": null, "exists": false}));
+    }
+
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            let config: Value = serde_json::from_str(&content).unwrap_or(Value::Null);
+            Json(json!({"config": config, "exists": true}))
+        }
+        Err(e) => Json(json!({"config": null, "exists": false, "error": format!("{}", e)})),
+    }
 }

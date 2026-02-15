@@ -375,3 +375,54 @@ export async function getJournal(params?: {
   if (params?.limit) qs.set('limit', String(params.limit));
   return fetchJson(`/journal?${qs}`);
 }
+
+// ── Strategy Config Persistence API ─────────────────────────────────
+
+export async function saveStrategyConfig(config: Record<string, unknown>) {
+  return fetchJson('/strategy/config', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+}
+
+export async function loadStrategyConfig(): Promise<{ config: Record<string, unknown> | null; exists: boolean }> {
+  return fetchJson('/strategy/config');
+}
+
+// ── ML Model Training API ───────────────────────────────────────────
+
+export interface ModelInfo {
+  model_dir: string;
+  default_model: string;
+  supported_algorithms: string[];
+  latest_report: Record<string, unknown> | null;
+}
+
+export async function mlRetrain(algorithms?: string): Promise<{ status: string; stdout: string; stderr: string }> {
+  return fetchJson('/trade/retrain', {
+    method: 'POST',
+    body: JSON.stringify(algorithms ? { algorithms } : {}),
+  });
+}
+
+export async function mlModelInfo(): Promise<ModelInfo> {
+  return fetchJson('/trade/model-info');
+}
+
+// ── Risk Status API ─────────────────────────────────────────────────
+
+export async function getRiskStatus() {
+  return fetchJson('/trade/risk');
+}
+
+export async function resetCircuitBreaker() {
+  return fetchJson('/trade/risk/reset-circuit', { method: 'POST' });
+}
+
+export async function resetDailyLoss() {
+  return fetchJson('/trade/risk/reset-daily', { method: 'POST' });
+}
+
+export async function getPerformance() {
+  return fetchJson('/trade/performance');
+}
