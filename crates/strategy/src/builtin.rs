@@ -253,10 +253,183 @@ impl Default for MultiFactorConfig {
     }
 }
 
+// ── Dynamic Weight Adapter ──────────────────────────────────────────
+// Tracks each factor's directional accuracy over a rolling window
+// and adjusts weights using exponential smoothing.
+
+const NUM_FACTORS: usize = 6;
+
+/// Tracks factor performance and adapts weights dynamically.
+#[derive(Debug, Clone)]
+pub struct DynamicWeightAdapter {
+    /// Whether adaptive weighting is enabled.
+    pub enabled: bool,
+    /// Rolling window size for accuracy tracking.
+    pub window: usize,
+    /// Smoothing factor for weight updates (0..1, higher = faster adaptation).
+    pub alpha: f64,
+    /// Minimum weight floor (prevents any factor from going to zero).
+    pub min_weight: f64,
+    /// Base weights (initial/default).
+    base_weights: [f64; NUM_FACTORS],
+    /// Current adaptive weights.
+    current_weights: [f64; NUM_FACTORS],
+    /// Rolling accuracy scores for each factor (correct direction / total).
+    accuracy_ring: Vec<[f64; NUM_FACTORS]>,
+    /// Previous bar's factor scores (for accuracy evaluation).
+    prev_scores: Option<[f64; NUM_FACTORS]>,
+    /// Previous bar's close price (for direction evaluation).
+    prev_close: Option<f64>,
+    /// How many bars have been evaluated.
+    eval_count: usize,
+}
+
+impl Default for DynamicWeightAdapter {
+    fn default() -> Self {
+        let base = [0.25, 0.25, 0.15, 0.15, 0.10, 0.10];
+        Self {
+            enabled: true,
+            window: 50,
+            alpha: 0.1,
+            min_weight: 0.03,
+            base_weights: base,
+            current_weights: base,
+            accuracy_ring: Vec::new(),
+            prev_scores: None,
+            prev_close: None,
+            eval_count: 0,
+        }
+    }
+}
+
+impl DynamicWeightAdapter {
+    pub fn new(base_weights: [f64; NUM_FACTORS], window: usize, alpha: f64) -> Self {
+        Self {
+            enabled: true,
+            window,
+            alpha,
+            min_weight: 0.03,
+            base_weights,
+            current_weights: base_weights,
+            accuracy_ring: Vec::new(),
+            prev_scores: None,
+            prev_close: None,
+            eval_count: 0,
+        }
+    }
+
+    /// Call each bar with the 6 factor scores and current close price.
+    /// Returns the current adaptive weights.
+    pub fn update(&mut self, scores: [f64; NUM_FACTORS], close: f64) -> [f64; NUM_FACTORS] {
+        if !self.enabled {
+            return self.base_weights;
+        }
+
+        // Evaluate previous bar's factor predictions
+        if let (Some(prev_scores), Some(prev_close)) = (self.prev_scores, self.prev_close) {
+            let actual_direction = (close - prev_close).signum(); // +1 up, -1 down, 0 flat
+
+            // Each factor gets +1 if it predicted the correct direction, 0 otherwise
+            let mut hits = [0.0f64; NUM_FACTORS];
+            for i in 0..NUM_FACTORS {
+                let predicted_dir = prev_scores[i].signum();
+                // correct if same sign, or factor was neutral (0)
+                if predicted_dir != 0.0 && predicted_dir == actual_direction {
+                    hits[i] = 1.0;
+                } else if predicted_dir == 0.0 {
+                    hits[i] = 0.5; // neutral = half credit
+                }
+            }
+
+            self.accuracy_ring.push(hits);
+            if self.accuracy_ring.len() > self.window {
+                self.accuracy_ring.remove(0);
+            }
+            self.eval_count += 1;
+
+            // Recompute accuracy-based weights when we have enough data
+            if self.accuracy_ring.len() >= 10 {
+                let n = self.accuracy_ring.len() as f64;
+                let mut accuracy = [0.0f64; NUM_FACTORS];
+                for row in &self.accuracy_ring {
+                    for i in 0..NUM_FACTORS {
+                        accuracy[i] += row[i];
+                    }
+                }
+                for a in accuracy.iter_mut() {
+                    *a /= n;
+                }
+
+                // Exponential smoothing: new_weight = alpha * accuracy_weight + (1-alpha) * base_weight
+                let accuracy_sum: f64 = accuracy.iter().sum();
+                if accuracy_sum > 0.0 {
+                    for i in 0..NUM_FACTORS {
+                        let target = accuracy[i] / accuracy_sum;
+                        self.current_weights[i] =
+                            self.alpha * target + (1.0 - self.alpha) * self.current_weights[i];
+                    }
+                }
+
+                // Apply minimum floor and renormalize
+                for w in self.current_weights.iter_mut() {
+                    if *w < self.min_weight {
+                        *w = self.min_weight;
+                    }
+                }
+                let sum: f64 = self.current_weights.iter().sum();
+                for w in self.current_weights.iter_mut() {
+                    *w /= sum;
+                }
+            }
+        }
+
+        self.prev_scores = Some(scores);
+        self.prev_close = Some(close);
+
+        self.current_weights
+    }
+
+    /// Get current weights (for reporting).
+    pub fn weights(&self) -> [f64; NUM_FACTORS] {
+        self.current_weights
+    }
+
+    /// Get factor accuracy over the window.
+    pub fn factor_accuracy(&self) -> [f64; NUM_FACTORS] {
+        if self.accuracy_ring.is_empty() {
+            return [0.0; NUM_FACTORS];
+        }
+        let n = self.accuracy_ring.len() as f64;
+        let mut acc = [0.0f64; NUM_FACTORS];
+        for row in &self.accuracy_ring {
+            for i in 0..NUM_FACTORS {
+                acc[i] += row[i];
+            }
+        }
+        for a in acc.iter_mut() {
+            *a /= n;
+        }
+        acc
+    }
+
+    /// Reset adapter state.
+    pub fn reset(&mut self) {
+        self.current_weights = self.base_weights;
+        self.accuracy_ring.clear();
+        self.prev_scores = None;
+        self.prev_close = None;
+        self.eval_count = 0;
+    }
+}
+
 /// Multi-Factor Model trading strategy.
 ///
 /// Computes 6 factor sub-scores on each bar, produces a composite signal
 /// in [-1, +1], and generates BUY when > buy_threshold or SELL when < sell_threshold.
+///
+/// When `adaptive_weights` is enabled, the strategy dynamically adjusts factor
+/// weights based on each factor's recent directional accuracy — factors that
+/// correctly predicted the next bar's direction get more weight.
 pub struct MultiFactorStrategy {
     cfg: MultiFactorConfig,
     // Trend indicators
@@ -286,10 +459,16 @@ pub struct MultiFactorStrategy {
     // State
     prev_composite: Option<f64>,
     bar_count: usize,
+    // Dynamic weight adapter
+    weight_adapter: DynamicWeightAdapter,
 }
 
 impl MultiFactorStrategy {
     pub fn new(cfg: MultiFactorConfig) -> Self {
+        let base_weights = [
+            cfg.w_trend, cfg.w_momentum, cfg.w_volatility,
+            cfg.w_oscillator, cfg.w_volume, cfg.w_price_action,
+        ];
         Self {
             sma_fast: SMA::new(cfg.sma_fast),
             sma_slow: SMA::new(cfg.sma_slow),
@@ -311,6 +490,7 @@ impl MultiFactorStrategy {
             low_buf: Vec::with_capacity(cfg.price_range_period),
             prev_composite: None,
             bar_count: 0,
+            weight_adapter: DynamicWeightAdapter::new(base_weights, 50, 0.1),
             cfg,
         }
     }
@@ -469,6 +649,7 @@ impl Strategy for MultiFactorStrategy {
         self.low_buf.clear();
         self.prev_composite = None;
         self.bar_count = 0;
+        self.weight_adapter.reset();
     }
 
     fn on_bar(&mut self, kline: &Kline) -> Option<Signal> {
@@ -518,13 +699,18 @@ impl Strategy for MultiFactorStrategy {
             let s_volume = self.score_volume(kline.close);
             let s_price_action = self.score_price_action(kline.close);
 
-            // Weighted composite
-            let composite = self.cfg.w_trend * s_trend
-                + self.cfg.w_momentum * s_momentum
-                + self.cfg.w_volatility * s_volatility
-                + self.cfg.w_oscillator * s_oscillator
-                + self.cfg.w_volume * s_volume
-                + self.cfg.w_price_action * s_price_action;
+            let factor_scores = [s_trend, s_momentum, s_volatility, s_oscillator, s_volume, s_price_action];
+
+            // Get adaptive weights (updates adapter state and returns current weights)
+            let w = self.weight_adapter.update(factor_scores, kline.close);
+
+            // Weighted composite (weights are normalized to sum=1.0 by adapter)
+            let composite = w[0] * s_trend
+                + w[1] * s_momentum
+                + w[2] * s_volatility
+                + w[3] * s_oscillator
+                + w[4] * s_volume
+                + w[5] * s_price_action;
 
             // Signal on threshold crossings to avoid repeated signals
             let signal = match self.prev_composite {
@@ -669,5 +855,78 @@ mod tests {
             }
         }
         assert!(signals <= 3, "Expected few signals on flat market, got {}", signals);
+    }
+
+    #[test]
+    fn test_dynamic_weight_adapter_initial() {
+        let adapter = DynamicWeightAdapter::default();
+        let w = adapter.weights();
+        let sum: f64 = w.iter().sum();
+        assert!((sum - 1.0).abs() < 0.01, "Initial weights should sum to ~1.0, got {}", sum);
+        assert_eq!(w[0], 0.25); // trend
+        assert_eq!(w[4], 0.10); // volume
+    }
+
+    #[test]
+    fn test_dynamic_weight_adapter_adapts() {
+        let base = [0.167, 0.167, 0.167, 0.167, 0.166, 0.166]; // nearly equal
+        let mut adapter = DynamicWeightAdapter::new(base, 20, 0.5); // high alpha for fast adaptation
+
+        // Feed 50 bars where factor[0] (trend) is always correct (+1 when price goes up)
+        // and factor[5] (price action) is always wrong (-1 when price goes up)
+        for i in 0..50 {
+            let close = 100.0 + i as f64 * 0.5; // steadily rising
+            let scores = [1.0, 0.5, 0.0, 0.0, 0.0, -1.0]; // trend correct, price_action wrong
+            adapter.update(scores, close);
+        }
+
+        let w = adapter.weights();
+        // Trend weight (always correct) should be > price_action (always wrong)
+        assert!(w[0] > w[5], "Trend weight should be > price_action: {:.3} vs {:.3}", w[0], w[5]);
+        let sum: f64 = w.iter().sum();
+        assert!((sum - 1.0).abs() < 0.01, "Weights should still sum to ~1.0, got {}", sum);
+    }
+
+    #[test]
+    fn test_dynamic_weight_adapter_min_floor() {
+        let base = [0.50, 0.50, 0.0, 0.0, 0.0, 0.0];
+        let mut adapter = DynamicWeightAdapter::new(base, 10, 0.5);
+        adapter.min_weight = 0.05;
+
+        for i in 0..20 {
+            let close = 100.0 + i as f64;
+            let scores = [1.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+            adapter.update(scores, close);
+        }
+
+        let w = adapter.weights();
+        for &wi in &w {
+            assert!(wi >= 0.03, "No weight should be below min_weight floor, got {:.4}", wi);
+        }
+    }
+
+    #[test]
+    fn test_dynamic_weight_adapter_reset() {
+        let mut adapter = DynamicWeightAdapter::default();
+        for i in 0..20 {
+            adapter.update([1.0, 0.0, 0.0, 0.0, 0.0, 0.0], 100.0 + i as f64);
+        }
+        let before = adapter.weights();
+        adapter.reset();
+        let after = adapter.weights();
+        // After reset, weights should be back to base
+        assert_eq!(after, adapter.base_weights);
+        assert_ne!(before, after, "Weights should have changed before reset");
+    }
+
+    #[test]
+    fn test_dynamic_weight_disabled() {
+        let mut adapter = DynamicWeightAdapter::default();
+        adapter.enabled = false;
+        for i in 0..30 {
+            adapter.update([1.0, 0.0, 0.0, 0.0, 0.0, 0.0], 100.0 + i as f64);
+        }
+        let w = adapter.weights();
+        assert_eq!(w, adapter.base_weights, "Disabled adapter should return base weights");
     }
 }

@@ -1140,3 +1140,71 @@ pub async fn research_dl_collect(
         }
     }
 }
+
+// ── ML Model Retrain ────────────────────────────────────────────────
+
+pub async fn ml_retrain(
+    State(_state): State<AppState>,
+) -> (StatusCode, Json<Value>) {
+    // Spawn retrain process asynchronously
+    let result = tokio::task::spawn_blocking(|| {
+        let retrain_script = std::path::Path::new("ml_models/auto_retrain.py");
+        if !retrain_script.exists() {
+            return Err("auto_retrain.py not found in ml_models/".to_string());
+        }
+
+        let output = std::process::Command::new("python")
+            .args(["ml_models/auto_retrain.py", "--no-notify"])
+            .output()
+            .map_err(|e| format!("Failed to start retrain: {}", e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if output.status.success() {
+            Ok(serde_json::json!({
+                "status": "completed",
+                "stdout": stdout,
+                "stderr": stderr,
+            }))
+        } else {
+            Err(format!("Retrain failed: {}", stderr))
+        }
+    }).await;
+
+    match result {
+        Ok(Ok(report)) => (StatusCode::OK, Json(report)),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Task error: {}", e)}))),
+    }
+}
+
+pub async fn ml_model_info() -> Json<Value> {
+    // Try to read the latest retrain report
+    let reports_dir = std::path::Path::new("ml_models");
+    let mut latest_report = None;
+
+    if reports_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(reports_dir) {
+            let mut reports: Vec<_> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("retrain_report_"))
+                .collect();
+            reports.sort_by_key(|e| e.file_name());
+            if let Some(latest) = reports.last() {
+                if let Ok(content) = std::fs::read_to_string(latest.path()) {
+                    latest_report = serde_json::from_str::<Value>(&content).ok();
+                }
+            }
+        }
+    }
+
+    let info = json!({
+        "model_dir": "ml_models/",
+        "default_model": "ml_models/factor_model.lgb.txt",
+        "retrain_script": "ml_models/auto_retrain.py",
+        "latest_report": latest_report,
+    });
+
+    Json(info)
+}

@@ -51,6 +51,8 @@ fn trade_routes() -> Router<AppState> {
         .route("/risk", get(handlers::risk_status))
         .route("/risk/reset-circuit", post(handlers::risk_reset_circuit))
         .route("/risk/reset-daily", post(handlers::risk_reset_daily))
+        .route("/retrain", post(handlers::ml_retrain))
+        .route("/model-info", get(handlers::ml_model_info))
         .route("/qmt/status", get(handlers::qmt_bridge_status))
 }
 

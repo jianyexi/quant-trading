@@ -21,6 +21,7 @@ Endpoints:
 """
 
 import argparse
+import os
 import sys
 import json
 import time
@@ -253,6 +254,34 @@ def predict_batch():
         "latency_ms": round(latency_ms, 2),
         "device": DEVICE,
     })
+
+
+@app.route("/reload", methods=["POST"])
+def api_reload():
+    """
+    Hot-reload model from a new file path.
+    Body: { "model_path": "path/to/model.lgb.txt" }
+    """
+    global MODEL, MODEL_TYPE, DEVICE
+    data = request.get_json(silent=True)
+    if not data or "model_path" not in data:
+        return jsonify({"error": "model_path required"}), 400
+
+    model_path = data["model_path"]
+    if not os.path.exists(model_path):
+        return jsonify({"error": f"Model file not found: {model_path}"}), 404
+
+    try:
+        load_model(model_path, DEVICE)
+        print(f"🔄 Model hot-reloaded: {model_path} ({MODEL_TYPE})")
+        return jsonify({
+            "status": "reloaded",
+            "model_path": model_path,
+            "model_type": MODEL_TYPE,
+            "device": DEVICE,
+        })
+    except Exception as e:
+        return jsonify({"error": f"Reload failed: {e}"}), 500
 
 
 if __name__ == "__main__":
