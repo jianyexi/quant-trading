@@ -161,6 +161,8 @@ pub enum DataMode {
         end_date: String,
         /// Replay speed multiplier (1.0 = real-time, 0.0 = as fast as possible)
         speed: f64,
+        /// K-line period: "daily", "1", "5", "15", "30", "60" (minutes)
+        period: String,
     },
 }
 
@@ -478,10 +480,10 @@ async fn data_actor(
             info!("📊 DataActor started [PYTHON_BRIDGE] for {:?}", symbols);
             data_actor_python_bridge(symbols, interval_secs, tx, shutdown).await;
         }
-        DataMode::HistoricalReplay { start_date, end_date, speed } => {
-            info!("📊 DataActor started [HISTORICAL_REPLAY] for {:?} ({} → {}, speed={}x)",
-                symbols, start_date, end_date, speed);
-            data_actor_replay(symbols, start_date.clone(), end_date.clone(), *speed, tx, shutdown).await;
+        DataMode::HistoricalReplay { start_date, end_date, speed, period } => {
+            info!("📊 DataActor started [HISTORICAL_REPLAY] for {:?} ({} → {}, period={}, speed={}x)",
+                symbols, start_date, end_date, period, speed);
+            data_actor_replay(symbols, start_date.clone(), end_date.clone(), *speed, period.clone(), tx, shutdown).await;
         }
     }
 }
@@ -918,6 +920,7 @@ async fn data_actor_replay(
     start_date: String,
     end_date: String,
     speed: f64,
+    period: String,
     tx: mpsc::Sender<MarketEvent>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -933,14 +936,19 @@ async fn data_actor_replay(
     let mut all_klines: Vec<Kline> = Vec::new();
 
     for sym in &symbols {
-        info!("📂 Loading historical data for {} ({} → {})", sym, start_date, end_date);
+        let period_label = match period.as_str() {
+            "1" => "1分钟", "5" => "5分钟", "15" => "15分钟",
+            "30" => "30分钟", "60" => "60分钟", _ => "日线",
+        };
+        info!("📂 Loading {} historical data for {} ({} → {})", period_label, sym, start_date, end_date);
         let klines = {
             let python = python.clone();
             let sym = sym.clone();
             let start = start_date.clone();
             let end = end_date.clone();
+            let p = period.clone();
             tokio::task::spawn_blocking(move || {
-                python_bridge_klines_range(&python, &sym, &start, &end)
+                python_bridge_klines_range(&python, &sym, &start, &end, &p)
             }).await.unwrap_or_default()
         };
         if klines.is_empty() {
@@ -1023,14 +1031,18 @@ async fn data_actor_replay(
 }
 
 /// Fetch historical klines for a specific date range via Python bridge.
-fn python_bridge_klines_range(python: &str, symbol: &str, start: &str, end: &str) -> Vec<Kline> {
+fn python_bridge_klines_range(python: &str, symbol: &str, start: &str, end: &str, period: &str) -> Vec<Kline> {
     use chrono::NaiveDateTime;
 
     let script = std::path::Path::new("scripts/market_data.py");
     if !script.exists() { return Vec::new(); }
 
+    let mut cmd_args = vec!["scripts/market_data.py", "klines", symbol, start, end];
+    if period != "daily" {
+        cmd_args.push(period);
+    }
     let output = std::process::Command::new(python)
-        .args(["scripts/market_data.py", "klines", symbol, start, end])
+        .args(&cmd_args)
         .env("PYTHONIOENCODING", "utf-8")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

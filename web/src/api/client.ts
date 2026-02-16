@@ -171,6 +171,7 @@ export async function tradeStart(params: {
   replay_start?: string;
   replay_end?: string;
   replay_speed?: number;
+  replay_period?: string;
 }) {
   return fetchJson('/trade/start', {
     method: 'POST',

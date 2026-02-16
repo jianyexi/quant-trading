@@ -36,6 +36,7 @@ export default function AutoTrade() {
   const [replayStart, setReplayStart] = useState('2024-01-01');
   const [replayEnd, setReplayEnd] = useState('2024-12-31');
   const [replaySpeed, setReplaySpeed] = useState(0);
+  const [replayPeriod, setReplayPeriod] = useState('daily');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Fetch initial status
@@ -82,7 +83,7 @@ export default function AutoTrade() {
       const symbols = symbolsInput.split(',').map(s => s.trim()).filter(Boolean);
       await tradeStart({
         strategy, symbols, interval: interval, position_size: positionSize, mode,
-        ...(mode === 'replay' ? { replay_start: replayStart, replay_end: replayEnd, replay_speed: replaySpeed } : {}),
+        ...(mode === 'replay' ? { replay_start: replayStart, replay_end: replayEnd, replay_speed: replaySpeed, replay_period: replayPeriod } : {}),
       });
       await fetchStatus();
       startPolling();
@@ -197,7 +198,7 @@ export default function AutoTrade() {
             {mode === 'replay' && (
               <div className="mt-3 p-3 rounded-lg bg-purple-500/5 border border-purple-500/20">
                 <div className="text-xs text-purple-300 mb-2">📂 历史数据回放配置</div>
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-4 gap-3">
                   <div>
                     <label className="block text-xs text-[#94a3b8] mb-1">开始日期</label>
                     <input type="date" value={replayStart} onChange={e => setReplayStart(e.target.value)}
@@ -209,6 +210,19 @@ export default function AutoTrade() {
                     <input type="date" value={replayEnd} onChange={e => setReplayEnd(e.target.value)}
                       disabled={isRunning}
                       className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-2 py-1.5 text-sm text-[#f8fafc] disabled:opacity-50" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[#94a3b8] mb-1">K线周期</label>
+                    <select value={replayPeriod} onChange={e => setReplayPeriod(e.target.value)}
+                      disabled={isRunning}
+                      className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-2 py-1.5 text-sm text-[#f8fafc] disabled:opacity-50">
+                      <option value="daily">日线</option>
+                      <option value="60">60分钟</option>
+                      <option value="30">30分钟</option>
+                      <option value="15">15分钟</option>
+                      <option value="5">5分钟</option>
+                      <option value="1">1分钟</option>
+                    </select>
                   </div>
                   <div>
                     <label className="block text-xs text-[#94a3b8] mb-1">回放速度</label>
@@ -223,7 +237,7 @@ export default function AutoTrade() {
                   </div>
                 </div>
                 <div className="mt-2 text-xs text-[#64748b]">
-                  使用真实历史K线数据回放，可重复验证策略表现。推荐先用极速模式快速验证。
+                  使用真实历史K线数据回放，可重复验证策略表现。分钟数据仅支持近期（约5个交易日）。
                 </div>
               </div>
             )}

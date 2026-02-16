@@ -884,6 +884,8 @@ pub struct TradeStartRequest {
     pub replay_end: Option<String>,
     /// Replay speed multiplier (0=max speed, 1=real-time, 10=10x), default=0
     pub replay_speed: Option<f64>,
+    /// K-line period for replay: "daily", "1", "5", "15", "30", "60" (minutes), default="daily"
+    pub replay_period: Option<String>,
 }
 
 pub async fn trade_start(
@@ -935,10 +937,12 @@ pub async fn trade_start(
             let end = req.replay_end.clone()
                 .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
             let speed = req.replay_speed.unwrap_or(0.0);
+            let period = req.replay_period.clone().unwrap_or_else(|| "daily".to_string());
             quant_broker::engine::DataMode::HistoricalReplay {
                 start_date: start,
                 end_date: end,
                 speed,
+                period,
             }
         } else {
             // Paper mode now uses real akshare data via Python bridge
@@ -1013,7 +1017,8 @@ pub async fn trade_start(
         "position_size": position_size,
         "replay_start": req.replay_start,
         "replay_end": req.replay_end,
-        "replay_speed": req.replay_speed
+        "replay_speed": req.replay_speed,
+        "replay_period": req.replay_period
     })))
 }
 
