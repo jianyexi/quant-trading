@@ -16,7 +16,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch, Mutex};
-use tracing::{info, warn, error};
+use tracing::{info, warn, error, debug, trace};
 use uuid::Uuid;
 
 use quant_core::models::*;
@@ -152,6 +152,12 @@ pub enum DataMode {
     /// PythonBridge: fetch real-time quotes via local Python subprocess (akshare library)
     /// Most reliable method — uses scripts/market_data.py
     PythonBridge,
+    /// LowLatency: persistent market data server (HTTP + cache, no fork overhead)
+    /// Uses scripts/market_data_server.py on port 18092
+    LowLatency {
+        /// Market data server URL (default: http://127.0.0.1:18092)
+        server_url: String,
+    },
     /// HistoricalReplay: replay real historical klines at configurable speed
     /// Best for strategy verification — deterministic, repeatable
     HistoricalReplay {
@@ -479,6 +485,10 @@ async fn data_actor(
         DataMode::PythonBridge => {
             info!("📊 DataActor started [PYTHON_BRIDGE] for {:?}", symbols);
             data_actor_python_bridge(symbols, interval_secs, tx, shutdown).await;
+        }
+        DataMode::LowLatency { server_url } => {
+            info!("📊 DataActor started [LOW_LATENCY] for {:?} (server={})", symbols, server_url);
+            data_actor_low_latency(symbols, interval_secs, server_url.clone(), tx, shutdown).await;
         }
         DataMode::HistoricalReplay { start_date, end_date, speed, period } => {
             info!("📊 DataActor started [HISTORICAL_REPLAY] for {:?} ({} → {}, period={}, speed={}x)",
@@ -909,6 +919,141 @@ async fn data_actor_python_bridge(
             }
         }
     }
+}
+
+// ── Low-Latency Data Actor ─────────────────────────────────────────
+// Uses persistent market_data_server.py (HTTP) instead of forking Python.
+// Warmup: fetches klines via /klines endpoint (cached server-side).
+// Polling: fetches quotes via /quote endpoint (~0ms cached, ~1s cold).
+
+async fn data_actor_low_latency(
+    symbols: Vec<String>,
+    interval_secs: u64,
+    server_url: String,
+    tx: mpsc::Sender<MarketEvent>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    let base = server_url.trim_end_matches('/');
+
+    // Health check
+    match client.get(format!("{}/health", base)).send().await {
+        Ok(r) if r.status().is_success() => {
+            info!("📡 Low-latency server connected at {}", base);
+        }
+        _ => {
+            error!("📡 Low-latency server not available at {}, falling back to PythonBridge", base);
+            // Fall back to Python bridge
+            data_actor_python_bridge(symbols, interval_secs, tx, shutdown).await;
+            return;
+        }
+    }
+
+    // Phase 1: Warmup via /klines endpoint (server caches internally)
+    info!("📊 Warming up via low-latency server...");
+    let warmup_end = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let warmup_start = (chrono::Local::now() - chrono::Duration::days(160))
+        .format("%Y-%m-%d").to_string();
+
+    for sym in &symbols {
+        let url = format!("{}/klines/{}?start={}&end={}&period=daily",
+            base, sym, warmup_start, warmup_end);
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                if let Ok(data) = resp.json::<serde_json::Value>().await {
+                    if let Some(klines_arr) = data.get("klines").and_then(|k| k.as_array()) {
+                        let mut count = 0;
+                        for kj in klines_arr {
+                            if let Some(kline) = parse_kline_json(sym, kj) {
+                                if tx.send(MarketEvent { kline }).await.is_err() {
+                                    return;
+                                }
+                                count += 1;
+                            }
+                        }
+                        info!("📊 Warmup: {} loaded {} bars via server", sym, count);
+                    }
+                }
+            }
+            Err(e) => warn!("⚠️ Warmup failed for {}: {}", sym, e),
+        }
+    }
+    info!("📊 Warmup complete, switching to low-latency polling ({}s interval)", interval_secs);
+
+    // Phase 2: Real-time polling via /quote (cached, ~0-5ms)
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)) => {
+                let t0 = std::time::Instant::now();
+                for sym in &symbols {
+                    let url = format!("{}/quote/{}", base, sym);
+                    match client.get(&url).send().await {
+                        Ok(resp) => {
+                            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                                if data.get("error").is_some() {
+                                    continue;
+                                }
+                                let close = data.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                if close <= 0.0 { continue; }
+                                let kline = Kline {
+                                    symbol: sym.clone(),
+                                    datetime: Utc::now().naive_utc(),
+                                    open: data.get("open").and_then(|v| v.as_f64()).unwrap_or(close),
+                                    high: data.get("high").and_then(|v| v.as_f64()).unwrap_or(close),
+                                    low: data.get("low").and_then(|v| v.as_f64()).unwrap_or(close),
+                                    close,
+                                    volume: data.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                                };
+                                let cached = data.get("_cache").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let lat = data.get("_latency_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                trace!("📡 {} ¥{:.2} ({}ms, cache={})", sym, close, lat, cached);
+
+                                if tx.send(MarketEvent { kline }).await.is_err() {
+                                    info!("DataActor[low_latency]: channel closed");
+                                    return;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("DataActor[low_latency]: failed to fetch {}: {}", sym, e);
+                        }
+                    }
+                }
+                let elapsed = t0.elapsed();
+                if elapsed.as_millis() > 100 {
+                    debug!("DataActor[low_latency]: polling {} symbols took {}ms", symbols.len(), elapsed.as_millis());
+                }
+            }
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    info!("DataActor[low_latency]: shutdown");
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Parse a kline JSON object from the market data server.
+fn parse_kline_json(symbol: &str, kj: &serde_json::Value) -> Option<Kline> {
+    let close = kj.get("close").and_then(|v| v.as_f64())?;
+    let date_str = kj.get("date").and_then(|v| v.as_str())?;
+    let datetime = chrono::NaiveDateTime::parse_from_str(
+        &format!("{} 15:00:00", &date_str[..10.min(date_str.len())]), "%Y-%m-%d %H:%M:%S"
+    ).unwrap_or_else(|_| Utc::now().naive_utc());
+
+    Some(Kline {
+        symbol: symbol.to_string(),
+        datetime,
+        open: kj.get("open").and_then(|v| v.as_f64()).unwrap_or(close),
+        high: kj.get("high").and_then(|v| v.as_f64()).unwrap_or(close),
+        low: kj.get("low").and_then(|v| v.as_f64()).unwrap_or(close),
+        close,
+        volume: kj.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0),
+    })
 }
 
 // ── Historical Replay Data Actor ────────────────────────────────────
