@@ -169,16 +169,17 @@ class LightGBMTrainer(ModelTrainer):
 
         params = {
             "objective": "binary", "metric": "auc",
-            "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6,
-            "min_child_samples": 20,
-            "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 5,
+            "learning_rate": 0.03, "num_leaves": 20, "max_depth": 5,
+            "min_child_samples": 50,
+            "feature_fraction": 0.7, "bagging_fraction": 0.7, "bagging_freq": 5,
+            "lambda_l1": 0.1, "lambda_l2": 1.0,
             "scale_pos_weight": spw, "verbose": -1,
         }
         train_data = lgb.Dataset(X_train, label=y_train, feature_name=feature_cols)
         val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
         model = lgb.train(
-            params, train_data, num_boost_round=500, valid_sets=[val_data],
-            callbacks=[lgb.early_stopping(30, verbose=False), lgb.log_evaluation(0)],
+            params, train_data, num_boost_round=800, valid_sets=[val_data],
+            callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
         )
         return model
 
@@ -636,12 +637,28 @@ def walk_forward_cv_single(
     }
 
 
-# Default stock list for akshare training
+# Default stock list for akshare training — 50 stocks across sectors
 DEFAULT_TRAIN_STOCKS = [
-    "600519", "000858", "000001", "600036", "300750",
-    "002594", "601318", "600276", "000333", "601888",
-    "600030", "601166", "600900", "000568", "600809",
-    "601899", "600031", "600309", "300059", "600887",
+    # 白酒/食品 (Consumer Staples)
+    "600519", "000858", "000568", "600809", "600887", "002304", "603288",
+    # 金融 (Financials)
+    "600036", "601318", "601166", "600030", "601398", "601288",
+    # 新能源/汽车 (New Energy / Auto)
+    "300750", "002594", "600438", "601012", "002460",
+    # 医药 (Healthcare)
+    "600276", "000333", "300760", "603259", "300122",
+    # 科技/电子 (Tech / Electronics)
+    "002415", "603501", "300782", "688981", "002049",
+    # 消费/家电 (Consumer Discretionary)
+    "000651", "600690", "002032", "601888",
+    # 周期/材料 (Materials / Industrials)
+    "601899", "600031", "600309", "601225", "600585",
+    # 公用事业/基建 (Utilities / Infra)
+    "600900", "601669", "600048", "601800",
+    # 传媒/互联网 (Media / Internet)
+    "300059", "002230", "603444",
+    # 军工 (Defense)
+    "600760", "002179", "600893",
 ]
 
 

@@ -115,8 +115,8 @@ export default function StrategyConfigPage() {
   const [retraining, setRetraining] = useState(false);
   const [selectedAlgos, setSelectedAlgos] = useState<string[]>(['lgb', 'xgb', 'catboost']);
   const [trainDataSource, setTrainDataSource] = useState<'synthetic' | 'akshare'>('akshare');
-  const [trainSymbols, setTrainSymbols] = useState('600519,000858,000001,600036,300750,002594,601318,600276,000333,601888');
-  const [trainStartDate, setTrainStartDate] = useState('2022-01-01');
+  const [trainSymbols, setTrainSymbols] = useState('600519,000858,000001,600036,300750,002594,601318,600276,000333,601888,600030,601166,600900,000568,600809,601899,600031,600309,300059,600887,000651,002415,300760,601398,601288,600438,002460,603259,600690,601669');
+  const [trainStartDate, setTrainStartDate] = useState('2020-01-01');
   const [trainEndDate, setTrainEndDate] = useState('2024-12-31');
   const [trainHorizon, setTrainHorizon] = useState(5);
   const [trainThreshold, setTrainThreshold] = useState(0.01);
