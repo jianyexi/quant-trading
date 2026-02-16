@@ -152,6 +152,16 @@ pub enum DataMode {
     /// PythonBridge: fetch real-time quotes via local Python subprocess (akshare library)
     /// Most reliable method — uses scripts/market_data.py
     PythonBridge,
+    /// HistoricalReplay: replay real historical klines at configurable speed
+    /// Best for strategy verification — deterministic, repeatable
+    HistoricalReplay {
+        /// Start date (YYYY-MM-DD)
+        start_date: String,
+        /// End date (YYYY-MM-DD)
+        end_date: String,
+        /// Replay speed multiplier (1.0 = real-time, 0.0 = as fast as possible)
+        speed: f64,
+    },
 }
 
 impl Default for EngineConfig {
@@ -467,6 +477,11 @@ async fn data_actor(
         DataMode::PythonBridge => {
             info!("📊 DataActor started [PYTHON_BRIDGE] for {:?}", symbols);
             data_actor_python_bridge(symbols, interval_secs, tx, shutdown).await;
+        }
+        DataMode::HistoricalReplay { start_date, end_date, speed } => {
+            info!("📊 DataActor started [HISTORICAL_REPLAY] for {:?} ({} → {}, speed={}x)",
+                symbols, start_date, end_date, speed);
+            data_actor_replay(symbols, start_date.clone(), end_date.clone(), *speed, tx, shutdown).await;
         }
     }
 }
@@ -892,6 +907,170 @@ async fn data_actor_python_bridge(
             }
         }
     }
+}
+
+// ── Historical Replay Data Actor ────────────────────────────────────
+// Loads real historical klines via Python/akshare and replays them.
+// speed=0 → as fast as possible, speed=1 → real-time pace, speed=10 → 10x
+
+async fn data_actor_replay(
+    symbols: Vec<String>,
+    start_date: String,
+    end_date: String,
+    speed: f64,
+    tx: mpsc::Sender<MarketEvent>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let python = match find_python_for_bridge() {
+        Some(p) => p,
+        None => {
+            error!("DataActor[replay]: Python not found");
+            return;
+        }
+    };
+
+    // Load all historical klines for each symbol
+    let mut all_klines: Vec<Kline> = Vec::new();
+
+    for sym in &symbols {
+        info!("📂 Loading historical data for {} ({} → {})", sym, start_date, end_date);
+        let klines = {
+            let python = python.clone();
+            let sym = sym.clone();
+            let start = start_date.clone();
+            let end = end_date.clone();
+            tokio::task::spawn_blocking(move || {
+                python_bridge_klines_range(&python, &sym, &start, &end)
+            }).await.unwrap_or_default()
+        };
+        if klines.is_empty() {
+            warn!("⚠️ No historical data for {} in range {} → {}", sym, start_date, end_date);
+        } else {
+            info!("📂 {} loaded {} bars ({}..{})",
+                sym, klines.len(),
+                klines.first().map(|k| k.datetime.format("%Y-%m-%d").to_string()).unwrap_or_default(),
+                klines.last().map(|k| k.datetime.format("%Y-%m-%d").to_string()).unwrap_or_default(),
+            );
+            all_klines.extend(klines);
+        }
+    }
+
+    if all_klines.is_empty() {
+        error!("DataActor[replay]: No data loaded for any symbol");
+        return;
+    }
+
+    // Sort by datetime for chronological replay
+    all_klines.sort_by_key(|k| k.datetime);
+
+    let total = all_klines.len();
+    info!("🔄 Replaying {} bars (speed={}x)", total, if speed == 0.0 { "max".to_string() } else { format!("{}", speed) });
+
+    // Calculate delay between bars
+    // For daily data: 1 trading day = ~6.5 hours. At speed=1, we compress to interval_secs.
+    // We use the actual datetime gaps between bars.
+    let mut prev_dt: Option<chrono::NaiveDateTime> = None;
+
+    for (i, kline) in all_klines.into_iter().enumerate() {
+        // Check shutdown
+        if shutdown.has_changed().unwrap_or(false) && *shutdown.borrow() {
+            info!("DataActor[replay]: shutdown at bar {}/{}", i, total);
+            return;
+        }
+
+        // Compute delay based on time gap and speed
+        if speed > 0.0 {
+            if let Some(prev) = prev_dt {
+                let gap = kline.datetime.signed_duration_since(prev);
+                let gap_ms = gap.num_milliseconds().max(0) as f64;
+                // Scale: at speed=1, 1 day gap → 1 second delay
+                // At speed=0.1, 1 day gap → 10 second delay
+                // At speed=100, 1 day gap → 10ms delay
+                let delay_ms = (gap_ms / (86_400_000.0 / 1000.0)) / speed;
+                let delay_ms = delay_ms.min(5000.0).max(1.0) as u64; // cap at 5s
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+        // speed=0 → no delay, full speed
+
+        prev_dt = Some(kline.datetime);
+
+        if tx.send(MarketEvent { kline }).await.is_err() {
+            info!("DataActor[replay]: channel closed at bar {}/{}", i, total);
+            return;
+        }
+
+        // Log progress every 10%
+        if total > 100 && i % (total / 10) == 0 {
+            info!("🔄 Replay progress: {}/{} ({:.0}%)", i, total, (i as f64 / total as f64) * 100.0);
+        }
+    }
+
+    info!("✅ Replay complete: {} bars processed", total);
+
+    // Keep alive until shutdown so status shows "running" until user stops
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {}
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    info!("DataActor[replay]: shutdown after completion");
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Fetch historical klines for a specific date range via Python bridge.
+fn python_bridge_klines_range(python: &str, symbol: &str, start: &str, end: &str) -> Vec<Kline> {
+    use chrono::NaiveDateTime;
+
+    let script = std::path::Path::new("scripts/market_data.py");
+    if !script.exists() { return Vec::new(); }
+
+    let output = std::process::Command::new(python)
+        .args(["scripts/market_data.py", "klines", symbol, start, end])
+        .env("PYTHONIOENCODING", "utf-8")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            warn!("Python klines failed for {}: {}", symbol, stderr.chars().take(200).collect::<String>());
+            return Vec::new();
+        }
+        Err(e) => {
+            warn!("Failed to spawn python for {}: {}", symbol, e);
+            return Vec::new();
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let arr: Vec<serde_json::Value> = match serde_json::from_str(stdout.trim()) {
+        Ok(a) => a,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut klines = Vec::with_capacity(arr.len());
+    for item in &arr {
+        let dt_str = item["datetime"].as_str().unwrap_or("");
+        let datetime = NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%d %H:%M:%S")
+            .unwrap_or_else(|_| Utc::now().naive_utc());
+        klines.push(Kline {
+            symbol: symbol.to_string(),
+            datetime,
+            open: item["open"].as_f64().unwrap_or(0.0),
+            high: item["high"].as_f64().unwrap_or(0.0),
+            low: item["low"].as_f64().unwrap_or(0.0),
+            close: item["close"].as_f64().unwrap_or(0.0),
+            volume: item["volume"].as_f64().unwrap_or(0.0),
+        });
+    }
+    klines
 }
 
 // ── StrategyActor ───────────────────────────────────────────────────

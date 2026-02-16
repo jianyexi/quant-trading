@@ -876,8 +876,14 @@ pub struct TradeStartRequest {
     pub symbols: Option<Vec<String>>,
     pub interval: Option<u64>,
     pub position_size: Option<f64>,
-    /// "paper" (default) or "qmt" for live trading via QMT bridge
+    /// "paper" (default), "qmt" for live trading, or "replay" for historical replay
     pub mode: Option<String>,
+    /// Replay start date (YYYY-MM-DD), required for mode="replay"
+    pub replay_start: Option<String>,
+    /// Replay end date (YYYY-MM-DD), required for mode="replay"
+    pub replay_end: Option<String>,
+    /// Replay speed multiplier (0=max speed, 1=real-time, 10=10x), default=0
+    pub replay_speed: Option<f64>,
 }
 
 pub async fn trade_start(
@@ -918,6 +924,21 @@ pub async fn trade_start(
                 tushare_url: state.config.tushare.base_url.clone(),
                 tushare_token: state.config.tushare.token.clone(),
                 akshare_url: state.config.akshare.base_url.clone(),
+            }
+        } else if mode == "replay" {
+            let start = match req.replay_start {
+                Some(ref s) if !s.is_empty() => s.clone(),
+                _ => return (StatusCode::BAD_REQUEST, Json(json!({
+                    "error": "replay_start (YYYY-MM-DD) is required for replay mode"
+                }))),
+            };
+            let end = req.replay_end.clone()
+                .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
+            let speed = req.replay_speed.unwrap_or(0.0);
+            quant_broker::engine::DataMode::HistoricalReplay {
+                start_date: start,
+                end_date: end,
+                speed,
             }
         } else {
             // Paper mode now uses real akshare data via Python bridge
@@ -989,7 +1010,10 @@ pub async fn trade_start(
         "strategy": strategy_name,
         "symbols": symbols,
         "interval": interval,
-        "position_size": position_size
+        "position_size": position_size,
+        "replay_start": req.replay_start,
+        "replay_end": req.replay_end,
+        "replay_speed": req.replay_speed
     })))
 }
 

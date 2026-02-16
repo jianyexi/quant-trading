@@ -28,11 +28,14 @@ export default function AutoTrade() {
   const [symbolsInput, setSymbolsInput] = useState('000001.SZ,600036.SH');
   const [interval, setInterval_] = useState(5);
   const [positionSize, setPositionSize] = useState(0.15);
-  const [mode, setMode] = useState<'paper' | 'qmt'>('paper');
+  const [mode, setMode] = useState<'paper' | 'qmt' | 'replay'>('paper');
   const [qmtStatus, setQmtStatus] = useState<QmtBridgeStatus | null>(null);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
   const [journalTotal, setJournalTotal] = useState(0);
   const [showJournal, setShowJournal] = useState(false);
+  const [replayStart, setReplayStart] = useState('2024-01-01');
+  const [replayEnd, setReplayEnd] = useState('2024-12-31');
+  const [replaySpeed, setReplaySpeed] = useState(0);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Fetch initial status
@@ -77,7 +80,10 @@ export default function AutoTrade() {
     setError('');
     try {
       const symbols = symbolsInput.split(',').map(s => s.trim()).filter(Boolean);
-      await tradeStart({ strategy, symbols, interval: interval, position_size: positionSize, mode });
+      await tradeStart({
+        strategy, symbols, interval: interval, position_size: positionSize, mode,
+        ...(mode === 'replay' ? { replay_start: replayStart, replay_end: replayEnd, replay_speed: replaySpeed } : {}),
+      });
       await fetchStatus();
       startPolling();
     } catch (e) {
@@ -136,7 +142,9 @@ export default function AutoTrade() {
             <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-green-400 animate-pulse' : 'bg-[#94a3b8]'}`} />
             {isRunning ? '运行中' : '已停止'}
           </span>
-          {isRunning && <span className="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-300">📡 真实行情</span>}
+          {isRunning && <span className={`text-xs px-2 py-0.5 rounded ${
+            mode === 'replay' ? 'bg-purple-500/20 text-purple-300' : 'bg-green-500/20 text-green-300'
+          }`}>{mode === 'replay' ? '📂 历史回放' : '📡 真实行情'}</span>}
           <button onClick={fetchStatus}
             className="p-2 rounded-lg bg-[#334155] hover:bg-[#475569] text-[#94a3b8] transition-colors">
             <RefreshCw className="h-4 w-4" />
@@ -168,6 +176,14 @@ export default function AutoTrade() {
                 } disabled:opacity-50`}>
                 <Activity className="h-4 w-4" /> 模拟交易
               </button>
+              <button onClick={() => setMode('replay')} disabled={isRunning}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${
+                  mode === 'replay'
+                    ? 'bg-purple-600/20 border-purple-500 text-purple-400'
+                    : 'bg-[#0f172a] border-[#334155] text-[#94a3b8] hover:border-[#475569]'
+                } disabled:opacity-50`}>
+                <FileText className="h-4 w-4" /> 历史回放
+              </button>
               <button onClick={() => setMode('qmt')} disabled={isRunning}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${
                   mode === 'qmt'
@@ -177,6 +193,40 @@ export default function AutoTrade() {
                 <Radio className="h-4 w-4" /> QMT 实盘
               </button>
             </div>
+
+            {mode === 'replay' && (
+              <div className="mt-3 p-3 rounded-lg bg-purple-500/5 border border-purple-500/20">
+                <div className="text-xs text-purple-300 mb-2">📂 历史数据回放配置</div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs text-[#94a3b8] mb-1">开始日期</label>
+                    <input type="date" value={replayStart} onChange={e => setReplayStart(e.target.value)}
+                      disabled={isRunning}
+                      className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-2 py-1.5 text-sm text-[#f8fafc] disabled:opacity-50" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[#94a3b8] mb-1">结束日期</label>
+                    <input type="date" value={replayEnd} onChange={e => setReplayEnd(e.target.value)}
+                      disabled={isRunning}
+                      className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-2 py-1.5 text-sm text-[#f8fafc] disabled:opacity-50" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[#94a3b8] mb-1">回放速度</label>
+                    <select value={replaySpeed} onChange={e => setReplaySpeed(Number(e.target.value))}
+                      disabled={isRunning}
+                      className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-2 py-1.5 text-sm text-[#f8fafc] disabled:opacity-50">
+                      <option value={0}>极速 (无延迟)</option>
+                      <option value={100}>100x 快速</option>
+                      <option value={10}>10x 正常</option>
+                      <option value={1}>1x 实时</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="mt-2 text-xs text-[#64748b]">
+                  使用真实历史K线数据回放，可重复验证策略表现。推荐先用极速模式快速验证。
+                </div>
+              </div>
+            )}
 
             {mode === 'qmt' && (
               <div className={`mt-2 px-3 py-2 rounded-lg text-xs ${
