@@ -636,10 +636,71 @@ def walk_forward_cv_single(
     }
 
 
+# Default stock list for akshare training
+DEFAULT_TRAIN_STOCKS = [
+    "600519", "000858", "000001", "600036", "300750",
+    "002594", "601318", "600276", "000333", "601888",
+    "600030", "601166", "600900", "000568", "600809",
+    "601899", "600031", "600309", "300059", "600887",
+]
+
+
+def _fetch_akshare_data(
+    symbols: Optional[List[str]] = None,
+    start_date: str = "2022-01-01",
+    end_date: str = "2024-12-31",
+) -> pd.DataFrame:
+    """Fetch real A-share daily data from akshare for multiple stocks."""
+    import akshare as ak
+
+    stock_list = symbols if symbols else DEFAULT_TRAIN_STOCKS
+    print(f"📡 Fetching real data from akshare: {len(stock_list)} stocks, {start_date} ~ {end_date}")
+
+    all_data = []
+    for i, sym in enumerate(stock_list):
+        # Strip exchange suffix (600519.SH -> 600519)
+        code = sym.split(".")[0]
+        print(f"  [{i+1}/{len(stock_list)}] {code}...", end=" ", flush=True)
+        try:
+            df = ak.stock_zh_a_hist(
+                symbol=code, period="daily",
+                start_date=start_date.replace("-", ""),
+                end_date=end_date.replace("-", ""),
+                adjust="qfq",
+            )
+            if df is None or df.empty or len(df) < 200:
+                print(f"skip ({0 if df is None else len(df)} bars)")
+                continue
+            df = df.rename(columns={
+                "日期": "date", "开盘": "open", "最高": "high",
+                "最低": "low", "收盘": "close", "成交量": "volume",
+            })
+            df["date"] = pd.to_datetime(df["date"])
+            df.set_index("date", inplace=True)
+            df = df[["open", "high", "low", "close", "volume"]].astype(float)
+            all_data.append(df)
+            print(f"OK ({len(df)} bars)")
+        except Exception as e:
+            print(f"ERROR: {e}")
+            continue
+
+    if not all_data:
+        print("⚠️  No data fetched from akshare, falling back to synthetic")
+        return generate_synthetic_data(5000)
+
+    combined = pd.concat(all_data, axis=0).sort_index()
+    print(f"✅ Total: {len(combined)} bars from {len(all_data)} stocks")
+    return combined
+
+
 # ── Full Training Pipeline ──────────────────────────────────────────
 
 def retrain(
     data_path: Optional[str] = None,
+    data_source: str = "synthetic",
+    symbols: Optional[List[str]] = None,
+    start_date: str = "2022-01-01",
+    end_date: str = "2024-12-31",
     journal_path: str = "data/trade_journal.db",
     output_dir: str = "ml_models",
     n_cv_folds: int = 5,
@@ -667,10 +728,13 @@ def retrain(
     if data_path and os.path.exists(data_path):
         print(f"📂 Loading market data from: {data_path}")
         df = pd.read_csv(data_path, index_col=0, parse_dates=True)
+    elif data_source == "akshare":
+        df = _fetch_akshare_data(symbols, start_date, end_date)
     else:
         print("📂 No market data provided, using synthetic (5000 bars)")
         df = generate_synthetic_data(5000)
     report["data_rows"] = len(df)
+    report["data_source"] = data_source if not data_path else "csv"
 
     # 2. Collect journal labels
     journal_df = collect_journal_labels(journal_path)
@@ -853,6 +917,12 @@ def retrain(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Auto-retrain ML Factor Model (multi-algorithm)")
     parser.add_argument("--data", default=None, help="Path to OHLCV CSV data")
+    parser.add_argument("--data-source", default="synthetic", choices=["synthetic", "akshare"],
+                        help="Data source: synthetic (random GBM) or akshare (real A-share data)")
+    parser.add_argument("--symbols", default=None,
+                        help="Comma-separated stock codes for akshare (e.g. 600519,000858). Default: top 20 A-shares")
+    parser.add_argument("--start-date", default="2022-01-01", help="Start date for akshare data (YYYY-MM-DD)")
+    parser.add_argument("--end-date", default="2024-12-31", help="End date for akshare data (YYYY-MM-DD)")
     parser.add_argument("--journal", default="data/trade_journal.db", help="Path to trade journal DB")
     parser.add_argument("--output-dir", default="ml_models", help="Output directory")
     parser.add_argument("--folds", type=int, default=5, help="Walk-forward CV folds")
@@ -866,9 +936,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     algos = [a.strip() for a in args.algorithms.split(",")]
+    syms = [s.strip() for s in args.symbols.split(",")] if args.symbols else None
 
     retrain(
         data_path=args.data,
+        data_source=args.data_source,
+        symbols=syms,
+        start_date=args.start_date,
+        end_date=args.end_date,
         journal_path=args.journal,
         output_dir=args.output_dir,
         n_cv_folds=args.folds,

@@ -76,6 +76,7 @@ const STRATEGIES = [
   { value: 'rsi_reversal', label: 'RSI 均值回归 (14)' },
   { value: 'macd_trend', label: 'MACD 动量 (12/26/9)' },
   { value: 'multi_factor', label: '多因子模型' },
+  { value: 'ml_factor', label: 'ML因子模型' },
 ];
 
 const PERIODS = [

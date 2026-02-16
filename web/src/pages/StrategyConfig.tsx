@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { StrategyConfig, StrategyParam } from '../types';
-import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, type ModelInfo } from '../api/client';
-import { Save, Upload, Play, RotateCcw, Brain, Loader2, CheckCircle, AlertCircle, Zap } from 'lucide-react';
+import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, type ModelInfo, type RetrainOptions } from '../api/client';
+import { Save, Upload, Play, RotateCcw, Brain, Loader2, CheckCircle, AlertCircle, Zap, Database } from 'lucide-react';
 
 const STRATEGIES: StrategyConfig[] = [
   {
@@ -114,6 +114,12 @@ export default function StrategyConfigPage() {
   const [modelInfoData, setModelInfoData] = useState<ModelInfo | null>(null);
   const [retraining, setRetraining] = useState(false);
   const [selectedAlgos, setSelectedAlgos] = useState<string[]>(['lgb', 'xgb', 'catboost']);
+  const [trainDataSource, setTrainDataSource] = useState<'synthetic' | 'akshare'>('akshare');
+  const [trainSymbols, setTrainSymbols] = useState('600519,000858,000001,600036,300750,002594,601318,600276,000333,601888');
+  const [trainStartDate, setTrainStartDate] = useState('2022-01-01');
+  const [trainEndDate, setTrainEndDate] = useState('2024-12-31');
+  const [trainHorizon, setTrainHorizon] = useState(5);
+  const [trainThreshold, setTrainThreshold] = useState(0.01);
 
   const activeStrategy = STRATEGIES.find((s) => s.name === selectedStrategy)!;
 
@@ -224,9 +230,21 @@ export default function StrategyConfigPage() {
       return;
     }
     setRetraining(true);
-    showStatus('模型训练中，请耐心等待…', 'info');
+    const srcLabel = trainDataSource === 'akshare' ? '真实行情' : '模拟数据';
+    showStatus(`模型训练中 (${srcLabel})，请耐心等待…`, 'info');
     try {
-      const result = await mlRetrain(selectedAlgos.join(','));
+      const opts: RetrainOptions = {
+        algorithms: selectedAlgos.join(','),
+        data_source: trainDataSource,
+        horizon: trainHorizon,
+        threshold: trainThreshold,
+      };
+      if (trainDataSource === 'akshare') {
+        opts.symbols = trainSymbols;
+        opts.start_date = trainStartDate;
+        opts.end_date = trainEndDate;
+      }
+      const result = await mlRetrain(opts);
       if (result.status === 'completed') {
         showStatus('模型训练完成！', 'success');
         fetchModelInfo();
@@ -396,6 +414,95 @@ export default function StrategyConfigPage() {
               </button>
             ))}
           </div>
+        </div>
+
+        {/* Data Source Selection */}
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-[#94a3b8] mb-2 flex items-center gap-1">
+            <Database className="h-4 w-4" /> 训练数据源
+          </label>
+          <div className="flex gap-2 mb-3">
+            <button
+              onClick={() => setTrainDataSource('akshare')}
+              className={`px-4 py-2 rounded-lg text-sm border transition-colors ${
+                trainDataSource === 'akshare'
+                  ? 'bg-cyan-600/20 text-cyan-400 border-cyan-500/50'
+                  : 'bg-[#0f172a] border-[#334155] text-[#64748b] hover:border-[#475569]'
+              }`}
+            >
+              📡 真实行情 (akshare)
+            </button>
+            <button
+              onClick={() => setTrainDataSource('synthetic')}
+              className={`px-4 py-2 rounded-lg text-sm border transition-colors ${
+                trainDataSource === 'synthetic'
+                  ? 'bg-yellow-600/20 text-yellow-400 border-yellow-500/50'
+                  : 'bg-[#0f172a] border-[#334155] text-[#64748b] hover:border-[#475569]'
+              }`}
+            >
+              🧪 模拟数据 (合成GBM)
+            </button>
+          </div>
+
+          {trainDataSource === 'akshare' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-[#0f172a] rounded-lg border border-[#334155] p-4">
+              <div className="md:col-span-2">
+                <label className="block text-xs text-[#64748b] mb-1">股票列表 (逗号分隔代码)</label>
+                <input
+                  type="text"
+                  value={trainSymbols}
+                  onChange={(e) => setTrainSymbols(e.target.value)}
+                  className="w-full bg-[#1e293b] border border-[#334155] rounded px-3 py-1.5 text-sm text-[#f8fafc] focus:border-cyan-500 outline-none"
+                  placeholder="600519,000858,000001,..."
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-[#64748b] mb-1">开始日期</label>
+                <input
+                  type="date"
+                  value={trainStartDate}
+                  onChange={(e) => setTrainStartDate(e.target.value)}
+                  className="w-full bg-[#1e293b] border border-[#334155] rounded px-3 py-1.5 text-sm text-[#f8fafc] focus:border-cyan-500 outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-[#64748b] mb-1">结束日期</label>
+                <input
+                  type="date"
+                  value={trainEndDate}
+                  onChange={(e) => setTrainEndDate(e.target.value)}
+                  className="w-full bg-[#1e293b] border border-[#334155] rounded px-3 py-1.5 text-sm text-[#f8fafc] focus:border-cyan-500 outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-[#64748b] mb-1">预测周期 (前瞻天数)</label>
+                <select
+                  value={trainHorizon}
+                  onChange={(e) => setTrainHorizon(Number(e.target.value))}
+                  className="w-full bg-[#1e293b] border border-[#334155] rounded px-3 py-1.5 text-sm text-[#f8fafc] focus:border-cyan-500 outline-none"
+                >
+                  <option value={3}>3天</option>
+                  <option value={5}>5天</option>
+                  <option value={10}>10天</option>
+                  <option value={20}>20天</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-[#64748b] mb-1">正样本阈值 (收益率)</label>
+                <select
+                  value={trainThreshold}
+                  onChange={(e) => setTrainThreshold(Number(e.target.value))}
+                  className="w-full bg-[#1e293b] border border-[#334155] rounded px-3 py-1.5 text-sm text-[#f8fafc] focus:border-cyan-500 outline-none"
+                >
+                  <option value={0.005}>0.5%</option>
+                  <option value={0.01}>1.0%</option>
+                  <option value={0.02}>2.0%</option>
+                  <option value={0.03}>3.0%</option>
+                  <option value={0.05}>5.0%</option>
+                </select>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-3 mb-4">

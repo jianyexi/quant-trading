@@ -412,10 +412,20 @@ export interface ModelInfo {
   latest_report: Record<string, unknown> | null;
 }
 
-export async function mlRetrain(algorithms?: string): Promise<{ status: string; stdout: string; stderr: string }> {
+export interface RetrainOptions {
+  algorithms?: string;
+  data_source?: 'synthetic' | 'akshare';
+  symbols?: string;
+  start_date?: string;
+  end_date?: string;
+  horizon?: number;
+  threshold?: number;
+}
+
+export async function mlRetrain(opts?: RetrainOptions): Promise<{ status: string; stdout: string; stderr: string }> {
   return fetchJson('/trade/retrain', {
     method: 'POST',
-    body: JSON.stringify(algorithms ? { algorithms } : {}),
+    body: JSON.stringify(opts ?? {}),
   });
 }
 

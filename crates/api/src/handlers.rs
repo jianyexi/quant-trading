@@ -607,6 +607,7 @@ pub async fn run_backtest(
 ) -> (StatusCode, Json<Value>) {
     use quant_backtest::engine::{BacktestConfig, BacktestEngine};
     use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy, MultiFactorConfig};
+    use quant_strategy::ml_factor::{MlFactorStrategy, MlFactorConfig};
 
     let capital = req.capital.unwrap_or(1_000_000.0);
     let period = req.period.as_deref().unwrap_or("daily");
@@ -653,6 +654,7 @@ pub async fn run_backtest(
         "rsi_reversal" | "RsiMeanReversion" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
         "macd_trend" | "MacdMomentum" => Box::new(MacdMomentum::new(12, 26, 9)),
         "multi_factor" | "MultiFactorModel" => Box::new(MultiFactorStrategy::new(MultiFactorConfig::default())),
+        "ml_factor" | "MlFactor" => Box::new(MlFactorStrategy::new(MlFactorConfig::default())),
         _ => Box::new(DualMaCrossover::new(5, 20)),
     };
 
@@ -1526,9 +1528,21 @@ pub async fn ml_retrain(
     State(_state): State<AppState>,
     body: Option<Json<Value>>,
 ) -> (StatusCode, Json<Value>) {
-    let algorithms = body
-        .and_then(|b| b.get("algorithms").and_then(|a| a.as_str()).map(|s| s.to_string()))
-        .unwrap_or_else(|| "lgb".to_string());
+    let body_val = body.map(|b| b.0).unwrap_or(json!({}));
+    let algorithms = body_val.get("algorithms").and_then(|a| a.as_str())
+        .unwrap_or("lgb").to_string();
+    let data_source = body_val.get("data_source").and_then(|a| a.as_str())
+        .unwrap_or("synthetic").to_string();
+    let symbols = body_val.get("symbols").and_then(|a| a.as_str())
+        .unwrap_or("").to_string();
+    let start_date = body_val.get("start_date").and_then(|a| a.as_str())
+        .unwrap_or("2022-01-01").to_string();
+    let end_date = body_val.get("end_date").and_then(|a| a.as_str())
+        .unwrap_or("2024-12-31").to_string();
+    let horizon = body_val.get("horizon").and_then(|a| a.as_i64())
+        .unwrap_or(5).to_string();
+    let threshold = body_val.get("threshold").and_then(|a| a.as_f64())
+        .unwrap_or(0.01).to_string();
 
     let result = tokio::task::spawn_blocking(move || {
         let retrain_script = std::path::Path::new("ml_models/auto_retrain.py");
@@ -1538,13 +1552,30 @@ pub async fn ml_retrain(
 
         let python = find_python().ok_or("Python not found. Install Python 3.12+ or set PYTHON_PATH env var.")?;
 
+        let mut args = vec![
+            "ml_models/auto_retrain.py".to_string(),
+            "--no-notify".to_string(),
+            "--algorithms".to_string(), algorithms,
+            "--horizon".to_string(), horizon,
+            "--threshold".to_string(), threshold,
+        ];
+
+        if data_source == "akshare" {
+            args.push("--data-source".to_string());
+            args.push("akshare".to_string());
+            if !symbols.is_empty() {
+                args.push("--symbols".to_string());
+                args.push(symbols);
+            }
+            args.push("--start-date".to_string());
+            args.push(start_date);
+            args.push("--end-date".to_string());
+            args.push(end_date);
+        }
+
+        let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         let output = std::process::Command::new(&python)
-            .args([
-                "ml_models/auto_retrain.py",
-                "--no-notify",
-                "--algorithms",
-                &algorithms,
-            ])
+            .args(&str_args)
             .env("PYTHONIOENCODING", "utf-8")
             .output()
             .map_err(|e| format!("Failed to start python '{}': {}", python, e))?;
