@@ -471,18 +471,20 @@ impl MlFactorStrategy {
     }
 
     /// Get the predicted probability for the current bar.
-    fn predict(&self, features: &[f32; NUM_FEATURES]) -> f64 {
-        if !self.using_fallback {
-            if let Some(client) = &self.client {
-                match client.predict(features) {
-                    Ok(prob) => return prob,
-                    Err(e) => {
-                        tracing::warn!("ML inference failed: {}, using fallback", e);
-                    }
+    /// Returns None if ML service is unavailable — no fallback, no signal.
+    fn predict(&self, features: &[f32; NUM_FEATURES]) -> Option<f64> {
+        if self.using_fallback {
+            return None; // ML service not available — refuse to guess
+        }
+        if let Some(client) = &self.client {
+            match client.predict(features) {
+                Ok(prob) => return Some(prob),
+                Err(e) => {
+                    tracing::warn!("ML inference failed: {}", e);
                 }
             }
         }
-        fallback_score(features)
+        None
     }
 
     pub fn is_using_fallback(&self) -> bool {
@@ -511,8 +513,14 @@ impl Strategy for MlFactorStrategy {
         // Compute features via incremental engine (O(1) per bar)
         let features = self.incr_engine.update(kline)?;
 
-        // Run prediction
-        let prediction = self.predict(&features);
+        // Run prediction — returns None if ML service unavailable
+        let prediction = match self.predict(&features) {
+            Some(p) => p,
+            None => {
+                // No ML service — skip this bar silently (logged once at startup)
+                return None;
+            }
+        };
 
         // Generate signal on threshold crossings (avoids repeated signals)
         let signal = match self.prev_prediction {
@@ -634,15 +642,16 @@ mod tests {
 
     #[test]
     fn test_ml_strategy_generates_signal_uptrend() {
+        // With unreachable bridge, ML strategy produces NO signals (no fallback)
         let mut strat = MlFactorStrategy::new(MlFactorConfig {
-            bridge_url: "http://127.0.0.1:1".to_string(), // force fallback for deterministic test
+            bridge_url: "http://127.0.0.1:1".to_string(),
             buy_threshold: 0.52,
             sell_threshold: 0.45,
             ..Default::default()
         });
         strat.on_init();
+        assert!(strat.is_using_fallback(), "Should be in fallback mode with unreachable bridge");
 
-        // Strong uptrend should eventually trigger a buy
         let bars = generate_bars(100, 100.0, 0.008);
         let mut signals = Vec::new();
         for bar in &bars {
@@ -650,22 +659,21 @@ mod tests {
                 signals.push(sig);
             }
         }
-        // Should have at least one signal
-        assert!(!signals.is_empty(), "Expected signals from uptrend data");
-        assert!(signals.iter().any(|s| s.is_buy()), "Expected at least one buy signal");
+        // No ML server → no signals (by design)
+        assert!(signals.is_empty(), "Should produce no signals without ML server");
     }
 
     #[test]
     fn test_ml_strategy_generates_signal_downtrend() {
+        // With unreachable bridge, ML strategy produces NO signals (no fallback)
         let mut strat = MlFactorStrategy::new(MlFactorConfig {
-            bridge_url: "http://127.0.0.1:1".to_string(), // force fallback for deterministic test
+            bridge_url: "http://127.0.0.1:1".to_string(),
             buy_threshold: 0.55,
             sell_threshold: 0.49,
             ..Default::default()
         });
         strat.on_init();
 
-        // Strong downtrend should eventually trigger a sell
         let bars = generate_bars(120, 100.0, -0.008);
         let mut signals = Vec::new();
         for bar in &bars {
@@ -673,8 +681,7 @@ mod tests {
                 signals.push(sig);
             }
         }
-        assert!(!signals.is_empty(), "Expected signals from downtrend data");
-        assert!(signals.iter().any(|s| s.is_sell()), "Expected at least one sell signal");
+        assert!(signals.is_empty(), "Should produce no signals without ML server");
     }
 
     #[test]
