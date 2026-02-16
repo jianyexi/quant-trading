@@ -140,7 +140,7 @@ pub struct EngineConfig {
 pub enum DataMode {
     /// Simulated: deterministic sine/cosine noise (for testing/demo)
     Simulated,
-    /// Live: fetch real-time quotes from DataProvider (Tushare/AKShare)
+    /// Live: fetch real-time quotes from DataProvider (Tushare/AKShare REST API)
     Live {
         /// Tushare API URL
         tushare_url: String,
@@ -149,6 +149,9 @@ pub enum DataMode {
         /// AKShare API URL
         akshare_url: String,
     },
+    /// PythonBridge: fetch real-time quotes via local Python subprocess (akshare library)
+    /// Most reliable method — uses scripts/market_data.py
+    PythonBridge,
 }
 
 impl Default for EngineConfig {
@@ -254,6 +257,11 @@ impl TradingEngine {
             journal,
             risk_enforcer,
         }
+    }
+
+    /// Set an external journal store (e.g., from AppState).
+    pub fn set_journal(&mut self, journal: Arc<JournalStore>) {
+        self.journal = Some(journal);
     }
 
     /// Start the actor system with the given strategy factory.
@@ -441,7 +449,7 @@ async fn data_actor(
     interval_secs: u64,
     data_mode: DataMode,
     tx: mpsc::Sender<MarketEvent>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
 ) {
     match &data_mode {
         DataMode::Simulated => {
@@ -455,6 +463,10 @@ async fn data_actor(
                 tushare_url.clone(), tushare_token.clone(), akshare_url.clone(),
                 tx, shutdown,
             ).await;
+        }
+        DataMode::PythonBridge => {
+            info!("📊 DataActor started [PYTHON_BRIDGE] for {:?}", symbols);
+            data_actor_python_bridge(symbols, interval_secs, tx, shutdown).await;
         }
     }
 }
@@ -683,6 +695,203 @@ async fn try_tushare_quote(
         datetime: Utc::now().naive_utc(),
         open, high, low, close, volume,
     })
+}
+
+// ── Python Bridge Data Actor ────────────────────────────────────────
+// Uses scripts/market_data.py for real-time quotes via akshare library.
+// More reliable than REST API which can be down.
+
+/// Find a working Python interpreter.
+fn find_python_for_bridge() -> Option<String> {
+    let candidates = [
+        std::env::var("PYTHON_PATH").unwrap_or_default(),
+        #[cfg(windows)]
+        format!("{}\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+            std::env::var("USERPROFILE").unwrap_or_default()),
+        "python3".to_string(),
+        "python".to_string(),
+    ];
+    for c in &candidates {
+        if c.is_empty() { continue; }
+        if let Ok(output) = std::process::Command::new(c)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            if output.success() { return Some(c.clone()); }
+        }
+    }
+    None
+}
+
+/// Fetch a real-time quote via Python subprocess.
+fn python_bridge_quote(python: &str, symbol: &str) -> Option<Kline> {
+    let script = std::path::Path::new("scripts/market_data.py");
+    if !script.exists() {
+        warn!("scripts/market_data.py not found");
+        return None;
+    }
+
+    let t0 = std::time::Instant::now();
+    let output = std::process::Command::new(python)
+        .args(["scripts/market_data.py", "quote", symbol])
+        .env("PYTHONIOENCODING", "utf-8")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .ok()?;
+
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!("Python quote failed for {}: {}", symbol, stderr.chars().take(200).collect::<String>());
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let data: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
+
+    if data.get("error").is_some() {
+        warn!("akshare quote error for {}: {}", symbol, data["error"]);
+        return None;
+    }
+
+    let close = data["price"].as_f64()?;
+    let open = data["open"].as_f64().unwrap_or(close);
+    let high = data["high"].as_f64().unwrap_or(close);
+    let low = data["low"].as_f64().unwrap_or(close);
+    let volume = data["volume"].as_f64().unwrap_or(0.0);
+
+    info!("📡 {} ¥{:.2} (akshare, {}ms)", symbol, close, elapsed_ms);
+
+    Some(Kline {
+        symbol: symbol.to_string(),
+        datetime: Utc::now().naive_utc(),
+        open, high, low, close, volume,
+    })
+}
+
+/// Fetch historical klines for cache warmup.
+fn python_bridge_warmup(python: &str, symbol: &str, days: usize) -> Vec<Kline> {
+    use chrono::NaiveDateTime;
+
+    let script = std::path::Path::new("scripts/market_data.py");
+    if !script.exists() { return Vec::new(); }
+
+    let end = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let start = (chrono::Local::now() - chrono::Duration::days(days as i64 * 2))
+        .format("%Y-%m-%d").to_string();
+
+    let output = std::process::Command::new(python)
+        .args(["scripts/market_data.py", "klines", symbol, &start, &end])
+        .env("PYTHONIOENCODING", "utf-8")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let arr: Vec<serde_json::Value> = match serde_json::from_str(stdout.trim()) {
+        Ok(a) => a,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut klines = Vec::with_capacity(arr.len());
+    for item in &arr {
+        let dt_str = item["datetime"].as_str().unwrap_or("");
+        let datetime = NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%d %H:%M:%S")
+            .unwrap_or_else(|_| Utc::now().naive_utc());
+        klines.push(Kline {
+            symbol: symbol.to_string(),
+            datetime,
+            open: item["open"].as_f64().unwrap_or(0.0),
+            high: item["high"].as_f64().unwrap_or(0.0),
+            low: item["low"].as_f64().unwrap_or(0.0),
+            close: item["close"].as_f64().unwrap_or(0.0),
+            volume: item["volume"].as_f64().unwrap_or(0.0),
+        });
+    }
+    // Keep only last N days
+    let start_idx = klines.len().saturating_sub(days);
+    klines[start_idx..].to_vec()
+}
+
+async fn data_actor_python_bridge(
+    symbols: Vec<String>,
+    interval_secs: u64,
+    tx: mpsc::Sender<MarketEvent>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let python = match find_python_for_bridge() {
+        Some(p) => p,
+        None => {
+            error!("DataActor[python_bridge]: Python not found, cannot start");
+            return;
+        }
+    };
+
+    // Phase 1: Warm up with historical data (60+ bars per symbol)
+    info!("📊 Warming up with historical data...");
+    for sym in &symbols {
+        let warmup_bars = tokio::task::spawn_blocking({
+            let python = python.clone();
+            let sym = sym.clone();
+            move || python_bridge_warmup(&python, &sym, 80)
+        }).await.unwrap_or_default();
+
+        if warmup_bars.is_empty() {
+            warn!("⚠️ No warmup data for {}", sym);
+        } else {
+            info!("📊 Warmup: {} loaded {} historical bars ({}..{})",
+                sym, warmup_bars.len(),
+                warmup_bars.first().map(|k| k.datetime.format("%Y-%m-%d").to_string()).unwrap_or_default(),
+                warmup_bars.last().map(|k| k.datetime.format("%Y-%m-%d").to_string()).unwrap_or_default(),
+            );
+            // Send historical bars rapidly to warm up strategy indicators
+            for kline in warmup_bars {
+                if tx.send(MarketEvent { kline }).await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+    info!("📊 Warmup complete, switching to real-time polling ({}s interval)", interval_secs);
+
+    // Phase 2: Real-time polling
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)) => {
+                for sym in &symbols {
+                    let kline = {
+                        let python = python.clone();
+                        let sym = sym.clone();
+                        tokio::task::spawn_blocking(move || {
+                            python_bridge_quote(&python, &sym)
+                        }).await.unwrap_or(None)
+                    };
+
+                    if let Some(k) = kline {
+                        if tx.send(MarketEvent { kline: k }).await.is_err() {
+                            info!("DataActor[python_bridge]: channel closed");
+                            return;
+                        }
+                    }
+                }
+            }
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    info!("DataActor[python_bridge]: shutdown");
+                    return;
+                }
+            }
+        }
+    }
 }
 
 // ── StrategyActor ───────────────────────────────────────────────────

@@ -914,15 +914,14 @@ pub async fn trade_start(
         max_concentration: state.config.risk.max_concentration,
         position_size_pct: position_size,
         data_mode: if mode == "qmt" {
-            // Live trading should use live data
             quant_broker::engine::DataMode::Live {
                 tushare_url: state.config.tushare.base_url.clone(),
                 tushare_token: state.config.tushare.token.clone(),
                 akshare_url: state.config.akshare.base_url.clone(),
             }
         } else {
-            // Paper mode uses simulated data by default
-            quant_broker::engine::DataMode::Simulated
+            // Paper mode now uses real akshare data via Python bridge
+            quant_broker::engine::DataMode::PythonBridge
         },
         risk_config: quant_risk::enforcement::RiskConfig {
             stop_loss_pct: state.config.risk.max_drawdown.min(0.10),
@@ -963,6 +962,9 @@ pub async fn trade_start(
     } else {
         TradingEngine::new(config)
     };
+
+    // Wire the shared journal from AppState
+    engine.set_journal(state.journal.clone());
 
     let sentiment_store = state.sentiment_store.clone();
     engine.start(move || -> Box<dyn quant_core::traits::Strategy> {

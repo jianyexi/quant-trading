@@ -136,6 +136,7 @@ export default function AutoTrade() {
             <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-green-400 animate-pulse' : 'bg-[#94a3b8]'}`} />
             {isRunning ? '运行中' : '已停止'}
           </span>
+          {isRunning && <span className="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-300">📡 真实行情</span>}
           <button onClick={fetchStatus}
             className="p-2 rounded-lg bg-[#334155] hover:bg-[#475569] text-[#94a3b8] transition-colors">
             <RefreshCw className="h-4 w-4" />
@@ -298,6 +299,33 @@ export default function AutoTrade() {
                 <div className="flex justify-between">
                   <span className="text-[#94a3b8]">标的</span>
                   <span className="text-[#3b82f6] text-xs">{status.symbols?.join(', ')}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Pipeline Latency */}
+          {isRunning && status?.latency && (
+            <div className="bg-[#1e293b] rounded-xl p-5 border border-[#334155]">
+              <h3 className="text-xs text-[#94a3b8] mb-2">⏱️ 管道延迟</h3>
+              <div className="space-y-1.5 text-sm font-mono">
+                <div className="flex justify-between">
+                  <span className="text-[#94a3b8]">因子计算</span>
+                  <span className={`${(status.latency.last_factor_compute_us) > 1000 ? 'text-yellow-400' : 'text-green-400'}`}>
+                    {status.latency.last_factor_compute_us}μs
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#94a3b8]">平均因子</span>
+                  <span className="text-[#f8fafc]">{status.latency.avg_factor_compute_us}μs</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#94a3b8]">下单延迟</span>
+                  <span className="text-[#f8fafc]">{status.latency.last_order_submit_us}μs</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#94a3b8]">已处理K线</span>
+                  <span className="text-[#3b82f6]">{status.latency.total_bars_processed}</span>
                 </div>
               </div>
             </div>

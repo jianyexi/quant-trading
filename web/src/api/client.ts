@@ -135,6 +135,14 @@ export async function screenFactors(symbol: string): Promise<StockCandidate> {
 
 // ── Auto-Trade API ──────────────────────────────────────────────────
 
+export interface PipelineLatency {
+  last_factor_compute_us: number;
+  avg_factor_compute_us: number;
+  last_risk_check_us: number;
+  last_order_submit_us: number;
+  total_bars_processed: number;
+}
+
 export interface TradeStatus {
   running: boolean;
   strategy: string;
@@ -144,6 +152,7 @@ export interface TradeStatus {
   total_fills: number;
   total_rejected: number;
   pnl: number;
+  latency?: PipelineLatency;
   recent_trades: Array<{
     side: string;
     symbol: string;
