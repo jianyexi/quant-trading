@@ -4,12 +4,15 @@
       "fast_period": 32
     },
     "MlFactor": {
-      "buy_threshold": 0.6
+      "buy_threshold": 0.6,
+      "sell_threshold": 0.4
     }
   },
-  "selectedStrategy": "DualMaCrossover",
+  "selectedStrategy": "RsiMeanReversion",
   "tradingConfig": {
+    "endDate": "2025-10-01",
     "initialCapital": 1000000,
+    "startDate": "2025-02-01",
     "symbol": "600519.SH"
   }
 }

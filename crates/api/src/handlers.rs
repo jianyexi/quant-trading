@@ -619,8 +619,10 @@ pub async fn run_backtest(
             (k, format!("akshare ({}条真实{})", n, label))
         }
         Ok(_) | Err(_) if period != "daily" => {
-            // No synthetic fallback for minute data
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("无法获取{}分钟级数据", period)})));
+            // Minute data only available for recent ~5 trading days
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error": format!("无法获取{}分钟级数据。分钟K线仅支持近5个交易日，请缩短日期范围或使用日线(daily)。", period)
+            })));
         }
         Ok(_) => {
             let k = generate_backtest_klines(&req.symbol, &req.start, &req.end);
