@@ -241,8 +241,8 @@ impl Default for MultiFactorConfig {
             vol_fast: 5,
             vol_slow: 20,
             price_range_period: 20,
-            buy_threshold: 0.30,
-            sell_threshold: -0.30,
+            buy_threshold: 0.15,
+            sell_threshold: -0.15,
             w_trend: 0.25,
             w_momentum: 0.25,
             w_volatility: 0.15,
@@ -728,9 +728,10 @@ impl Strategy for MultiFactorStrategy {
                     }
                 }
                 None => {
-                    if composite > self.cfg.buy_threshold + 0.1 {
+                    // First bar after warmup: use same threshold (no crossing required)
+                    if composite > self.cfg.buy_threshold {
                         Some(Signal::buy(&kline.symbol, composite.max(0.0).min(1.0), kline.datetime))
-                    } else if composite < self.cfg.sell_threshold - 0.1 {
+                    } else if composite < self.cfg.sell_threshold {
                         Some(Signal::sell(&kline.symbol, composite.abs().min(1.0), kline.datetime))
                     } else {
                         None
