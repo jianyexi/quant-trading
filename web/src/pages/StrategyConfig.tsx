@@ -447,32 +447,54 @@ export default function StrategyConfigPage() {
           {trainDataSource === 'akshare' && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-[#0f172a] rounded-lg border border-[#334155] p-4">
               <div className="md:col-span-2">
-                <label className="block text-xs text-[#64748b] mb-1">股票列表 (逗号分隔代码)</label>
-                <input
-                  type="text"
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs text-[#64748b]">股票列表 (逗号分隔代码)</label>
+                  <span className="text-xs text-cyan-400">{trainSymbols.split(',').filter(s => s.trim()).length} 只股票</span>
+                </div>
+                <textarea
                   value={trainSymbols}
                   onChange={(e) => setTrainSymbols(e.target.value)}
-                  className="w-full bg-[#1e293b] border border-[#334155] rounded px-3 py-1.5 text-sm text-[#f8fafc] focus:border-cyan-500 outline-none"
+                  rows={2}
+                  className="w-full bg-[#1e293b] border border-[#334155] rounded px-3 py-1.5 text-sm text-[#f8fafc] focus:border-cyan-500 outline-none resize-none"
                   placeholder="600519,000858,000001,..."
                 />
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
+                  <button onClick={() => setTrainSymbols('600519,000858,600036,601318,300750,002594,000333,601888,600900,601398')} className="px-2 py-0.5 rounded text-xs bg-[#1e293b] border border-[#334155] text-[#94a3b8] hover:border-cyan-500/50 hover:text-cyan-400 transition-colors">蓝筹10只</button>
+                  <button onClick={() => setTrainSymbols('600519,000858,000001,600036,300750,002594,601318,600276,000333,601888,600030,601166,600900,000568,600809,601899,600031,600309,300059,600887,000651,002415,300760,601398,601288,600438,002460,603259,600690,601669')} className="px-2 py-0.5 rounded text-xs bg-[#1e293b] border border-[#334155] text-[#94a3b8] hover:border-cyan-500/50 hover:text-cyan-400 transition-colors">多行业30只</button>
+                  <button onClick={() => setTrainSymbols('600519,000858,000568,600809,600887,002304,603288,600036,601318,601166,600030,601398,601288,300750,002594,600438,601012,002460,600276,000333,300760,603259,300122,002415,603501,300782,688981,002049,000651,600690,002032,601888,601899,600031,600309,601225,600585,600900,601669,600048,601800,300059,002230,603444,600760,002179,600893')} className="px-2 py-0.5 rounded text-xs bg-[#1e293b] border border-[#334155] text-[#94a3b8] hover:border-cyan-500/50 hover:text-cyan-400 transition-colors">全行业47只</button>
+                </div>
               </div>
               <div>
-                <label className="block text-xs text-[#64748b] mb-1">开始日期</label>
-                <input
-                  type="date"
-                  value={trainStartDate}
-                  onChange={(e) => setTrainStartDate(e.target.value)}
-                  className="w-full bg-[#1e293b] border border-[#334155] rounded px-3 py-1.5 text-sm text-[#f8fafc] focus:border-cyan-500 outline-none"
-                />
+                <label className="block text-xs text-[#64748b] mb-1">训练年数</label>
+                <div className="flex gap-1.5">
+                  {[
+                    { years: 2, start: '2023-01-01' },
+                    { years: 3, start: '2022-01-01' },
+                    { years: 5, start: '2020-01-01' },
+                    { years: 7, start: '2018-01-01' },
+                  ].map(({ years, start }) => (
+                    <button
+                      key={years}
+                      onClick={() => { setTrainStartDate(start); setTrainEndDate('2024-12-31'); }}
+                      className={`flex-1 px-2 py-1.5 rounded text-xs border transition-colors ${
+                        trainStartDate === start
+                          ? 'bg-cyan-600/20 text-cyan-400 border-cyan-500/50'
+                          : 'bg-[#1e293b] border-[#334155] text-[#94a3b8] hover:border-[#475569]'
+                      }`}
+                    >
+                      {years}年
+                    </button>
+                  ))}
+                </div>
               </div>
               <div>
-                <label className="block text-xs text-[#64748b] mb-1">结束日期</label>
-                <input
-                  type="date"
-                  value={trainEndDate}
-                  onChange={(e) => setTrainEndDate(e.target.value)}
-                  className="w-full bg-[#1e293b] border border-[#334155] rounded px-3 py-1.5 text-sm text-[#f8fafc] focus:border-cyan-500 outline-none"
-                />
+                <label className="block text-xs text-[#64748b] mb-1">自定义日期范围</label>
+                <div className="flex gap-2">
+                  <input type="date" value={trainStartDate} onChange={(e) => setTrainStartDate(e.target.value)}
+                    className="flex-1 bg-[#1e293b] border border-[#334155] rounded px-2 py-1.5 text-xs text-[#f8fafc] focus:border-cyan-500 outline-none" />
+                  <input type="date" value={trainEndDate} onChange={(e) => setTrainEndDate(e.target.value)}
+                    className="flex-1 bg-[#1e293b] border border-[#334155] rounded px-2 py-1.5 text-xs text-[#f8fafc] focus:border-cyan-500 outline-none" />
+                </div>
               </div>
               <div>
                 <label className="block text-xs text-[#64748b] mb-1">预测周期 (前瞻天数)</label>
