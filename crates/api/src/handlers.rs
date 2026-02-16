@@ -1533,18 +1533,21 @@ pub async fn ml_retrain(
     let result = tokio::task::spawn_blocking(move || {
         let retrain_script = std::path::Path::new("ml_models/auto_retrain.py");
         if !retrain_script.exists() {
-            return Err("auto_retrain.py not found in ml_models/".to_string());
+            return Err(format!("auto_retrain.py not found (cwd={:?})", std::env::current_dir()));
         }
 
-        let output = std::process::Command::new("python")
+        let python = find_python().ok_or("Python not found. Install Python 3.12+ or set PYTHON_PATH env var.")?;
+
+        let output = std::process::Command::new(&python)
             .args([
                 "ml_models/auto_retrain.py",
                 "--no-notify",
                 "--algorithms",
                 &algorithms,
             ])
+            .env("PYTHONIOENCODING", "utf-8")
             .output()
-            .map_err(|e| format!("Failed to start retrain: {}", e))?;
+            .map_err(|e| format!("Failed to start python '{}': {}", python, e))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -1556,7 +1559,8 @@ pub async fn ml_retrain(
                 "stderr": stderr,
             }))
         } else {
-            Err(format!("Retrain failed: {}", stderr))
+            let detail = if stderr.is_empty() { &stdout } else { &stderr };
+            Err(format!("Retrain exit {}: {}", output.status, detail))
         }
     }).await;
 
