@@ -317,11 +317,21 @@ pub async fn list_stocks() -> Json<Value> {
             {"symbol": "601318.SH", "name": "中国平安", "industry": "保险", "market": "SSE"},
             {"symbol": "000001.SZ", "name": "平安银行", "industry": "银行", "market": "SZSE"},
             {"symbol": "600036.SH", "name": "招商银行", "industry": "银行", "market": "SSE"},
-            {"symbol": "300750.SZ", "name": "宁德时代", "industry": "电池", "market": "ChiNext"},
             {"symbol": "600276.SH", "name": "恒瑞医药", "industry": "医药", "market": "SSE"},
             {"symbol": "000333.SZ", "name": "美的集团", "industry": "家电", "market": "SZSE"},
             {"symbol": "601888.SH", "name": "中国中免", "industry": "零售", "market": "SSE"},
-            {"symbol": "002594.SZ", "name": "比亚迪", "industry": "汽车", "market": "SZSE"}
+            {"symbol": "002594.SZ", "name": "比亚迪", "industry": "汽车", "market": "SZSE"},
+            {"symbol": "000651.SZ", "name": "格力电器", "industry": "家电", "market": "SZSE"},
+            {"symbol": "300750.SZ", "name": "宁德时代", "industry": "电池", "market": "创业板"},
+            {"symbol": "300760.SZ", "name": "迈瑞医疗", "industry": "医疗器械", "market": "创业板"},
+            {"symbol": "300059.SZ", "name": "东方财富", "industry": "券商", "market": "创业板"},
+            {"symbol": "300122.SZ", "name": "智飞生物", "industry": "疫苗", "market": "创业板"},
+            {"symbol": "300782.SZ", "name": "卓胜微", "industry": "芯片", "market": "创业板"},
+            {"symbol": "688981.SH", "name": "中芯国际", "industry": "半导体", "market": "科创板"},
+            {"symbol": "688111.SH", "name": "金山办公", "industry": "软件", "market": "科创板"},
+            {"symbol": "688036.SH", "name": "传音控股", "industry": "手机", "market": "科创板"},
+            {"symbol": "688561.SH", "name": "奇安信", "industry": "网络安全", "market": "科创板"},
+            {"symbol": "688005.SH", "name": "容百科技", "industry": "锂电材料", "market": "科创板"}
         ]
     }))
 }
@@ -496,6 +506,16 @@ fn stock_params(symbol: &str) -> StockParams {
         "300750.SZ" => StockParams { base_price: 195.0, annual_drift: 0.0, annual_vol: 0.35, avg_volume: 6_000_000.0, volume_vol: 0.55 },
         // 恒瑞医药: ~48 yuan
         "600276.SH" => StockParams { base_price: 48.0, annual_drift: 0.03, annual_vol: 0.28, avg_volume: 10_000_000.0, volume_vol: 0.45 },
+        // 比亚迪: ~240 yuan, 创业板高波动
+        "002594.SZ" => StockParams { base_price: 240.0, annual_drift: 0.10, annual_vol: 0.38, avg_volume: 8_000_000.0, volume_vol: 0.55 },
+        // 中芯国际: ~50 yuan, 科创板
+        "688981.SH" => StockParams { base_price: 50.0, annual_drift: -0.05, annual_vol: 0.40, avg_volume: 12_000_000.0, volume_vol: 0.6 },
+        // 迈瑞医疗: ~280 yuan, 创业板
+        "300760.SZ" => StockParams { base_price: 280.0, annual_drift: 0.05, annual_vol: 0.30, avg_volume: 2_000_000.0, volume_vol: 0.45 },
+        // 美的集团: ~60 yuan
+        "000333.SZ" => StockParams { base_price: 60.0, annual_drift: 0.06, annual_vol: 0.25, avg_volume: 10_000_000.0, volume_vol: 0.45 },
+        // 中国中免: ~70 yuan
+        "601888.SH" => StockParams { base_price: 70.0, annual_drift: -0.10, annual_vol: 0.35, avg_volume: 6_000_000.0, volume_vol: 0.5 },
         _ => StockParams { base_price: 50.0, annual_drift: 0.0, annual_vol: 0.25, avg_volume: 5_000_000.0, volume_vol: 0.5 },
     }
 }
@@ -545,8 +565,8 @@ fn generate_backtest_klines(symbol: &str, start: &str, end: &str) -> Vec<Kline> 
     let mut price = params.base_price;
     let mut date = start_date;
 
-    // A-share: ±10% daily limit (±20% for 创业板 300xxx)
-    let limit_pct = if symbol.starts_with("300") { 0.20 } else { 0.10 };
+    // A-share: ±10% 主板, ±20% 创业板(300xxx)/科创板(688xxx)
+    let limit_pct = if symbol.starts_with("300") || symbol.starts_with("688") { 0.20 } else { 0.10 };
 
     while date <= end_date {
         // Skip weekends

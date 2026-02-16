@@ -41,6 +41,12 @@ impl ChineseMarketRules {
     pub fn round_to_lot(quantity: f64) -> f64 {
         (quantity / 100.0).floor() * 100.0
     }
+
+    /// Detect if a symbol is on ChiNext (创业板 300xxx) or STAR Market (科创板 688xxx).
+    pub fn is_chinext_or_star(symbol: &str) -> bool {
+        let code = symbol.split('.').next().unwrap_or(symbol);
+        code.starts_with("300") || code.starts_with("688")
+    }
 }
 
 #[cfg(test)]
