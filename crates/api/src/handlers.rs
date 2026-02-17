@@ -979,6 +979,10 @@ pub async fn trade_start(
                 speed,
                 period,
             }
+        } else if mode == "l2" {
+            quant_broker::engine::DataMode::L2 {
+                l2_addr: "127.0.0.1:18095".to_string(),
+            }
         } else {
             // Paper mode: always use low-latency server (auto-starts if needed)
             quant_broker::engine::DataMode::LowLatency {

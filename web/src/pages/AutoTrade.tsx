@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Square, RefreshCw, Activity, TrendingUp, TrendingDown, AlertCircle, Loader2, Radio, FileText } from 'lucide-react';
+import { Play, Square, RefreshCw, Activity, TrendingUp, TrendingDown, AlertCircle, Loader2, Radio, FileText, BarChart3 } from 'lucide-react';
 import { tradeStart, tradeStop, tradeStatus, qmtBridgeStatus, getJournal, type TradeStatus, type QmtBridgeStatus, type JournalEntry } from '../api/client';
 
 const STRATEGIES = [
@@ -28,7 +28,7 @@ export default function AutoTrade() {
   const [symbolsInput, setSymbolsInput] = useState('000001.SZ,600036.SH');
   const [interval, setInterval_] = useState(5);
   const [positionSize, setPositionSize] = useState(0.15);
-  const [mode, setMode] = useState<'paper' | 'qmt' | 'replay'>('paper');
+  const [mode, setMode] = useState<'paper' | 'qmt' | 'replay' | 'l2'>('paper');
   const [qmtStatus, setQmtStatus] = useState<QmtBridgeStatus | null>(null);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
   const [journalTotal, setJournalTotal] = useState(0);
@@ -192,6 +192,14 @@ export default function AutoTrade() {
                     : 'bg-[#0f172a] border-[#334155] text-[#94a3b8] hover:border-[#475569]'
                 } disabled:opacity-50`}>
                 <Radio className="h-4 w-4" /> QMT 实盘
+              </button>
+              <button onClick={() => setMode('l2')} disabled={isRunning}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${
+                  mode === 'l2'
+                    ? 'bg-cyan-600/20 border-cyan-500 text-cyan-400'
+                    : 'bg-[#0f172a] border-[#334155] text-[#94a3b8] hover:border-[#475569]'
+                } disabled:opacity-50`}>
+                <BarChart3 className="h-4 w-4" /> L2 逐笔
               </button>
             </div>
 

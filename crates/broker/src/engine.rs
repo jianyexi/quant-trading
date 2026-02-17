@@ -33,17 +33,43 @@ use quant_risk::enforcement::{RiskConfig, RiskEnforcer, PositionInfo};
 
 // ── Messages ────────────────────────────────────────────────────────
 
-/// Market data event from DataActor → StrategyActor
+/// Market data event from DataActor → StrategyActor.
+/// Supports L1 (Kline bars) and L2 (tick/depth) data.
 #[derive(Debug, Clone)]
-pub struct MarketEvent {
-    pub kline: Kline,
+pub enum MarketEvent {
+    /// L1 K-line bar (OHLCV)
+    Bar(Kline),
+    /// L2 逐笔成交 (tick-by-tick trade)
+    Tick(TickData),
+    /// L2 盘口深度快照 (depth/order book)
+    Depth(DepthData),
+}
+
+impl MarketEvent {
+    /// Extract symbol from any variant.
+    pub fn symbol(&self) -> &str {
+        match self {
+            MarketEvent::Bar(k) => &k.symbol,
+            MarketEvent::Tick(t) => &t.symbol,
+            MarketEvent::Depth(d) => &d.symbol,
+        }
+    }
+
+    /// Extract latest price from any variant.
+    pub fn price(&self) -> f64 {
+        match self {
+            MarketEvent::Bar(k) => k.close,
+            MarketEvent::Tick(t) => t.price,
+            MarketEvent::Depth(d) => d.last_price,
+        }
+    }
 }
 
 /// Trade signal from StrategyActor → RiskActor
 #[derive(Debug, Clone)]
 pub struct TradeSignal {
     pub signal: Signal,
-    pub kline: Kline,
+    pub price: f64,
 }
 
 /// Order request from RiskActor → OrderActor
@@ -174,6 +200,12 @@ pub enum DataMode {
         speed: f64,
         /// K-line period: "daily", "1", "5", "15", "30", "60" (minutes)
         period: String,
+    },
+    /// L2: Level-2 tick/depth data via TCP MQ from L2 sidecar
+    /// Receives 逐笔成交 + 五档/十档盘口 push data
+    L2 {
+        /// L2 data server TCP address (default: 127.0.0.1:18095)
+        l2_addr: String,
     },
 }
 
@@ -572,6 +604,10 @@ async fn data_actor(
                 symbols, start_date, end_date, period, speed);
             data_actor_replay(symbols, start_date.clone(), end_date.clone(), *speed, period.clone(), tx, shutdown).await;
         }
+        DataMode::L2 { l2_addr } => {
+            info!("📊 DataActor started [L2] for {:?} (addr={})", symbols, l2_addr);
+            data_actor_l2(symbols, l2_addr.clone(), tx, shutdown).await;
+        }
     }
 }
 
@@ -622,7 +658,7 @@ async fn data_actor_simulated(
                         volume,
                     };
 
-                    if tx.send(MarketEvent { kline }).await.is_err() {
+                    if tx.send(MarketEvent::Bar(kline)).await.is_err() {
                         info!("DataActor: channel closed, shutting down");
                         return;
                     }
@@ -667,7 +703,7 @@ async fn data_actor_live(
                         None => continue,
                     };
 
-                    if tx.send(MarketEvent { kline }).await.is_err() {
+                    if tx.send(MarketEvent::Bar(kline)).await.is_err() {
                         info!("DataActor[live]: channel closed");
                         return;
                     }
@@ -959,7 +995,7 @@ async fn data_actor_python_bridge(
             );
             // Send historical bars rapidly to warm up strategy indicators
             for kline in warmup_bars {
-                if tx.send(MarketEvent { kline }).await.is_err() {
+                if tx.send(MarketEvent::Bar(kline)).await.is_err() {
                     return;
                 }
             }
@@ -981,7 +1017,7 @@ async fn data_actor_python_bridge(
                     };
 
                     if let Some(k) = kline {
-                        if tx.send(MarketEvent { kline: k }).await.is_err() {
+                        if tx.send(MarketEvent::Bar(k)).await.is_err() {
                             info!("DataActor[python_bridge]: channel closed");
                             return;
                         }
@@ -1104,7 +1140,7 @@ async fn data_actor_low_latency(
                     let msg_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
                     if msg_type == "kline" {
                         if let Some(kline) = parse_kline_json(sym, &data) {
-                            if tx.send(MarketEvent { kline }).await.is_err() { return; }
+                            if tx.send(MarketEvent::Bar(kline)).await.is_err() { return; }
                             count += 1;
                         }
                     } else if msg_type == "warmup_done" {
@@ -1150,7 +1186,7 @@ async fn data_actor_low_latency(
                                 volume: data.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0),
                             };
                             trace!("📡 TCP {} ¥{:.2}", sym, close);
-                            if tx.send(MarketEvent { kline }).await.is_err() {
+                            if tx.send(MarketEvent::Bar(kline)).await.is_err() {
                                 info!("DataActor[tcp_mq]: channel closed");
                                 return;
                             }
@@ -1245,7 +1281,7 @@ async fn data_actor_low_latency_http(
                     let mut n = 0;
                     for kj in arr {
                         if let Some(kline) = parse_kline_json(sym, kj) {
-                            if tx.send(MarketEvent { kline }).await.is_err() { return; }
+                            if tx.send(MarketEvent::Bar(kline)).await.is_err() { return; }
                             n += 1;
                         }
                     }
@@ -1287,7 +1323,7 @@ async fn data_actor_low_latency_http(
                 let results = futures::future::join_all(futs).await;
                 for kline_opt in results {
                     if let Some(kline) = kline_opt {
-                        if tx.send(MarketEvent { kline }).await.is_err() { return; }
+                        if tx.send(MarketEvent::Bar(kline)).await.is_err() { return; }
                     }
                 }
             }
@@ -1412,7 +1448,7 @@ async fn data_actor_replay(
 
         prev_dt = Some(kline.datetime);
 
-        if tx.send(MarketEvent { kline }).await.is_err() {
+        if tx.send(MarketEvent::Bar(kline)).await.is_err() {
             info!("DataActor[replay]: channel closed at bar {}/{}", i, total);
             return;
         }
@@ -1494,6 +1530,140 @@ fn python_bridge_klines_range(python: &str, symbol: &str, start: &str, end: &str
     klines
 }
 
+// ── L2 Data Actor ───────────────────────────────────────────────────
+// Receives Level-2 tick/depth data via TCP MQ from L2 sidecar.
+// Same binary protocol: [4B len + JSON] with type: "tick" | "depth".
+// Also accepts type: "kline" for L1 bars (hybrid mode).
+
+async fn data_actor_l2(
+    symbols: Vec<String>,
+    l2_addr: String,
+    tx: mpsc::Sender<MarketEvent>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    // Connect to L2 TCP MQ server
+    let stream = match tokio::net::TcpStream::connect(&l2_addr).await {
+        Ok(s) => {
+            info!("🔗 L2 TCP connected at {}", l2_addr);
+            s
+        }
+        Err(e) => {
+            error!("🔗 L2 TCP failed at {}: {}", l2_addr, e);
+            return;
+        }
+    };
+    let _ = stream.set_nodelay(true);
+    let (mut reader, mut writer) = stream.into_split();
+
+    // Read welcome message
+    if let Some(msg) = tcp_mq_read(&mut reader).await {
+        debug!("L2 TCP: {:?}", msg.get("type"));
+    }
+
+    // Subscribe to symbols
+    let sub_msg = serde_json::json!({
+        "cmd": "subscribe",
+        "symbols": symbols,
+        "level": "l2",
+    });
+    tcp_mq_write(&mut writer, &sub_msg).await;
+    drop(writer);
+    info!("📊 L2 subscribed to {} symbols, waiting for tick/depth push", symbols.len());
+
+    // Receive L2 events (lock-free, push-only)
+    loop {
+        tokio::select! {
+            msg = tcp_mq_read(&mut reader) => {
+                match msg {
+                    Some(data) => {
+                        let msg_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        let event = match msg_type {
+                            "tick" => parse_l2_tick(&data).map(MarketEvent::Tick),
+                            "depth" => parse_l2_depth(&data).map(MarketEvent::Depth),
+                            "kline" | "quote" => {
+                                // Hybrid: also accept L1 bars
+                                let sym = data.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
+                                parse_kline_json(sym, &data).map(MarketEvent::Bar)
+                            }
+                            _ => None,
+                        };
+                        if let Some(ev) = event {
+                            if tx.send(ev).await.is_err() {
+                                info!("DataActor[l2]: channel closed");
+                                return;
+                            }
+                        }
+                    }
+                    None => {
+                        warn!("DataActor[l2]: connection lost");
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                        return;
+                    }
+                }
+            }
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    info!("DataActor[l2]: shutdown");
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Parse L2 tick (逐笔成交) from JSON.
+fn parse_l2_tick(data: &serde_json::Value) -> Option<TickData> {
+    let symbol = data.get("symbol").and_then(|v| v.as_str())?.to_string();
+    let price = data.get("price").and_then(|v| v.as_f64())?;
+    let volume = data.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let direction = data.get("direction").and_then(|v| v.as_str())
+        .and_then(|s| s.chars().next()).unwrap_or(' ');
+    let seq = data.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+    let bid1 = data.get("bid1").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let ask1 = data.get("ask1").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+    let datetime = if let Some(ts) = data.get("datetime").and_then(|v| v.as_str()) {
+        chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S%.f")
+            .unwrap_or_else(|_| Utc::now().naive_utc())
+    } else {
+        Utc::now().naive_utc()
+    };
+
+    Some(TickData { symbol, datetime, price, volume, direction, seq, bid1, ask1 })
+}
+
+/// Parse L2 depth (盘口) from JSON.
+fn parse_l2_depth(data: &serde_json::Value) -> Option<DepthData> {
+    let symbol = data.get("symbol").and_then(|v| v.as_str())?.to_string();
+    let last_price = data.get("last_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let total_volume = data.get("total_volume").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let total_turnover = data.get("total_turnover").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+    let parse_levels = |key: &str| -> Vec<DepthLevel> {
+        data.get(key).and_then(|v| v.as_array()).map(|arr| {
+            arr.iter().filter_map(|lv| {
+                let price = lv.get("price").or(lv.get("p")).and_then(|v| v.as_f64())?;
+                let volume = lv.get("volume").or(lv.get("v")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let order_count = lv.get("order_count").or(lv.get("n"))
+                    .and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                Some(DepthLevel { price, volume, order_count })
+            }).collect()
+        }).unwrap_or_default()
+    };
+
+    let bids = parse_levels("bids");
+    let asks = parse_levels("asks");
+
+    let datetime = if let Some(ts) = data.get("datetime").and_then(|v| v.as_str()) {
+        chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S%.f")
+            .unwrap_or_else(|_| Utc::now().naive_utc())
+    } else {
+        Utc::now().naive_utc()
+    };
+
+    Some(DepthData { symbol, datetime, bids, asks, last_price, total_volume, total_turnover })
+}
+
 // ── StrategyActor ───────────────────────────────────────────────────
 // Receives market events, runs strategy logic, emits trade signals.
 
@@ -1514,16 +1684,21 @@ async fn strategy_actor<F>(
     loop {
         tokio::select! {
             Some(event) = rx.recv() => {
+                let sym = event.symbol();
                 // Avoid symbol.clone() on cache hit — only clone on first insert
-                if !strategies.contains_key(&event.kline.symbol) {
+                if !strategies.contains_key(sym) {
                     let mut s = strategy_factory();
                     s.on_init();
-                    strategies.insert(event.kline.symbol.clone(), s);
+                    strategies.insert(sym.to_string(), s);
                 }
-                let strategy = strategies.get_mut(&event.kline.symbol).unwrap();
+                let strategy = strategies.get_mut(sym).unwrap();
 
                 let t0 = std::time::Instant::now();
-                let signal_opt = strategy.on_bar(&event.kline);
+                let signal_opt = match &event {
+                    MarketEvent::Bar(kline) => strategy.on_bar(kline),
+                    MarketEvent::Tick(tick) => strategy.on_tick(tick),
+                    MarketEvent::Depth(depth) => strategy.on_depth(depth),
+                };
                 let factor_us = t0.elapsed().as_micros() as u64;
 
                 // Lock-free latency stats update
@@ -1532,21 +1707,22 @@ async fn strategy_actor<F>(
                 stats.total_bars.fetch_add(1, Ordering::Relaxed);
 
                 if factor_us > 1000 {
-                    warn!("⏱️ Slow factor compute: {}μs for {}", factor_us, event.kline.symbol);
+                    warn!("⏱️ Slow factor compute: {}μs for {}", factor_us, sym);
                 }
 
                 if let Some(signal) = signal_opt {
                     if signal.is_buy() || signal.is_sell() {
                         stats.total_signals.fetch_add(1, Ordering::Relaxed);
                         let action_str = if signal.is_buy() { "BUY" } else { "SELL" };
+                        let price = event.price();
                         info!(
                             "📡 Signal: {} {} @ {:.2} (confidence: {:.4}, factor_time={}μs)",
-                            action_str, signal.symbol, event.kline.close, signal.confidence, factor_us
+                            action_str, signal.symbol, price, signal.confidence, factor_us
                         );
                         if let Some(ref j) = journal {
-                            j.record_signal(&signal.symbol, action_str, signal.confidence, event.kline.close);
+                            j.record_signal(&signal.symbol, action_str, signal.confidence, price);
                         }
-                        if tx.send(TradeSignal { signal, kline: event.kline }).await.is_err() {
+                        if tx.send(TradeSignal { signal, price }).await.is_err() {
                             return;
                         }
                     }
@@ -1614,7 +1790,7 @@ async fn risk_actor(
                         symbol: sym.clone(),
                         quantity: pos.quantity,
                         avg_cost: pos.avg_cost,
-                        current_price: ts.kline.close, // approximate with latest bar price
+                        current_price: ts.price, // approximate with latest bar price
                     }
                 }).collect();
 
@@ -1642,9 +1818,9 @@ async fn risk_actor(
                 }
 
                 let (side, price) = if ts.signal.is_buy() {
-                    (OrderSide::Buy, ts.kline.close)
+                    (OrderSide::Buy, ts.price)
                 } else {
-                    (OrderSide::Sell, ts.kline.close)
+                    (OrderSide::Sell, ts.price)
                 };
 
                 // Check active risk enforcement for BUY orders
@@ -1870,10 +2046,10 @@ mod tests {
             open: 100.0, high: 102.0, low: 99.0, close: 101.0, volume: 1000.0,
         };
         
-        market_tx.send(MarketEvent { kline: kline.clone() }).await.unwrap();
+        market_tx.send(MarketEvent::Bar(kline.clone())).await.unwrap();
         let event = market_rx.recv().await.unwrap();
-        assert_eq!(event.kline.symbol, "TEST");
-        assert_eq!(event.kline.close, 101.0);
+        assert_eq!(event.symbol(), "TEST");
+        assert_eq!(event.price(), 101.0);
     }
 
     #[tokio::test]
@@ -1897,7 +2073,7 @@ mod tests {
             open: 1650.0, high: 1660.0, low: 1640.0, close: 1650.0, volume: 1000.0,
         };
         let signal = Signal::buy("600519.SH", 0.8, Utc::now().naive_utc());
-        signal_tx.send(TradeSignal { signal, kline }).await.unwrap();
+        signal_tx.send(TradeSignal { signal, price: kline.close }).await.unwrap();
 
         // Give time for processing
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

@@ -42,6 +42,51 @@ pub struct OrderBook {
     pub asks: Vec<OrderBookLevel>,
 }
 
+// ── Level-2 Market Data ──────────────────────────────────────
+
+/// L2 逐笔成交 (tick-by-tick trade)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TickData {
+    pub symbol: String,
+    pub datetime: NaiveDateTime,
+    pub price: f64,
+    pub volume: f64,
+    /// 'B' = buyer-initiated, 'S' = seller-initiated, ' ' = unknown
+    pub direction: char,
+    /// Sequence number from exchange
+    pub seq: u64,
+    /// Best bid at time of trade
+    pub bid1: f64,
+    /// Best ask at time of trade
+    pub ask1: f64,
+}
+
+/// Single price level in L2 depth (盘口档位)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct DepthLevel {
+    pub price: f64,
+    pub volume: f64,
+    /// Number of orders at this level (if available)
+    pub order_count: u32,
+}
+
+/// L2 depth snapshot — 5/10 档盘口
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepthData {
+    pub symbol: String,
+    pub datetime: NaiveDateTime,
+    /// Bid levels (index 0 = best bid, highest price)
+    pub bids: Vec<DepthLevel>,
+    /// Ask levels (index 0 = best ask, lowest price)
+    pub asks: Vec<DepthLevel>,
+    /// Last trade price
+    pub last_price: f64,
+    /// Total volume today
+    pub total_volume: f64,
+    /// Total turnover today
+    pub total_turnover: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockInfo {
     pub symbol: String,
