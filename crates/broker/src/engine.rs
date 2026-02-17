@@ -1514,12 +1514,13 @@ async fn strategy_actor<F>(
     loop {
         tokio::select! {
             Some(event) = rx.recv() => {
-                let sym = event.kline.symbol.clone();
-                let strategy = strategies.entry(sym).or_insert_with(|| {
+                // Avoid symbol.clone() on cache hit — only clone on first insert
+                if !strategies.contains_key(&event.kline.symbol) {
                     let mut s = strategy_factory();
                     s.on_init();
-                    s
-                });
+                    strategies.insert(event.kline.symbol.clone(), s);
+                }
+                let strategy = strategies.get_mut(&event.kline.symbol).unwrap();
 
                 let t0 = std::time::Instant::now();
                 let signal_opt = strategy.on_bar(&event.kline);

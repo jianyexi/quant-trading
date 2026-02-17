@@ -474,10 +474,10 @@ impl TcpMqInferenceClient {
         let mut conn = self.conn.lock().unwrap();
         let stream = conn.as_mut().ok_or("No connection")?;
 
+        // Build JSON with slice reference — avoids .to_vec() heap allocation
         let msg = serde_json::json!({
             "cmd": "predict",
-            "features": features.to_vec(),
-            "feature_names": FEATURE_NAMES.to_vec(),
+            "features": features as &[f32],
         });
 
         if let Err(e) = Self::send_msg(stream, &msg) {
@@ -605,7 +605,8 @@ pub struct MlFactorStrategy {
     onnx_model: Option<crate::onnx_inference::OnnxModel>,
     /// Active inference mode (may differ from config if fallback occurred)
     active_mode: MlInferenceMode,
-    bar_buffer: Vec<Kline>,
+    /// Ring buffer of recent klines (VecDeque for O(1) pop_front)
+    bar_buffer: std::collections::VecDeque<Kline>,
     prev_prediction: Option<f64>,
     /// Incremental factor engine (O(1) per bar)
     incr_engine: crate::fast_factors::IncrementalFactorEngine,
@@ -627,7 +628,7 @@ impl MlFactorStrategy {
                 None
             },
             active_mode,
-            bar_buffer: Vec::with_capacity(70),
+            bar_buffer: std::collections::VecDeque::with_capacity(70),
             prev_prediction: None,
             incr_engine: crate::fast_factors::IncrementalFactorEngine::new(),
             cfg,
@@ -824,10 +825,10 @@ impl Strategy for MlFactorStrategy {
     }
 
     fn on_bar(&mut self, kline: &Kline) -> Option<Signal> {
-        // Buffer bars (kept for backward compat / debugging)
-        self.bar_buffer.push(kline.clone());
+        // Buffer bars in ring buffer — O(1) push_back + O(1) pop_front
+        self.bar_buffer.push_back(kline.clone());
         if self.bar_buffer.len() > self.cfg.lookback + 10 {
-            self.bar_buffer.remove(0);
+            self.bar_buffer.pop_front();
         }
 
         // Compute features via incremental engine (O(1) per bar)
