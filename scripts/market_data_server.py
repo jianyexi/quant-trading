@@ -334,6 +334,179 @@ def ws_quotes(ws):
         print(f"🔌 WS client disconnected (remaining: {len(ws_subscribers)})")
 
 
+# ── TCP Message Queue Server ─────────────────────────────────────────
+# Binary protocol: [4 bytes: msg_len (big-endian u32)] [msg_len bytes: JSON]
+# Much faster than HTTP — zero parsing overhead, persistent connection.
+
+import socket
+import struct
+import select
+
+tcp_clients = []  # list of (conn, addr, subscribed_symbols)
+tcp_lock = threading.Lock()
+
+
+def tcp_send(conn, msg: dict):
+    """Send a length-prefixed JSON message."""
+    data = json.dumps(msg, ensure_ascii=False).encode("utf-8")
+    header = struct.pack(">I", len(data))
+    try:
+        conn.sendall(header + data)
+    except Exception:
+        pass
+
+
+def tcp_recv(conn, timeout=0.1) -> dict | None:
+    """Receive a length-prefixed JSON message (non-blocking)."""
+    conn.setblocking(False)
+    try:
+        ready = select.select([conn], [], [], timeout)
+        if not ready[0]:
+            return None
+        header = b""
+        while len(header) < 4:
+            chunk = conn.recv(4 - len(header))
+            if not chunk:
+                return None
+            header += chunk
+        msg_len = struct.unpack(">I", header)[0]
+        if msg_len > 10_000_000:
+            return None
+        body = b""
+        while len(body) < msg_len:
+            chunk = conn.recv(min(msg_len - len(body), 65536))
+            if not chunk:
+                return None
+            body += chunk
+        return json.loads(body.decode("utf-8"))
+    except Exception:
+        return None
+    finally:
+        conn.setblocking(True)
+
+
+def handle_tcp_client(conn, addr):
+    """Handle a single TCP client connection."""
+    sub_symbols = set()
+    with tcp_lock:
+        tcp_clients.append((conn, addr, sub_symbols))
+    print(f"🔗 TCP client connected: {addr} (total: {len(tcp_clients)})")
+
+    # Send health response
+    tcp_send(conn, {"type": "connected", "ts": time.time()})
+
+    try:
+        while True:
+            msg = tcp_recv(conn, timeout=1.0)
+            if msg is None:
+                # Check if connection is still alive
+                try:
+                    conn.sendall(b"")
+                except Exception:
+                    break
+                continue
+
+            cmd = msg.get("cmd", "")
+
+            if cmd == "subscribe":
+                syms = msg.get("symbols", [])
+                sub_symbols.clear()
+                sub_symbols.update(syms)
+                tcp_send(conn, {"type": "subscribed", "symbols": list(sub_symbols)})
+                print(f"📡 TCP subscribed: {sub_symbols}")
+
+            elif cmd == "warmup":
+                sym = msg.get("symbol", "")
+                days = msg.get("days", 80)
+                start = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
+                end = datetime.now().strftime("%Y-%m-%d")
+                period = msg.get("period", "daily")
+                klines = fetch_klines_akshare(sym, start, end, period)
+                for kl in klines:
+                    if "error" not in kl:
+                        kl["type"] = "kline"
+                        tcp_send(conn, kl)
+                tcp_send(conn, {"type": "warmup_done", "symbol": sym, "count": len(klines)})
+
+            elif cmd == "quote":
+                sym = msg.get("symbol", "")
+                cached = quote_cache.get(sym)
+                if cached:
+                    cached["type"] = "quote"
+                    cached["_cache"] = True
+                    tcp_send(conn, cached)
+                else:
+                    q = fetch_quote_akshare(sym)
+                    if "error" not in q:
+                        quote_cache.put(sym, q)
+                    q["type"] = "quote"
+                    q["_cache"] = False
+                    tcp_send(conn, q)
+
+            elif cmd == "ping":
+                tcp_send(conn, {"type": "pong", "ts": time.time()})
+
+    except Exception as e:
+        print(f"🔗 TCP client error: {e}")
+    finally:
+        with tcp_lock:
+            tcp_clients[:] = [(c, a, s) for c, a, s in tcp_clients if c is not conn]
+        conn.close()
+        print(f"🔗 TCP client disconnected: {addr} (remaining: {len(tcp_clients)})")
+
+
+def tcp_push_thread(interval: float = 3.0):
+    """Background thread that pushes quotes to TCP subscribers."""
+    while True:
+        time.sleep(interval)
+        with tcp_lock:
+            all_syms = set()
+            for _, _, syms in tcp_clients:
+                all_syms |= syms
+        if not all_syms:
+            continue
+
+        for sym in all_syms:
+            cached = quote_cache.get(sym)
+            if not cached:
+                try:
+                    cached = fetch_quote_akshare(sym)
+                    if "error" not in cached:
+                        quote_cache.put(sym, cached)
+                except Exception:
+                    continue
+
+            if cached and "error" not in cached:
+                msg = cached.copy()
+                msg["type"] = "quote"
+                msg["_push"] = True
+                with tcp_lock:
+                    dead = []
+                    for i, (conn, addr, syms) in enumerate(tcp_clients):
+                        if sym in syms:
+                            try:
+                                tcp_send(conn, msg)
+                            except Exception:
+                                dead.append(i)
+                    for i in reversed(dead):
+                        tcp_clients.pop(i)
+
+
+def tcp_server_thread(port: int):
+    """TCP message queue server thread."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("0.0.0.0", port))
+    srv.listen(8)
+    print(f"🔗 TCP Message Queue listening on port {port}")
+
+    while True:
+        conn, addr = srv.accept()
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        t = threading.Thread(target=handle_tcp_client, args=(conn, addr), daemon=True)
+        t.start()
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 _start_time = time.time()
@@ -341,25 +514,25 @@ _start_time = time.time()
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Persistent Market Data Server")
     parser.add_argument("--port", type=int, default=18092)
+    parser.add_argument("--tcp-port", type=int, default=18093,
+                        help="TCP message queue port")
     parser.add_argument("--poll-interval", type=float, default=3.0,
-                        help="Quote polling interval for WS push (seconds)")
+                        help="Quote polling interval for push (seconds)")
     parser.add_argument("--cache-ttl", type=float, default=3.0,
                         help="Quote cache TTL (seconds)")
     args = parser.parse_args()
 
     quote_cache.ttl = args.cache_ttl
 
-    # Start background poller
-    poller = threading.Thread(target=quote_poller_thread, args=(args.poll_interval,), daemon=True)
-    poller.start()
+    # Start background threads
+    threading.Thread(target=quote_poller_thread, args=(args.poll_interval,), daemon=True).start()
+    threading.Thread(target=tcp_server_thread, args=(args.tcp_port,), daemon=True).start()
+    threading.Thread(target=tcp_push_thread, args=(args.poll_interval,), daemon=True).start()
 
-    print(f"🚀 Market Data Server starting on port {args.port}")
-    print(f"   Cache TTL: {args.cache_ttl}s | WS poll: {args.poll_interval}s")
-    print(f"   Endpoints:")
-    print(f"     GET  /health")
-    print(f"     GET  /quote/<symbol>")
-    print(f"     GET  /klines/<symbol>?start=&end=&period=")
-    print(f"     POST /batch_quotes  {{symbols: [...]}}")
-    print(f"     WS   /ws/quotes")
+    print(f"🚀 Market Data Server starting")
+    print(f"   HTTP: port {args.port} | TCP MQ: port {args.tcp_port}")
+    print(f"   Cache TTL: {args.cache_ttl}s | Push interval: {args.poll_interval}s")
+    print(f"   HTTP endpoints: /health, /quote/<sym>, /klines/<sym>, /batch_quotes")
+    print(f"   TCP protocol: length-prefixed JSON (subscribe/warmup/quote/ping)")
 
     app.run(host="0.0.0.0", port=args.port, threaded=True)

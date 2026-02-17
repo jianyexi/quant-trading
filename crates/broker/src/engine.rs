@@ -915,10 +915,11 @@ async fn data_actor_python_bridge(
     }
 }
 
-// ── Low-Latency Data Actor ─────────────────────────────────────────
-// Uses persistent market_data_server.py (HTTP) instead of forking Python.
-// Warmup: fetches klines via /klines endpoint (cached server-side).
-// Polling: fetches quotes via /quote endpoint (~0ms cached, ~1s cold).
+// ── Low-Latency Data Actor (TCP Message Queue) ─────────────────────
+// Uses persistent market_data_server.py via TCP binary protocol.
+// Protocol: [4 bytes: msg_len (big-endian u32)] [msg_len bytes: JSON]
+// Warmup: sends {"cmd":"warmup"} → receives kline stream.
+// Real-time: sends {"cmd":"subscribe"} → receives pushed quotes.
 
 async fn data_actor_low_latency(
     symbols: Vec<String>,
@@ -933,29 +934,35 @@ async fn data_actor_low_latency(
         .unwrap_or_default();
     let base = server_url.trim_end_matches('/');
 
-    // Health check — auto-start server if not running
+    // Extract host for TCP connection (port + 1)
+    let http_port: u16 = base.rsplit(':').next()
+        .and_then(|p| p.parse().ok()).unwrap_or(18092);
+    let tcp_port = http_port + 1; // TCP MQ on 18093
+    let tcp_addr = format!("127.0.0.1:{}", tcp_port);
+
+    // Health check via HTTP — auto-start server if not running
     match client.get(format!("{}/health", base)).send().await {
         Ok(r) if r.status().is_success() => {
-            info!("📡 Low-latency server connected at {}", base);
+            info!("📡 Market data server connected at {}", base);
         }
         _ => {
-            info!("📡 Low-latency server not running, auto-starting...");
+            info!("📡 Market data server not running, auto-starting...");
             if let Some(python) = find_python_for_bridge() {
                 let script = std::path::Path::new("scripts/market_data_server.py");
                 if script.exists() {
-                    let port = base.rsplit(':').next().unwrap_or("18092");
+                    let port_str = http_port.to_string();
+                    let tcp_port_str = tcp_port.to_string();
                     let _ = std::process::Command::new(&python)
-                        .args(["scripts/market_data_server.py", "--port", port])
+                        .args(["scripts/market_data_server.py", "--port", &port_str, "--tcp-port", &tcp_port_str])
                         .env("PYTHONIOENCODING", "utf-8")
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
                         .spawn();
-                    // Wait for server to start
                     for i in 0..10 {
                         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                         if let Ok(r) = client.get(format!("{}/health", base)).send().await {
                             if r.status().is_success() {
-                                info!("📡 Low-latency server auto-started after {}ms", (i + 1) * 500);
+                                info!("📡 Server auto-started after {}ms", (i + 1) * 500);
                                 break;
                             }
                         }
@@ -968,98 +975,230 @@ async fn data_actor_low_latency(
                 error!("📡 Python not found, cannot start market data server");
                 return;
             }
+        }
+    }
 
-            // Final check
-            match client.get(format!("{}/health", base)).send().await {
-                Ok(r) if r.status().is_success() => {
-                    info!("📡 Low-latency server ready at {}", base);
+    // Connect TCP message queue
+    let stream = match tokio::net::TcpStream::connect(&tcp_addr).await {
+        Ok(s) => {
+            info!("🔗 TCP MQ connected at {}", tcp_addr);
+            s
+        }
+        Err(e) => {
+            warn!("🔗 TCP MQ failed at {}: {}, falling back to HTTP polling", tcp_addr, e);
+            data_actor_low_latency_http(symbols, interval_secs, base.to_string(), tx, shutdown).await;
+            return;
+        }
+    };
+
+    // Set TCP_NODELAY for minimum latency
+    let _ = stream.set_nodelay(true);
+    let (reader, writer) = stream.into_split();
+    let reader = Arc::new(tokio::sync::Mutex::new(reader));
+    let writer = Arc::new(tokio::sync::Mutex::new(writer));
+
+    // Read the "connected" message
+    if let Some(msg) = tcp_mq_read(&reader).await {
+        debug!("TCP MQ: {:?}", msg.get("type"));
+    }
+
+    // Phase 1: Warmup via TCP
+    info!("📊 Warming up via TCP MQ...");
+    for sym in &symbols {
+        let warmup_msg = serde_json::json!({
+            "cmd": "warmup",
+            "symbol": sym,
+            "days": 80,
+            "period": "daily",
+        });
+        tcp_mq_write(&writer, &warmup_msg).await;
+
+        // Read klines until warmup_done
+        let mut count = 0;
+        loop {
+            match tcp_mq_read(&reader).await {
+                Some(data) => {
+                    let msg_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if msg_type == "kline" {
+                        if let Some(kline) = parse_kline_json(sym, &data) {
+                            if tx.send(MarketEvent { kline }).await.is_err() { return; }
+                            count += 1;
+                        }
+                    } else if msg_type == "warmup_done" {
+                        break;
+                    }
                 }
-                _ => {
-                    error!("📡 Failed to start low-latency server at {}", base);
+                None => break,
+            }
+        }
+        info!("📊 Warmup: {} loaded {} bars via TCP MQ", sym, count);
+    }
+
+    // Phase 2: Subscribe for push updates
+    let sub_msg = serde_json::json!({
+        "cmd": "subscribe",
+        "symbols": symbols,
+    });
+    tcp_mq_write(&writer, &sub_msg).await;
+    info!("📊 Subscribed to {} symbols via TCP MQ, receiving push updates", symbols.len());
+
+    // Phase 3: Receive pushed quotes (non-blocking with shutdown check)
+    loop {
+        tokio::select! {
+            msg = tcp_mq_read(&reader) => {
+                match msg {
+                    Some(data) => {
+                        let msg_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        if msg_type == "quote" {
+                            let close = data.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            if close <= 0.0 { continue; }
+                            let sym = data.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            if sym.is_empty() { continue; }
+                            let kline = Kline {
+                                symbol: sym.clone(),
+                                datetime: Utc::now().naive_utc(),
+                                open: data.get("open").and_then(|v| v.as_f64()).unwrap_or(close),
+                                high: data.get("high").and_then(|v| v.as_f64()).unwrap_or(close),
+                                low: data.get("low").and_then(|v| v.as_f64()).unwrap_or(close),
+                                close,
+                                volume: data.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            };
+                            trace!("📡 TCP {} ¥{:.2}", sym, close);
+                            if tx.send(MarketEvent { kline }).await.is_err() {
+                                info!("DataActor[tcp_mq]: channel closed");
+                                return;
+                            }
+                        }
+                    }
+                    None => {
+                        warn!("DataActor[tcp_mq]: connection lost, reconnecting...");
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                        // Fallback to HTTP
+                        data_actor_low_latency_http(symbols, interval_secs, base.to_string(), tx, shutdown).await;
+                        return;
+                    }
+                }
+            }
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    info!("DataActor[tcp_mq]: shutdown");
                     return;
                 }
             }
         }
     }
+}
 
-    // Phase 1: Warmup via /klines endpoint (server caches internally)
-    info!("📊 Warming up via low-latency server...");
+/// TCP MQ: write a length-prefixed JSON message.
+async fn tcp_mq_write(
+    writer: &Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+    msg: &serde_json::Value,
+) {
+    use tokio::io::AsyncWriteExt;
+    let data = serde_json::to_vec(msg).unwrap_or_default();
+    let header = (data.len() as u32).to_be_bytes();
+    let mut w = writer.lock().await;
+    let _ = w.write_all(&header).await;
+    let _ = w.write_all(&data).await;
+}
+
+/// TCP MQ: read a length-prefixed JSON message.
+async fn tcp_mq_read(
+    reader: &Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedReadHalf>>,
+) -> Option<serde_json::Value> {
+    use tokio::io::AsyncReadExt;
+    let mut r = reader.lock().await;
+
+    // Read 4-byte header
+    let mut header = [0u8; 4];
+    match tokio::time::timeout(
+        tokio::time::Duration::from_secs(10),
+        r.read_exact(&mut header),
+    ).await {
+        Ok(Ok(_)) => {}
+        _ => return None,
+    }
+    let msg_len = u32::from_be_bytes(header) as usize;
+    if msg_len > 10_000_000 { return None; }
+
+    // Read body
+    let mut body = vec![0u8; msg_len];
+    match tokio::time::timeout(
+        tokio::time::Duration::from_secs(10),
+        r.read_exact(&mut body),
+    ).await {
+        Ok(Ok(_)) => {}
+        _ => return None,
+    }
+
+    serde_json::from_slice(&body).ok()
+}
+
+/// HTTP fallback for low-latency mode (when TCP MQ is unavailable).
+async fn data_actor_low_latency_http(
+    symbols: Vec<String>,
+    interval_secs: u64,
+    base: String,
+    tx: mpsc::Sender<MarketEvent>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    info!("📊 HTTP fallback: polling {} symbols every {}s", symbols.len(), interval_secs);
+
+    // Warmup
     let warmup_end = chrono::Local::now().format("%Y-%m-%d").to_string();
     let warmup_start = (chrono::Local::now() - chrono::Duration::days(160))
         .format("%Y-%m-%d").to_string();
-
     for sym in &symbols {
-        let url = format!("{}/klines/{}?start={}&end={}&period=daily",
-            base, sym, warmup_start, warmup_end);
-        match client.get(&url).send().await {
-            Ok(resp) => {
-                if let Ok(data) = resp.json::<serde_json::Value>().await {
-                    if let Some(klines_arr) = data.get("klines").and_then(|k| k.as_array()) {
-                        let mut count = 0;
-                        for kj in klines_arr {
-                            if let Some(kline) = parse_kline_json(sym, kj) {
-                                if tx.send(MarketEvent { kline }).await.is_err() {
-                                    return;
-                                }
-                                count += 1;
-                            }
+        let url = format!("{}/klines/{}?start={}&end={}&period=daily", base, sym, warmup_start, warmup_end);
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                if let Some(arr) = data.get("klines").and_then(|k| k.as_array()) {
+                    let mut n = 0;
+                    for kj in arr {
+                        if let Some(kline) = parse_kline_json(sym, kj) {
+                            if tx.send(MarketEvent { kline }).await.is_err() { return; }
+                            n += 1;
                         }
-                        info!("📊 Warmup: {} loaded {} bars via server", sym, count);
                     }
+                    info!("📊 HTTP warmup: {} loaded {} bars", sym, n);
                 }
             }
-            Err(e) => warn!("⚠️ Warmup failed for {}: {}", sym, e),
         }
     }
-    info!("📊 Warmup complete, switching to low-latency polling ({}s interval)", interval_secs);
 
-    // Phase 2: Real-time polling via /quote (cached, ~0-5ms)
+    // Poll loop
     loop {
         tokio::select! {
             _ = tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)) => {
-                let t0 = std::time::Instant::now();
                 for sym in &symbols {
                     let url = format!("{}/quote/{}", base, sym);
-                    match client.get(&url).send().await {
-                        Ok(resp) => {
-                            if let Ok(data) = resp.json::<serde_json::Value>().await {
-                                if data.get("error").is_some() {
-                                    continue;
-                                }
-                                let close = data.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                if close <= 0.0 { continue; }
-                                let kline = Kline {
-                                    symbol: sym.clone(),
-                                    datetime: Utc::now().naive_utc(),
-                                    open: data.get("open").and_then(|v| v.as_f64()).unwrap_or(close),
-                                    high: data.get("high").and_then(|v| v.as_f64()).unwrap_or(close),
-                                    low: data.get("low").and_then(|v| v.as_f64()).unwrap_or(close),
-                                    close,
-                                    volume: data.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                                };
-                                let cached = data.get("_cache").and_then(|v| v.as_bool()).unwrap_or(false);
-                                let lat = data.get("_latency_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                trace!("📡 {} ¥{:.2} ({}ms, cache={})", sym, close, lat, cached);
-
-                                if tx.send(MarketEvent { kline }).await.is_err() {
-                                    info!("DataActor[low_latency]: channel closed");
-                                    return;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("DataActor[low_latency]: failed to fetch {}: {}", sym, e);
+                    if let Ok(resp) = client.get(&url).send().await {
+                        if let Ok(data) = resp.json::<serde_json::Value>().await {
+                            if data.get("error").is_some() { continue; }
+                            let close = data.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            if close <= 0.0 { continue; }
+                            let kline = Kline {
+                                symbol: sym.clone(),
+                                datetime: Utc::now().naive_utc(),
+                                open: data.get("open").and_then(|v| v.as_f64()).unwrap_or(close),
+                                high: data.get("high").and_then(|v| v.as_f64()).unwrap_or(close),
+                                low: data.get("low").and_then(|v| v.as_f64()).unwrap_or(close),
+                                close,
+                                volume: data.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            };
+                            if tx.send(MarketEvent { kline }).await.is_err() { return; }
                         }
                     }
-                }
-                let elapsed = t0.elapsed();
-                if elapsed.as_millis() > 100 {
-                    debug!("DataActor[low_latency]: polling {} symbols took {}ms", symbols.len(), elapsed.as_millis());
                 }
             }
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
-                    info!("DataActor[low_latency]: shutdown");
+                    info!("DataActor[http_fallback]: shutdown");
                     return;
                 }
             }
