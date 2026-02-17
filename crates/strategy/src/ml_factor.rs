@@ -361,6 +361,8 @@ impl MlInferenceClient {
 pub enum MlInferenceMode {
     /// Load LightGBM model directly in Rust — fastest (~0.01ms)
     Embedded,
+    /// ONNX Runtime for any model format (~0.05ms)
+    Onnx,
     /// TCP binary protocol to ml_serve.py sidecar (~0.3ms)
     TcpMq,
     /// HTTP POST to ml_serve.py sidecar (~2-5ms, original mode)
@@ -371,6 +373,7 @@ impl std::fmt::Display for MlInferenceMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MlInferenceMode::Embedded => write!(f, "embedded"),
+            MlInferenceMode::Onnx => write!(f, "onnx"),
             MlInferenceMode::TcpMq => write!(f, "tcp_mq"),
             MlInferenceMode::Http => write!(f, "http"),
         }
@@ -380,10 +383,11 @@ impl std::fmt::Display for MlInferenceMode {
 impl MlInferenceMode {
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "embedded" | "native" | "rust" => MlInferenceMode::Embedded,
+            "embedded" | "native" | "rust" | "lgb" => MlInferenceMode::Embedded,
+            "onnx" | "onnxruntime" => MlInferenceMode::Onnx,
             "tcp_mq" | "tcpmq" | "tcp" | "mq" => MlInferenceMode::TcpMq,
             "http" | "sidecar" => MlInferenceMode::Http,
-            _ => MlInferenceMode::Embedded, // default to fastest
+            _ => MlInferenceMode::Embedded,
         }
     }
 }
@@ -556,6 +560,8 @@ pub struct MlFactorConfig {
     pub tcp_mq_addr: String,
     /// Path to LightGBM model file for embedded inference
     pub model_path: String,
+    /// Path to ONNX model file for ONNX Runtime inference
+    pub onnx_model_path: String,
     /// Inference mode
     pub inference_mode: MlInferenceMode,
     /// Minimum prediction probability to trigger BUY signal
@@ -572,6 +578,7 @@ impl Default for MlFactorConfig {
             bridge_url: "http://127.0.0.1:18091".to_string(),
             tcp_mq_addr: "127.0.0.1:18094".to_string(),
             model_path: "ml_models/factor_model.model".to_string(),
+            onnx_model_path: "ml_models/factor_model.onnx".to_string(),
             inference_mode: MlInferenceMode::Embedded,
             buy_threshold: 0.60,
             sell_threshold: 0.35,
@@ -593,6 +600,9 @@ pub struct MlFactorStrategy {
     tcp_client: Option<TcpMqInferenceClient>,
     /// Embedded LightGBM model (for Embedded mode)
     embedded_model: Option<LightGBMModel>,
+    /// ONNX Runtime model (for Onnx mode)
+    #[cfg(feature = "onnx")]
+    onnx_model: Option<crate::onnx_inference::OnnxModel>,
     /// Active inference mode (may differ from config if fallback occurred)
     active_mode: MlInferenceMode,
     bar_buffer: Vec<Kline>,
@@ -610,6 +620,12 @@ impl MlFactorStrategy {
             http_client,
             tcp_client,
             embedded_model,
+            #[cfg(feature = "onnx")]
+            onnx_model: if active_mode == MlInferenceMode::Onnx {
+                crate::onnx_inference::OnnxModel::load(&cfg.onnx_model_path).ok()
+            } else {
+                None
+            },
             active_mode,
             bar_buffer: Vec::with_capacity(70),
             prev_prediction: None,
@@ -627,25 +643,59 @@ impl MlFactorStrategy {
     ) {
         // Try the configured mode first, then fall back
         let modes = match cfg.inference_mode {
+            MlInferenceMode::Onnx => vec![
+                MlInferenceMode::Onnx,
+                MlInferenceMode::Embedded,
+                MlInferenceMode::TcpMq,
+                MlInferenceMode::Http,
+            ],
             MlInferenceMode::Embedded => vec![
                 MlInferenceMode::Embedded,
+                MlInferenceMode::Onnx,
                 MlInferenceMode::TcpMq,
                 MlInferenceMode::Http,
             ],
             MlInferenceMode::TcpMq => vec![
                 MlInferenceMode::TcpMq,
                 MlInferenceMode::Embedded,
+                MlInferenceMode::Onnx,
                 MlInferenceMode::Http,
             ],
             MlInferenceMode::Http => vec![
                 MlInferenceMode::Http,
                 MlInferenceMode::TcpMq,
                 MlInferenceMode::Embedded,
+                MlInferenceMode::Onnx,
             ],
         };
 
         for mode in &modes {
             match mode {
+                MlInferenceMode::Onnx => {
+                    #[cfg(feature = "onnx")]
+                    {
+                        match crate::onnx_inference::OnnxModel::load(&cfg.onnx_model_path) {
+                            Ok(_) => {
+                                tracing::info!(
+                                    "🧠 ML inference: ONNX Runtime from {}",
+                                    cfg.onnx_model_path
+                                );
+                                return (None, None, None, MlInferenceMode::Onnx);
+                            }
+                            Err(e) => {
+                                if cfg.inference_mode == MlInferenceMode::Onnx {
+                                    tracing::warn!("🧠 ONNX model load failed: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "onnx"))]
+                    {
+                        if cfg.inference_mode == MlInferenceMode::Onnx {
+                            tracing::warn!("🧠 ONNX mode not available (compile with --features onnx)");
+                        }
+                    }
+                }
                 MlInferenceMode::Embedded => {
                     match LightGBMModel::load(&cfg.model_path) {
                         Ok(model) => {
@@ -702,6 +752,21 @@ impl MlFactorStrategy {
     /// Get the predicted probability for the current bar.
     fn predict(&self, features: &[f32; NUM_FEATURES]) -> Option<f64> {
         match &self.active_mode {
+            MlInferenceMode::Onnx => {
+                #[cfg(feature = "onnx")]
+                {
+                    if let Some(ref model) = self.onnx_model {
+                        match model.predict(features) {
+                            Ok(prob) => return Some(prob),
+                            Err(e) => {
+                                tracing::warn!("ONNX inference failed: {}", e);
+                                return self.embedded_model.as_ref().map(|m| m.predict(features));
+                            }
+                        }
+                    }
+                }
+                None
+            }
             MlInferenceMode::Embedded => {
                 self.embedded_model.as_ref().map(|m| m.predict(features))
             }

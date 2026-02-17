@@ -270,6 +270,7 @@ export default function Backtest() {
                     className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#3b82f6]"
                   >
                     <option value="embedded">🦀 内嵌推理 (Rust, ~0.01ms)</option>
+                    <option value="onnx">🔮 ONNX Runtime (~0.05ms, WSL)</option>
                     <option value="tcp_mq">🔗 TCP消息队列 (~0.3ms)</option>
                     <option value="http">🌐 HTTP sidecar (~2-5ms)</option>
                   </select>

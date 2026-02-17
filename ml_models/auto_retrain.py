@@ -876,8 +876,12 @@ def retrain(
             initial_type = [("features", FloatTensorType([None, len(feature_cols)]))]
             onnx_model = convert_lightgbm(final_model, initial_types=initial_type, target_opset=11)
             onnxmltools.utils.save_model(onnx_model, onnx_path)
+            # Also save to default location
+            default_onnx = os.path.join(output_dir, "factor_model.onnx")
+            onnxmltools.utils.save_model(onnx_model, default_onnx)
             report["onnx_model_path"] = onnx_path
             print(f"💾 ONNX model: {onnx_path}")
+            print(f"💾 ONNX default: {default_onnx}")
         except ImportError:
             pass
 

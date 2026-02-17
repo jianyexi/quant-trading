@@ -8,3 +8,5 @@ pub mod ml_factor;
 pub mod dl_models;
 pub mod fast_factors;
 pub mod lgb_inference;
+#[cfg(feature = "onnx")]
+pub mod onnx_inference;

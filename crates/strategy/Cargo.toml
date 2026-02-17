@@ -3,6 +3,10 @@ name = "quant-strategy"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+onnx = ["dep:ort", "dep:ndarray"]
+
 [dependencies]
 quant-core = { workspace = true }
 serde = { workspace = true }
@@ -14,3 +18,5 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true }
+ort = { version = "2.0.0-rc.11", features = ["ndarray"], optional = true }
+ndarray = { version = "0.17", optional = true }
