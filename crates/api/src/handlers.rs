@@ -969,21 +969,9 @@ pub async fn trade_start(
                 period,
             }
         } else {
-            // Paper mode: prefer low-latency server if available, else PythonBridge
-            if let Ok(resp) = reqwest::Client::new()
-                .get("http://127.0.0.1:18092/health")
-                .timeout(std::time::Duration::from_secs(1))
-                .send().await
-            {
-                if resp.status().is_success() {
-                    quant_broker::engine::DataMode::LowLatency {
-                        server_url: "http://127.0.0.1:18092".to_string(),
-                    }
-                } else {
-                    quant_broker::engine::DataMode::PythonBridge
-                }
-            } else {
-                quant_broker::engine::DataMode::PythonBridge
+            // Paper mode: always use low-latency server (auto-starts if needed)
+            quant_broker::engine::DataMode::LowLatency {
+                server_url: "http://127.0.0.1:18092".to_string(),
             }
         },
         risk_config: quant_risk::enforcement::RiskConfig {

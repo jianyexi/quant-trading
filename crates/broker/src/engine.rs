@@ -149,11 +149,9 @@ pub enum DataMode {
         /// AKShare API URL
         akshare_url: String,
     },
-    /// PythonBridge: fetch real-time quotes via local Python subprocess (akshare library)
-    /// Most reliable method — uses scripts/market_data.py
-    PythonBridge,
     /// LowLatency: persistent market data server (HTTP + cache, no fork overhead)
     /// Uses scripts/market_data_server.py on port 18092
+    /// Auto-starts the server if not running.
     LowLatency {
         /// Market data server URL (default: http://127.0.0.1:18092)
         server_url: String,
@@ -481,10 +479,6 @@ async fn data_actor(
                 tushare_url.clone(), tushare_token.clone(), akshare_url.clone(),
                 tx, shutdown,
             ).await;
-        }
-        DataMode::PythonBridge => {
-            info!("📊 DataActor started [PYTHON_BRIDGE] for {:?}", symbols);
-            data_actor_python_bridge(symbols, interval_secs, tx, shutdown).await;
         }
         DataMode::LowLatency { server_url } => {
             info!("📊 DataActor started [LOW_LATENCY] for {:?} (server={})", symbols, server_url);
@@ -939,16 +933,52 @@ async fn data_actor_low_latency(
         .unwrap_or_default();
     let base = server_url.trim_end_matches('/');
 
-    // Health check
+    // Health check — auto-start server if not running
     match client.get(format!("{}/health", base)).send().await {
         Ok(r) if r.status().is_success() => {
             info!("📡 Low-latency server connected at {}", base);
         }
         _ => {
-            error!("📡 Low-latency server not available at {}, falling back to PythonBridge", base);
-            // Fall back to Python bridge
-            data_actor_python_bridge(symbols, interval_secs, tx, shutdown).await;
-            return;
+            info!("📡 Low-latency server not running, auto-starting...");
+            if let Some(python) = find_python_for_bridge() {
+                let script = std::path::Path::new("scripts/market_data_server.py");
+                if script.exists() {
+                    let port = base.rsplit(':').next().unwrap_or("18092");
+                    let _ = std::process::Command::new(&python)
+                        .args(["scripts/market_data_server.py", "--port", port])
+                        .env("PYTHONIOENCODING", "utf-8")
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                    // Wait for server to start
+                    for i in 0..10 {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        if let Ok(r) = client.get(format!("{}/health", base)).send().await {
+                            if r.status().is_success() {
+                                info!("📡 Low-latency server auto-started after {}ms", (i + 1) * 500);
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    error!("📡 scripts/market_data_server.py not found");
+                    return;
+                }
+            } else {
+                error!("📡 Python not found, cannot start market data server");
+                return;
+            }
+
+            // Final check
+            match client.get(format!("{}/health", base)).send().await {
+                Ok(r) if r.status().is_success() => {
+                    info!("📡 Low-latency server ready at {}", base);
+                }
+                _ => {
+                    error!("📡 Failed to start low-latency server at {}", base);
+                    return;
+                }
+            }
         }
     }
 
