@@ -446,12 +446,132 @@ def api_ensemble_status():
     })
 
 
+# ── TCP Message Queue Server ─────────────────────────────────────────
+# Binary protocol: [4 bytes: msg_len (big-endian u32)] [msg_len bytes: JSON]
+# Same protocol as market_data_server TCP MQ.
+
+import socket
+import struct
+import threading
+
+
+def tcp_send(conn, msg: dict):
+    """Send a length-prefixed JSON message."""
+    data = json.dumps(msg, ensure_ascii=False).encode("utf-8")
+    header = struct.pack(">I", len(data))
+    try:
+        conn.sendall(header + data)
+    except Exception:
+        pass
+
+
+def tcp_recv(conn, timeout=30.0):
+    """Receive a length-prefixed JSON message."""
+    conn.settimeout(timeout)
+    try:
+        header = b""
+        while len(header) < 4:
+            chunk = conn.recv(4 - len(header))
+            if not chunk:
+                return None
+            header += chunk
+        msg_len = struct.unpack(">I", header)[0]
+        if msg_len > 10_000_000:
+            return None
+        body = b""
+        while len(body) < msg_len:
+            chunk = conn.recv(min(msg_len - len(body), 65536))
+            if not chunk:
+                return None
+            body += chunk
+        return json.loads(body.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def handle_ml_tcp_client(conn, addr):
+    """Handle a single TCP ML inference client."""
+    print(f"🔗 ML TCP client connected: {addr}")
+    tcp_send(conn, {"type": "connected", "model_type": MODEL_TYPE, "device": DEVICE})
+
+    try:
+        while True:
+            msg = tcp_recv(conn, timeout=60.0)
+            if msg is None:
+                break
+
+            cmd = msg.get("cmd", "")
+
+            if cmd == "predict":
+                features = msg.get("features", [])
+                if len(features) != NUM_FEATURES:
+                    tcp_send(conn, {"type": "error",
+                                    "error": f"Expected {NUM_FEATURES} features, got {len(features)}"})
+                    continue
+
+                t0 = time.time()
+                prob = predict_ensemble(features) if ENSEMBLE_ENABLED else predict_single(features)
+                latency_ms = (time.time() - t0) * 1000
+
+                tcp_send(conn, {
+                    "type": "prediction",
+                    "probability": prob,
+                    "latency_ms": round(latency_ms, 3),
+                    "device": DEVICE,
+                })
+
+            elif cmd == "ping":
+                tcp_send(conn, {"type": "pong", "ts": time.time()})
+
+            elif cmd == "model_info":
+                tcp_send(conn, {
+                    "type": "model_info",
+                    "model_type": MODEL_TYPE,
+                    "device": DEVICE,
+                    "num_features": NUM_FEATURES,
+                })
+
+            elif cmd == "reload":
+                model_path = msg.get("model_path", "")
+                if os.path.exists(model_path):
+                    try:
+                        load_model(model_path, DEVICE)
+                        tcp_send(conn, {"type": "reloaded", "model_path": model_path})
+                    except Exception as e:
+                        tcp_send(conn, {"type": "error", "error": str(e)})
+                else:
+                    tcp_send(conn, {"type": "error", "error": f"File not found: {model_path}"})
+
+    except Exception as e:
+        print(f"🔗 ML TCP client error: {e}")
+    finally:
+        conn.close()
+        print(f"🔗 ML TCP client disconnected: {addr}")
+
+
+def ml_tcp_server_thread(port: int):
+    """TCP message queue server for ML inference."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(8)
+    print(f"🔗 ML TCP MQ listening on port {port}")
+
+    while True:
+        conn, addr = srv.accept()
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        t = threading.Thread(target=handle_ml_tcp_client, args=(conn, addr), daemon=True)
+        t.start()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ML Inference Sidecar")
     parser.add_argument("--model", "-m", default="ml_models/factor_model.onnx",
                        help="Path to model file (.onnx, .lgb.txt, .pt)")
     parser.add_argument("--port", "-p", type=int, default=18091,
                        help="HTTP port (default: 18091)")
+    parser.add_argument("--tcp-port", type=int, default=18094,
+                       help="TCP MQ port (default: 18094)")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--device", "-d", default="auto",
                        choices=["auto", "cuda", "cpu"],
@@ -460,7 +580,7 @@ if __name__ == "__main__":
 
     print("🧠 ML Inference Sidecar for QuantTrader")
     print(f"   Model: {args.model}")
-    print(f"   Port:  {args.port}")
+    print(f"   HTTP:  {args.port} | TCP MQ: {args.tcp_port}")
 
     # Detect device
     device = args.device
@@ -479,9 +599,12 @@ if __name__ == "__main__":
         MODEL = None
         MODEL_TYPE = "dummy"
 
-    print(f"\n🚀 Starting ML server on {args.host}:{args.port}")
-    print(f"   Health:  http://{args.host}:{args.port}/health")
-    print(f"   Predict: POST http://{args.host}:{args.port}/predict")
+    # Start TCP MQ server thread
+    threading.Thread(target=ml_tcp_server_thread, args=(args.tcp_port,), daemon=True).start()
+
+    print(f"\n🚀 Starting ML server")
+    print(f"   HTTP:    http://{args.host}:{args.port}/predict")
+    print(f"   TCP MQ:  {args.host}:{args.tcp_port} (binary protocol)")
     print()
 
     app.run(host=args.host, port=args.port, debug=False)

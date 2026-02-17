@@ -32,6 +32,8 @@ pub struct BacktestRequest {
     pub capital: Option<f64>,
     /// "daily" (default), "1", "5", "15", "30", "60"
     pub period: Option<String>,
+    /// ML inference mode: "embedded" (default), "tcp_mq", "http"
+    pub inference_mode: Option<String>,
 }
 
 // ── Chat Request ────────────────────────────────────────────────────
@@ -674,7 +676,14 @@ pub async fn run_backtest(
         "rsi_reversal" | "RsiMeanReversion" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
         "macd_trend" | "MacdMomentum" => Box::new(MacdMomentum::new(12, 26, 9)),
         "multi_factor" | "MultiFactorModel" => Box::new(MultiFactorStrategy::new(MultiFactorConfig::default())),
-        "ml_factor" | "MlFactor" => Box::new(MlFactorStrategy::new(MlFactorConfig::default())),
+        "ml_factor" | "MlFactor" => {
+            let mode = req.inference_mode.as_deref().unwrap_or("embedded");
+            let ml_cfg = MlFactorConfig {
+                inference_mode: quant_strategy::ml_factor::MlInferenceMode::from_str(mode),
+                ..Default::default()
+            };
+            Box::new(MlFactorStrategy::new(ml_cfg))
+        }
         _ => Box::new(DualMaCrossover::new(5, 20)),
     };
 
@@ -910,6 +919,8 @@ pub struct TradeStartRequest {
     pub replay_speed: Option<f64>,
     /// K-line period for replay: "daily", "1", "5", "15", "30", "60" (minutes), default="daily"
     pub replay_period: Option<String>,
+    /// ML inference mode: "embedded" (default), "tcp_mq", "http"
+    pub inference_mode: Option<String>,
 }
 
 pub async fn trade_start(
@@ -1018,6 +1029,7 @@ pub async fn trade_start(
     engine.set_journal(state.journal.clone());
 
     let sentiment_store = state.sentiment_store.clone();
+    let inference_mode_str = req.inference_mode.unwrap_or_else(|| "embedded".into());
     engine.start(move || -> Box<dyn quant_core::traits::Strategy> {
         match strat_name.as_str() {
             "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
@@ -1027,7 +1039,13 @@ pub async fn trade_start(
                 Box::new(quant_strategy::builtin::MultiFactorStrategy::with_defaults()),
                 sentiment_store.clone(),
             )),
-            "ml_factor" => Box::new(quant_strategy::ml_factor::MlFactorStrategy::with_defaults()),
+            "ml_factor" => {
+                let ml_cfg = quant_strategy::ml_factor::MlFactorConfig {
+                    inference_mode: quant_strategy::ml_factor::MlInferenceMode::from_str(&inference_mode_str),
+                    ..Default::default()
+                };
+                Box::new(quant_strategy::ml_factor::MlFactorStrategy::new(ml_cfg))
+            }
             _ => Box::new(DualMaCrossover::new(5, 20)),
         }
     }).await;

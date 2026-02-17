@@ -7,3 +7,4 @@ pub mod sentiment;
 pub mod ml_factor;
 pub mod dl_models;
 pub mod fast_factors;
+pub mod lgb_inference;

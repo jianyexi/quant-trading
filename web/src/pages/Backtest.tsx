@@ -29,6 +29,7 @@ interface BacktestConfig {
   end: string;
   capital: number;
   period: string;
+  inference_mode: string;
 }
 
 interface EquityPoint {
@@ -107,6 +108,7 @@ const defaultConfig: BacktestConfig = {
   end: '2024-12-31',
   capital: 1000000,
   period: 'daily',
+  inference_mode: 'embedded',
 };
 
 export default function Backtest() {
@@ -133,6 +135,7 @@ export default function Backtest() {
         end: config.end,
         capital: config.capital,
         period: config.period,
+        inference_mode: config.inference_mode,
       })) as BacktestResultData;
       setResult(res);
       setConfigOpen(false);
@@ -258,6 +261,20 @@ export default function Backtest() {
                   ))}
                 </select>
               </div>
+              {config.strategy === 'ml_factor' && (
+                <div>
+                  <label className="block text-sm text-[#94a3b8] mb-1.5">ML推理模式</label>
+                  <select
+                    value={config.inference_mode}
+                    onChange={(e) => updateConfig('inference_mode', e.target.value)}
+                    className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#3b82f6]"
+                  >
+                    <option value="embedded">🦀 内嵌推理 (Rust, ~0.01ms)</option>
+                    <option value="tcp_mq">🔗 TCP消息队列 (~0.3ms)</option>
+                    <option value="http">🌐 HTTP sidecar (~2-5ms)</option>
+                  </select>
+                </div>
+              )}
             </div>
 
             {error && (
