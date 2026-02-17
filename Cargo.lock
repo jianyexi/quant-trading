@@ -1708,6 +1708,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "futures",
  "quant-core",
  "quant-risk",
  "reqwest",

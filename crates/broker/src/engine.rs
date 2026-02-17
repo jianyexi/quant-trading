@@ -9,13 +9,20 @@
 //!
 //! The engine is generic over the `Broker` implementation, supporting both
 //! `PaperBroker` (simulation) and `QmtBroker` (live trading via QMT).
+//!
+//! ## Low-Latency Design
+//! - **Lock-free stats**: All hot-path counters use `AtomicU64`/`AtomicF64`
+//!   (CAS loop). Only `recent_trades` uses `std::sync::Mutex` (cold path).
+//! - **No TCP Mutex**: Reader/writer owned directly by single task, no
+//!   `Arc<Mutex<>>` wrapper. Writer dropped after subscribe (push-only mode).
+//! - **Parallel HTTP**: Multi-symbol quotes fetched concurrently via `join_all`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{mpsc, watch};
 use tracing::{info, warn, error, debug, trace};
 use uuid::Uuid;
 
@@ -189,26 +196,95 @@ impl Default for EngineConfig {
 
 use crate::journal::JournalStore;
 
-// ── Shared State ────────────────────────────────────────────────────
+// ── Lock-Free Shared State ──────────────────────────────────────────
+// All hot-path stats use atomics to avoid Mutex contention.
+// Only recent_trades uses a Mutex (cold path, infrequent writes).
 
-#[derive(Debug, Default)]
-struct EngineStats {
-    total_signals: u64,
-    total_orders: u64,
-    total_fills: u64,
-    total_rejected: u64,
-    wins: u64,
-    losses: u64,
-    gross_profit: f64,
-    gross_loss: f64,
-    max_drawdown_pct: f64,
-    recent_trades: Vec<ExecutionReport>,
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Atomic f64 wrapper using u64 bit representation.
+#[derive(Debug)]
+struct AtomicF64(AtomicU64);
+
+impl AtomicF64 {
+    fn new(val: f64) -> Self { Self(AtomicU64::new(val.to_bits())) }
+    fn load(&self) -> f64 { f64::from_bits(self.0.load(Ordering::Relaxed)) }
+    fn store(&self, val: f64) { self.0.store(val.to_bits(), Ordering::Relaxed); }
+    fn fetch_add(&self, val: f64) {
+        loop {
+            let old = self.0.load(Ordering::Relaxed);
+            let new = f64::from_bits(old) + val;
+            if self.0.compare_exchange_weak(old, new.to_bits(), Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                break;
+            }
+        }
+    }
+    fn fetch_max(&self, val: f64) {
+        loop {
+            let old = self.0.load(Ordering::Relaxed);
+            let cur = f64::from_bits(old);
+            if cur >= val { break; }
+            if self.0.compare_exchange_weak(old, val.to_bits(), Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                break;
+            }
+        }
+    }
+}
+
+impl Default for AtomicF64 {
+    fn default() -> Self { Self::new(0.0) }
+}
+
+/// Lock-free engine statistics. All counters are atomic for zero-contention updates.
+struct EngineStatsAtomic {
+    total_signals: AtomicU64,
+    total_orders: AtomicU64,
+    total_fills: AtomicU64,
+    total_rejected: AtomicU64,
+    wins: AtomicU64,
+    losses: AtomicU64,
+    gross_profit: AtomicF64,
+    gross_loss: AtomicF64,
+    max_drawdown_pct: AtomicF64,
     // Latency tracking
-    last_factor_us: u64,
-    last_risk_us: u64,
-    last_order_us: u64,
-    total_factor_us: u64,
-    total_bars: u64,
+    last_factor_us: AtomicU64,
+    last_risk_us: AtomicU64,
+    last_order_us: AtomicU64,
+    total_factor_us: AtomicU64,
+    total_bars: AtomicU64,
+    // Recent trades use Mutex (infrequent cold-path writes)
+    recent_trades: std::sync::Mutex<Vec<ExecutionReport>>,
+}
+
+impl Default for EngineStatsAtomic {
+    fn default() -> Self {
+        Self {
+            total_signals: AtomicU64::new(0),
+            total_orders: AtomicU64::new(0),
+            total_fills: AtomicU64::new(0),
+            total_rejected: AtomicU64::new(0),
+            wins: AtomicU64::new(0),
+            losses: AtomicU64::new(0),
+            gross_profit: AtomicF64::default(),
+            gross_loss: AtomicF64::default(),
+            max_drawdown_pct: AtomicF64::default(),
+            last_factor_us: AtomicU64::new(0),
+            last_risk_us: AtomicU64::new(0),
+            last_order_us: AtomicU64::new(0),
+            total_factor_us: AtomicU64::new(0),
+            total_bars: AtomicU64::new(0),
+            recent_trades: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl std::fmt::Debug for EngineStatsAtomic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EngineStatsAtomic")
+            .field("total_signals", &self.total_signals.load(Ordering::Relaxed))
+            .field("total_bars", &self.total_bars.load(Ordering::Relaxed))
+            .finish()
+    }
 }
 
 // ── Trading Engine ──────────────────────────────────────────────────
@@ -220,7 +296,7 @@ struct EngineStats {
 pub struct TradingEngine {
     config: EngineConfig,
     shutdown_tx: Option<watch::Sender<bool>>,
-    stats: Arc<Mutex<EngineStats>>,
+    stats: Arc<EngineStatsAtomic>,
     broker: Arc<dyn Broker>,
     running: Arc<std::sync::atomic::AtomicBool>,
     /// Whether fill_order should be called after submit (paper mode only)
@@ -248,7 +324,7 @@ impl TradingEngine {
         Self {
             config,
             shutdown_tx: None,
-            stats: Arc::new(Mutex::new(EngineStats::default())),
+            stats: Arc::new(EngineStatsAtomic::default()),
             broker,
             running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             auto_fill: true,
@@ -266,7 +342,7 @@ impl TradingEngine {
         Self {
             config,
             shutdown_tx: None,
-            stats: Arc::new(Mutex::new(EngineStats::default())),
+            stats: Arc::new(EngineStatsAtomic::default()),
             broker,
             running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             auto_fill: false,
@@ -370,9 +446,9 @@ impl TradingEngine {
         self.running.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Get current engine status.
+    /// Get current engine status (lock-free reads).
     pub async fn status(&self) -> EngineStatus {
-        let stats = self.stats.lock().await;
+        let stats = &self.stats;
         let account = self.broker.get_account().await.unwrap_or_else(|_| Account {
             id: Uuid::new_v4(),
             name: String::new(),
@@ -385,22 +461,29 @@ impl TradingEngine {
         });
         let pnl = account.portfolio.total_value - self.config.initial_capital;
         let risk_status = self.risk_enforcer.status();
-        let total_trades = stats.wins + stats.losses;
+        let wins = stats.wins.load(Ordering::Relaxed);
+        let losses = stats.losses.load(Ordering::Relaxed);
+        let total_trades = wins + losses;
         let peak = risk_status.peak_value;
         let drawdown_pct = if peak > 0.0 { (peak - account.portfolio.total_value) / peak } else { 0.0 };
         let drawdown_pct = drawdown_pct.max(0.0);
-        let max_dd = stats.max_drawdown_pct.max(drawdown_pct);
+        let max_dd = stats.max_drawdown_pct.load().max(drawdown_pct);
+        let total_bars = stats.total_bars.load(Ordering::Relaxed);
+
+        let recent_trades = stats.recent_trades.lock()
+            .map(|t| t.iter().rev().take(20).cloned().collect())
+            .unwrap_or_default();
 
         EngineStatus {
             running: self.is_running(),
             strategy: self.config.strategy_name.clone(),
             symbols: self.config.symbols.clone(),
-            total_signals: stats.total_signals,
-            total_orders: stats.total_orders,
-            total_fills: stats.total_fills,
-            total_rejected: stats.total_rejected,
+            total_signals: stats.total_signals.load(Ordering::Relaxed),
+            total_orders: stats.total_orders.load(Ordering::Relaxed),
+            total_fills: stats.total_fills.load(Ordering::Relaxed),
+            total_rejected: stats.total_rejected.load(Ordering::Relaxed),
             pnl,
-            recent_trades: stats.recent_trades.iter().rev().take(20).cloned().collect(),
+            recent_trades,
             performance: PerformanceMetrics {
                 portfolio_value: account.portfolio.total_value,
                 initial_capital: self.config.initial_capital,
@@ -411,15 +494,15 @@ impl TradingEngine {
                 drawdown_pct: drawdown_pct * 100.0,
                 max_drawdown_pct: max_dd * 100.0,
                 win_rate: if total_trades > 0 {
-                    stats.wins as f64 / total_trades as f64 * 100.0
+                    wins as f64 / total_trades as f64 * 100.0
                 } else { 0.0 },
-                wins: stats.wins,
-                losses: stats.losses,
-                profit_factor: if stats.gross_loss.abs() > 0.0 {
-                    stats.gross_profit / stats.gross_loss.abs()
-                } else if stats.gross_profit > 0.0 { f64::INFINITY } else { 0.0 },
+                wins,
+                losses,
+                profit_factor: if stats.gross_loss.load().abs() > 0.0 {
+                    stats.gross_profit.load() / stats.gross_loss.load().abs()
+                } else if stats.gross_profit.load() > 0.0 { f64::INFINITY } else { 0.0 },
                 avg_trade_pnl: if total_trades > 0 {
-                    (stats.gross_profit - stats.gross_loss.abs()) / total_trades as f64
+                    (stats.gross_profit.load() - stats.gross_loss.load().abs()) / total_trades as f64
                 } else { 0.0 },
                 risk_daily_pnl: risk_status.daily_pnl,
                 risk_daily_paused: risk_status.daily_paused,
@@ -427,13 +510,13 @@ impl TradingEngine {
                 risk_drawdown_halted: risk_status.drawdown_halted,
             },
             latency: PipelineLatency {
-                last_factor_compute_us: stats.last_factor_us,
-                last_risk_check_us: stats.last_risk_us,
-                last_order_submit_us: stats.last_order_us,
-                avg_factor_compute_us: if stats.total_bars > 0 {
-                    stats.total_factor_us / stats.total_bars
+                last_factor_compute_us: stats.last_factor_us.load(Ordering::Relaxed),
+                last_risk_check_us: stats.last_risk_us.load(Ordering::Relaxed),
+                last_order_submit_us: stats.last_order_us.load(Ordering::Relaxed),
+                avg_factor_compute_us: if total_bars > 0 {
+                    stats.total_factor_us.load(Ordering::Relaxed) / total_bars
                 } else { 0 },
-                total_bars_processed: stats.total_bars,
+                total_bars_processed: total_bars,
             },
         }
     }
@@ -993,12 +1076,12 @@ async fn data_actor_low_latency(
 
     // Set TCP_NODELAY for minimum latency
     let _ = stream.set_nodelay(true);
-    let (reader, writer) = stream.into_split();
-    let reader = Arc::new(tokio::sync::Mutex::new(reader));
-    let writer = Arc::new(tokio::sync::Mutex::new(writer));
+    let (mut reader, mut writer) = stream.into_split();
+
+    // No Mutex: warmup uses writer then drops; push loop uses reader directly
 
     // Read the "connected" message
-    if let Some(msg) = tcp_mq_read(&reader).await {
+    if let Some(msg) = tcp_mq_read(&mut reader).await {
         debug!("TCP MQ: {:?}", msg.get("type"));
     }
 
@@ -1011,12 +1094,12 @@ async fn data_actor_low_latency(
             "days": 80,
             "period": "daily",
         });
-        tcp_mq_write(&writer, &warmup_msg).await;
+        tcp_mq_write(&mut writer, &warmup_msg).await;
 
         // Read klines until warmup_done
         let mut count = 0;
         loop {
-            match tcp_mq_read(&reader).await {
+            match tcp_mq_read(&mut reader).await {
                 Some(data) => {
                     let msg_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
                     if msg_type == "kline" {
@@ -1039,13 +1122,16 @@ async fn data_actor_low_latency(
         "cmd": "subscribe",
         "symbols": symbols,
     });
-    tcp_mq_write(&writer, &sub_msg).await;
+    tcp_mq_write(&mut writer, &sub_msg).await;
     info!("📊 Subscribed to {} symbols via TCP MQ, receiving push updates", symbols.len());
 
-    // Phase 3: Receive pushed quotes (non-blocking with shutdown check)
+    // Drop writer — not needed after subscribe (push-only mode)
+    drop(writer);
+
+    // Phase 3: Receive pushed quotes (lock-free, no Mutex)
     loop {
         tokio::select! {
-            msg = tcp_mq_read(&reader) => {
+            msg = tcp_mq_read(&mut reader) => {
                 match msg {
                     Some(data) => {
                         let msg_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -1089,31 +1175,29 @@ async fn data_actor_low_latency(
     }
 }
 
-/// TCP MQ: write a length-prefixed JSON message.
+/// TCP MQ: write a length-prefixed JSON message (direct, no Mutex).
 async fn tcp_mq_write(
-    writer: &Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
     msg: &serde_json::Value,
 ) {
     use tokio::io::AsyncWriteExt;
     let data = serde_json::to_vec(msg).unwrap_or_default();
     let header = (data.len() as u32).to_be_bytes();
-    let mut w = writer.lock().await;
-    let _ = w.write_all(&header).await;
-    let _ = w.write_all(&data).await;
+    let _ = writer.write_all(&header).await;
+    let _ = writer.write_all(&data).await;
 }
 
-/// TCP MQ: read a length-prefixed JSON message.
+/// TCP MQ: read a length-prefixed JSON message (direct, no Mutex).
 async fn tcp_mq_read(
-    reader: &Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedReadHalf>>,
+    reader: &mut tokio::net::tcp::OwnedReadHalf,
 ) -> Option<serde_json::Value> {
     use tokio::io::AsyncReadExt;
-    let mut r = reader.lock().await;
 
     // Read 4-byte header
     let mut header = [0u8; 4];
     match tokio::time::timeout(
         tokio::time::Duration::from_secs(10),
-        r.read_exact(&mut header),
+        reader.read_exact(&mut header),
     ).await {
         Ok(Ok(_)) => {}
         _ => return None,
@@ -1125,7 +1209,7 @@ async fn tcp_mq_read(
     let mut body = vec![0u8; msg_len];
     match tokio::time::timeout(
         tokio::time::Duration::from_secs(10),
-        r.read_exact(&mut body),
+        reader.read_exact(&mut body),
     ).await {
         Ok(Ok(_)) => {}
         _ => return None,
@@ -1171,28 +1255,39 @@ async fn data_actor_low_latency_http(
         }
     }
 
-    // Poll loop
+    // Poll loop — parallel symbol fetching
     loop {
         tokio::select! {
             _ = tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)) => {
-                for sym in &symbols {
+                // Fetch all symbols in parallel
+                let futs: Vec<_> = symbols.iter().map(|sym| {
                     let url = format!("{}/quote/{}", base, sym);
-                    if let Ok(resp) = client.get(&url).send().await {
-                        if let Ok(data) = resp.json::<serde_json::Value>().await {
-                            if data.get("error").is_some() { continue; }
-                            let close = data.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            if close <= 0.0 { continue; }
-                            let kline = Kline {
-                                symbol: sym.clone(),
-                                datetime: Utc::now().naive_utc(),
-                                open: data.get("open").and_then(|v| v.as_f64()).unwrap_or(close),
-                                high: data.get("high").and_then(|v| v.as_f64()).unwrap_or(close),
-                                low: data.get("low").and_then(|v| v.as_f64()).unwrap_or(close),
-                                close,
-                                volume: data.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                            };
-                            if tx.send(MarketEvent { kline }).await.is_err() { return; }
+                    let client = client.clone();
+                    let sym = sym.clone();
+                    async move {
+                        if let Ok(resp) = client.get(&url).send().await {
+                            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                                if data.get("error").is_some() { return None; }
+                                let close = data.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                if close <= 0.0 { return None; }
+                                return Some(Kline {
+                                    symbol: sym,
+                                    datetime: Utc::now().naive_utc(),
+                                    open: data.get("open").and_then(|v| v.as_f64()).unwrap_or(close),
+                                    high: data.get("high").and_then(|v| v.as_f64()).unwrap_or(close),
+                                    low: data.get("low").and_then(|v| v.as_f64()).unwrap_or(close),
+                                    close,
+                                    volume: data.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                                });
+                            }
                         }
+                        None
+                    }
+                }).collect();
+                let results = futures::future::join_all(futs).await;
+                for kline_opt in results {
+                    if let Some(kline) = kline_opt {
+                        if tx.send(MarketEvent { kline }).await.is_err() { return; }
                     }
                 }
             }
@@ -1406,7 +1501,7 @@ async fn strategy_actor<F>(
     strategy_factory: F,
     mut rx: mpsc::Receiver<MarketEvent>,
     tx: mpsc::Sender<TradeSignal>,
-    stats: Arc<Mutex<EngineStats>>,
+    stats: Arc<EngineStatsAtomic>,
     journal: Option<Arc<JournalStore>>,
     mut shutdown: watch::Receiver<bool>,
 ) where
@@ -1414,7 +1509,7 @@ async fn strategy_actor<F>(
 {
     let mut strategies: HashMap<String, Box<dyn Strategy>> = HashMap::new();
 
-    info!("📈 StrategyActor started");
+    info!("📈 StrategyActor started (lock-free stats)");
 
     loop {
         tokio::select! {
@@ -1430,13 +1525,10 @@ async fn strategy_actor<F>(
                 let signal_opt = strategy.on_bar(&event.kline);
                 let factor_us = t0.elapsed().as_micros() as u64;
 
-                // Record latency stats
-                {
-                    let mut s = stats.lock().await;
-                    s.last_factor_us = factor_us;
-                    s.total_factor_us += factor_us;
-                    s.total_bars += 1;
-                }
+                // Lock-free latency stats update
+                stats.last_factor_us.store(factor_us, Ordering::Relaxed);
+                stats.total_factor_us.fetch_add(factor_us, Ordering::Relaxed);
+                stats.total_bars.fetch_add(1, Ordering::Relaxed);
 
                 if factor_us > 1000 {
                     warn!("⏱️ Slow factor compute: {}μs for {}", factor_us, event.kline.symbol);
@@ -1444,16 +1536,12 @@ async fn strategy_actor<F>(
 
                 if let Some(signal) = signal_opt {
                     if signal.is_buy() || signal.is_sell() {
-                        {
-                            let mut s = stats.lock().await;
-                            s.total_signals += 1;
-                        }
+                        stats.total_signals.fetch_add(1, Ordering::Relaxed);
                         let action_str = if signal.is_buy() { "BUY" } else { "SELL" };
                         info!(
                             "📡 Signal: {} {} @ {:.2} (confidence: {:.4}, factor_time={}μs)",
                             action_str, signal.symbol, event.kline.close, signal.confidence, factor_us
                         );
-                        // Record signal in journal
                         if let Some(ref j) = journal {
                             j.record_signal(&signal.symbol, action_str, signal.confidence, event.kline.close);
                         }
@@ -1637,13 +1725,13 @@ async fn risk_actor(
 async fn order_actor(
     mut rx: mpsc::Receiver<OrderRequest>,
     broker: Arc<dyn Broker>,
-    stats: Arc<Mutex<EngineStats>>,
+    stats: Arc<EngineStatsAtomic>,
     journal: Option<Arc<JournalStore>>,
     enforcer: Arc<RiskEnforcer>,
     mut shutdown: watch::Receiver<bool>,
     _auto_fill: bool,
 ) {
-    info!("💹 OrderActor started");
+    info!("💹 OrderActor started (lock-free stats)");
 
     loop {
         tokio::select! {
@@ -1651,7 +1739,6 @@ async fn order_actor(
                 let order = req.order;
                 let side_str = if order.side == OrderSide::Buy { "BUY" } else { "SELL" };
 
-                // Submit order to broker (PaperBroker auto-fills; QmtBroker submits to exchange)
                 let t0 = std::time::Instant::now();
                 match broker.submit_order(&order).await {
                     Ok(submitted) => {
@@ -1672,17 +1759,18 @@ async fn order_actor(
                             "🔔 {}: {} {} x{:.0} @ {:.2} (submit={}μs)",
                             report.status, side_str, order.symbol, order.quantity, order.price, order_us
                         );
-                        // Record in journal
                         if let Some(ref j) = journal {
                             j.record_order_submitted(order.id, &order.symbol, order.side, order.quantity, order.price);
                             j.record_order_filled(submitted.id, &order.symbol, order.side,
                                 order.quantity, order.price, 0.0, 0.0, 0.0);
                         }
-                        let mut s = stats.lock().await;
-                        s.total_orders += 1;
-                        s.total_fills += 1;
-                        s.last_order_us = order_us;
-                        s.recent_trades.push(report);
+                        // Lock-free stats
+                        stats.total_orders.fetch_add(1, Ordering::Relaxed);
+                        stats.total_fills.fetch_add(1, Ordering::Relaxed);
+                        stats.last_order_us.store(order_us, Ordering::Relaxed);
+                        if let Ok(mut trades) = stats.recent_trades.lock() {
+                            trades.push(report);
+                        }
                     }
                     Err(e) => {
                         let tripped = enforcer.record_failure();
@@ -1694,8 +1782,7 @@ async fn order_actor(
                             j.record_risk_rejected(&order.symbol, order.side, order.quantity, order.price,
                                 &format!("submit_error: {}", e));
                         }
-                        let mut s = stats.lock().await;
-                        s.total_rejected += 1;
+                        stats.total_rejected.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
