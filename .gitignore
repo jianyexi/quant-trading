@@ -10,3 +10,6 @@ web/dist
 dashboard.png
 dashboard-check.png
 .claude/
+
+# L2 recorded data (large binary files)
+data/l2/
