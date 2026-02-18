@@ -69,6 +69,9 @@ fn sentiment_routes() -> Router<AppState> {
         .route("/submit", post(handlers::sentiment_submit))
         .route("/batch", post(handlers::sentiment_batch_submit))
         .route("/summary", get(handlers::sentiment_summary))
+        .route("/collector/start", post(handlers::collector_start))
+        .route("/collector/stop", post(handlers::collector_stop))
+        .route("/collector/status", get(handlers::collector_status))
         .route("/:symbol", get(handlers::sentiment_query))
 }
 

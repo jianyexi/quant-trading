@@ -11,6 +11,8 @@ pub struct AppConfig {
     pub risk: RiskConfig,
     pub qmt: QmtConfig,
     pub server: ServerConfig,
+    #[serde(default)]
+    pub sentiment: SentimentConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,6 +67,42 @@ pub struct QmtConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SentimentConfig {
+    /// Interval in seconds between news collection cycles
+    #[serde(default = "default_collect_interval")]
+    pub collect_interval_secs: u64,
+    /// Symbols to track for sentiment (e.g., ["600519.SH", "000858.SZ"])
+    #[serde(default)]
+    pub watch_symbols: Vec<String>,
+    /// Max news items to fetch per symbol per cycle
+    #[serde(default = "default_max_news_per_symbol")]
+    pub max_news_per_symbol: usize,
+    /// Max news items to analyze with LLM per cycle (controls API cost)
+    #[serde(default = "default_max_llm_calls")]
+    pub max_llm_calls_per_cycle: usize,
+    /// News sources to use
+    #[serde(default = "default_news_sources")]
+    pub news_sources: Vec<String>,
+}
+
+fn default_collect_interval() -> u64 { 3600 }
+fn default_max_news_per_symbol() -> usize { 10 }
+fn default_max_llm_calls() -> usize { 50 }
+fn default_news_sources() -> Vec<String> { vec!["eastmoney".to_string(), "sina".to_string()] }
+
+impl Default for SentimentConfig {
+    fn default() -> Self {
+        Self {
+            collect_interval_secs: default_collect_interval(),
+            watch_symbols: vec![],
+            max_news_per_symbol: default_max_news_per_symbol(),
+            max_llm_calls_per_cycle: default_max_llm_calls(),
+            news_sources: default_news_sources(),
+        }
+    }
 }
 
 impl AppConfig {

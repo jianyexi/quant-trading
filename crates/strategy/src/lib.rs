@@ -4,6 +4,7 @@ pub mod signals;
 pub mod builtin;
 pub mod screener;
 pub mod sentiment;
+pub mod collector;
 pub mod ml_factor;
 pub mod dl_models;
 pub mod fast_factors;

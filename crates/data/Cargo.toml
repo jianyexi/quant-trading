@@ -16,3 +16,4 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
+regex-lite = "0.1"

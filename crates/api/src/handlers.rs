@@ -1753,3 +1753,70 @@ pub async fn clear_logs(
     state.log_store.clear();
     Json(json!({"status": "cleared"}))
 }
+
+// ── Sentiment Collector ─────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct CollectorStartRequest {
+    /// Override watch symbols (optional)
+    pub symbols: Option<Vec<String>>,
+}
+
+pub async fn collector_start(
+    State(state): State<AppState>,
+    body: Option<Json<CollectorStartRequest>>,
+) -> (StatusCode, Json<Value>) {
+    let mut collector = state.sentiment_collector.lock().await;
+
+    // Allow override of symbols via request
+    if let Some(Json(req)) = body {
+        if let Some(symbols) = req.symbols {
+            if !symbols.is_empty() {
+                collector.update_symbols(symbols);
+            }
+        }
+    }
+
+    let llm_config = &state.config.llm;
+    let llm_client = quant_llm::client::LlmClient::new(
+        &llm_config.api_url,
+        &llm_config.api_key,
+        &llm_config.model,
+        llm_config.temperature,
+        llm_config.max_tokens,
+    );
+
+    match collector.start(
+        state.sentiment_store.clone(),
+        llm_client,
+        state.config.akshare.base_url.clone(),
+    ) {
+        Ok(()) => (StatusCode::OK, Json(json!({
+            "status": "started",
+            "message": "Sentiment collector started"
+        }))),
+        Err(e) => (StatusCode::CONFLICT, Json(json!({
+            "status": "error",
+            "message": e
+        }))),
+    }
+}
+
+pub async fn collector_stop(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let collector = state.sentiment_collector.lock().await;
+    collector.stop();
+    Json(json!({
+        "status": "stopped",
+        "message": "Sentiment collector stopped"
+    }))
+}
+
+pub async fn collector_status(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let collector = state.sentiment_collector.lock().await;
+    let status = collector.status().await;
+    Json(json!(status))
+}

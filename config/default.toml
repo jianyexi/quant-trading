@@ -53,3 +53,15 @@ qmt_path = ""
 [server]
 host = "0.0.0.0"
 port = 8080
+
+[sentiment]
+# News collection interval in seconds (default: 3600 = 1 hour)
+collect_interval_secs = 3600
+# Symbols to track for automatic sentiment analysis
+watch_symbols = ["600519.SH", "000858.SZ", "000001.SZ"]
+# Max news items to fetch per symbol per cycle
+max_news_per_symbol = 10
+# Max LLM API calls per collection cycle (controls cost)
+max_llm_calls_per_cycle = 50
+# News data sources: "eastmoney", "sina"
+news_sources = ["eastmoney", "sina"]

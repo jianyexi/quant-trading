@@ -1589,6 +1589,9 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
         config: config.clone(),
         engine: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         sentiment_store: quant_strategy::sentiment::SentimentStore::new(),
+        sentiment_collector: std::sync::Arc::new(tokio::sync::Mutex::new(
+            quant_strategy::collector::SentimentCollector::new(config.sentiment.clone()),
+        )),
         journal: std::sync::Arc::new(journal),
         log_store: std::sync::Arc::new(quant_api::LogStore::new()),
     };
