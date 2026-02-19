@@ -87,7 +87,7 @@ fn factor_routes() -> Router<AppState> {
         .route("/mine/parametric", post(handlers::factor_mine_parametric))
         .route("/mine/gp", post(handlers::factor_mine_gp))
         .route("/registry", get(handlers::factor_registry_get))
-        .route("/registry/manage", post(handlers::factor_registry_manage))
+        .route("/manage", post(handlers::factor_registry_manage))
         .route("/export", post(handlers::factor_export_promoted))
         .route("/results", get(handlers::factor_results))
 }

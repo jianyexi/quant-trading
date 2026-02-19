@@ -1,11 +1,20 @@
 const API_BASE = '/api';
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const { headers: extraHeaders, ...rest } = options ?? {};
   const res = await fetch(`${API_BASE}${url}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(extraHeaders instanceof Headers
+        ? Object.fromEntries(extraHeaders.entries())
+        : (extraHeaders as Record<string, string>) ?? {}),
+    },
+    ...rest,
   });
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`API error ${res.status}: ${text || res.statusText}`);
+  }
   return res.json();
 }
 
@@ -544,7 +553,7 @@ export async function factorRegistryManage(params?: {
   n_bars?: number;
   data?: string;
 }): Promise<FactorMiningResult> {
-  return fetchJson('/factor/registry/manage', {
+  return fetchJson('/factor/manage', {
     method: 'POST',
     body: JSON.stringify(params ?? {}),
   });
