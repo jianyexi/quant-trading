@@ -19,8 +19,8 @@ interface DashboardData {
   }[];
 }
 
-function fmt(v: number): string {
-  return v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function fmt(v: number | undefined | null): string {
+  return (v ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 export default function Dashboard() {
@@ -103,14 +103,14 @@ export default function Dashboard() {
                       {trade.side === 'BUY' ? '买入' : '卖出'}
                     </span>
                   </td>
-                  <td className="py-3 pr-4">{trade.quantity}</td>
-                  <td className="py-3 pr-4">¥{trade.price.toFixed(2)}</td>
+                  <td className="py-3 pr-4">{trade.quantity ?? 0}</td>
+                  <td className="py-3 pr-4">¥{(trade.price ?? 0).toFixed(2)}</td>
                   <td
                     className={`py-3 font-medium ${
-                      trade.pnl >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'
+                      (trade.pnl ?? 0) >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'
                     }`}
                   >
-                    {trade.pnl >= 0 ? '+' : ''}¥{fmt(trade.pnl)}
+                    {(trade.pnl ?? 0) >= 0 ? '+' : ''}¥{fmt(trade.pnl)}
                   </td>
                 </tr>
               ))}
