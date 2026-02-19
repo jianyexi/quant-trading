@@ -1,0 +1,1 @@
+gp_log_678fa802	((close - log(open)) + sqrt(ts_max(ts_max(ts_min(open, 3), 3), 3)))
