@@ -12,6 +12,7 @@ import Sentiment from './pages/Sentiment';
 import DLModels from './pages/DLModels';
 import RiskManagement from './pages/RiskManagement';
 import Logs from './pages/Logs';
+import FactorMining from './pages/FactorMining';
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
           <Route path="risk" element={<RiskManagement />} />
           <Route path="sentiment" element={<Sentiment />} />
           <Route path="dl-models" element={<DLModels />} />
+          <Route path="factor-mining" element={<FactorMining />} />
           <Route path="portfolio" element={<Portfolio />} />
           <Route path="logs" element={<Logs />} />
           <Route path="chat" element={<Chat />} />

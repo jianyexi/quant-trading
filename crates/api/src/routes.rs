@@ -82,6 +82,16 @@ fn research_routes() -> Router<AppState> {
         .route("/dl-models/collect", post(handlers::research_dl_collect))
 }
 
+fn factor_routes() -> Router<AppState> {
+    Router::new()
+        .route("/mine/parametric", post(handlers::factor_mine_parametric))
+        .route("/mine/gp", post(handlers::factor_mine_gp))
+        .route("/registry", get(handlers::factor_registry_get))
+        .route("/registry/manage", post(handlers::factor_registry_manage))
+        .route("/export", post(handlers::factor_export_promoted))
+        .route("/results", get(handlers::factor_results))
+}
+
 fn journal_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(handlers::get_journal))
@@ -137,6 +147,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/screen", screen_routes())
         .nest("/api/sentiment", sentiment_routes())
         .nest("/api/research", research_routes())
+        .nest("/api/factor", factor_routes())
         .nest("/api/journal", journal_routes())
         .nest("/api/logs", log_routes())
         .layer(middleware::from_fn_with_state(state.clone(), request_logger))

@@ -451,3 +451,115 @@ export async function resetDailyLoss() {
 export async function getPerformance() {
   return fetchJson('/trade/performance');
 }
+
+// ── Factor Mining API ───────────────────────────────────────────────
+
+export interface FactorMiningResult {
+  status: string;
+  stdout: string;
+  stderr: string;
+}
+
+export interface FactorRegistryEntry {
+  expression: string;
+  source: string;
+  state: 'candidate' | 'validated' | 'promoted' | 'retired';
+  created: string;
+  tree_size: number;
+  tree_depth: number;
+  ic_mean: number;
+  ir: number;
+  ic_pos_rate: number;
+  turnover: number;
+  decay: number;
+  ic_history: Array<{ timestamp: string; ic: number; ir: number }>;
+  validation_count: number;
+  fail_count: number;
+  last_validated: string | null;
+  promoted_at: string | null;
+  retired_at: string | null;
+}
+
+export interface FactorRegistry {
+  factors: Record<string, FactorRegistryEntry>;
+  stats: {
+    total_discovered: number;
+    total_promoted: number;
+    total_retired: number;
+  };
+  updated?: string;
+}
+
+export interface GpFeature {
+  id: string;
+  expression: string;
+}
+
+export interface FactorResults {
+  parametric: {
+    features: string[];
+    latest_report: Record<string, unknown> | null;
+    rust_snippet: string;
+  };
+  gp: {
+    features: GpFeature[];
+    rust_snippet: string;
+  };
+}
+
+export async function factorMineParametric(params?: {
+  n_bars?: number;
+  horizon?: number;
+  ic_threshold?: number;
+  top_n?: number;
+  retrain?: boolean;
+  data?: string;
+}): Promise<FactorMiningResult> {
+  return fetchJson('/factor/mine/parametric', {
+    method: 'POST',
+    body: JSON.stringify(params ?? {}),
+  });
+}
+
+export async function factorMineGP(params?: {
+  n_bars?: number;
+  pop_size?: number;
+  generations?: number;
+  max_depth?: number;
+  horizon?: number;
+  retrain?: boolean;
+  data?: string;
+}): Promise<FactorMiningResult> {
+  return fetchJson('/factor/mine/gp', {
+    method: 'POST',
+    body: JSON.stringify(params ?? {}),
+  });
+}
+
+export async function factorRegistryGet(): Promise<FactorRegistry> {
+  return fetchJson('/factor/registry');
+}
+
+export async function factorRegistryManage(params?: {
+  n_bars?: number;
+  data?: string;
+}): Promise<FactorMiningResult> {
+  return fetchJson('/factor/registry/manage', {
+    method: 'POST',
+    body: JSON.stringify(params ?? {}),
+  });
+}
+
+export async function factorExportPromoted(params?: {
+  retrain?: boolean;
+  data?: string;
+}): Promise<FactorMiningResult> {
+  return fetchJson('/factor/export', {
+    method: 'POST',
+    body: JSON.stringify(params ?? {}),
+  });
+}
+
+export async function factorResults(): Promise<FactorResults> {
+  return fetchJson('/factor/results');
+}
