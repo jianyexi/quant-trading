@@ -575,6 +575,63 @@ impl TradingEngine {
 //   - Simulated: deterministic noise (for testing/demo)
 //   - Live: fetches real-time quotes from Tushare/AKShare
 
+/// Fetch historical klines for warmup from the market data server HTTP endpoint.
+/// Falls back gracefully if the server is not available.
+async fn warmup_historical(
+    symbols: &[String],
+    tx: &mpsc::Sender<MarketEvent>,
+    warmup_days: usize,
+) -> usize {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+
+    // Try market_data_server first (port 18092)
+    let base = "http://127.0.0.1:18092";
+    let server_ok = client.get(format!("{}/health", base)).send().await
+        .map(|r| r.status().is_success()).unwrap_or(false);
+
+    if !server_ok {
+        info!("📊 Warmup: market data server not available, skipping HTTP warmup");
+        return 0;
+    }
+
+    let mut total = 0usize;
+    let end = Utc::now().format("%Y-%m-%d").to_string();
+    let start = (Utc::now() - chrono::Duration::days(warmup_days as i64 * 2))
+        .format("%Y-%m-%d").to_string();
+
+    for sym in symbols {
+        let url = format!("{}/klines/{}?start={}&end={}&period=daily", base, sym, start, end);
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(data) = resp.json::<serde_json::Value>().await {
+                    if let Some(klines) = data.get("klines").and_then(|v| v.as_array()) {
+                        let n = klines.len();
+                        for kl in klines {
+                            if let Some(kline) = parse_kline_json(sym, kl) {
+                                if tx.send(MarketEvent::Bar(kline)).await.is_err() {
+                                    return total;
+                                }
+                                total += 1;
+                            }
+                        }
+                        info!("📊 Warmup: {} loaded {} historical bars", sym, n);
+                    }
+                }
+            }
+            _ => {
+                warn!("📊 Warmup: failed to fetch history for {}", sym);
+            }
+        }
+    }
+    total
+}
+
 async fn data_actor(
     symbols: Vec<String>,
     interval_secs: u64,
@@ -585,10 +642,14 @@ async fn data_actor(
     match &data_mode {
         DataMode::Simulated => {
             info!("📊 DataActor started [SIMULATED] for {:?}", symbols);
+            let n = warmup_historical(&symbols, &tx, 80).await;
+            if n > 0 { info!("📊 Warmup complete: {} bars pre-loaded", n); }
             data_actor_simulated(symbols, interval_secs, tx, shutdown).await;
         }
         DataMode::Live { tushare_url, tushare_token, akshare_url } => {
             info!("📊 DataActor started [LIVE] for {:?}", symbols);
+            let n = warmup_historical(&symbols, &tx, 80).await;
+            if n > 0 { info!("📊 Warmup complete: {} bars pre-loaded", n); }
             data_actor_live(
                 symbols, interval_secs,
                 tushare_url.clone(), tushare_token.clone(), akshare_url.clone(),
