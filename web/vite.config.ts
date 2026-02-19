@@ -10,6 +10,12 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true,
+        ws: true,
+        configure: (proxy) => {
+          proxy.on('error', (err) => {
+            console.warn('[proxy] Backend not reachable:', err.message);
+          });
+        },
       },
     },
   },
