@@ -1586,7 +1586,7 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
         .expect("Failed to open trade journal");
 
     let state = AppState {
-        config: config.clone(),
+        config: std::sync::Arc::new(config.clone()),
         engine: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         sentiment_store: quant_strategy::sentiment::SentimentStore::new(),
         sentiment_collector: std::sync::Arc::new(tokio::sync::Mutex::new(

@@ -284,8 +284,8 @@ struct EngineStatsAtomic {
     last_order_us: AtomicU64,
     total_factor_us: AtomicU64,
     total_bars: AtomicU64,
-    // Recent trades use Mutex (infrequent cold-path writes)
-    recent_trades: std::sync::Mutex<Vec<ExecutionReport>>,
+    // Recent trades use Mutex (infrequent cold-path writes), bounded VecDeque
+    recent_trades: std::sync::Mutex<std::collections::VecDeque<ExecutionReport>>,
 }
 
 impl Default for EngineStatsAtomic {
@@ -305,7 +305,7 @@ impl Default for EngineStatsAtomic {
             last_order_us: AtomicU64::new(0),
             total_factor_us: AtomicU64::new(0),
             total_bars: AtomicU64::new(0),
-            recent_trades: std::sync::Mutex::new(Vec::new()),
+            recent_trades: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(1000)),
         }
     }
 }
@@ -402,8 +402,8 @@ impl TradingEngine {
         self.shutdown_tx = Some(shutdown_tx);
         self.running.store(true, std::sync::atomic::Ordering::SeqCst);
 
-        // Create channels between actors
-        let (market_tx, market_rx) = mpsc::channel::<MarketEvent>(256);
+        // Create channels between actors (sized for throughput)
+        let (market_tx, market_rx) = mpsc::channel::<MarketEvent>(512);
         let (signal_tx, signal_rx) = mpsc::channel::<TradeSignal>(64);
         let (order_tx, order_rx) = mpsc::channel::<OrderRequest>(64);
 
@@ -1254,11 +1254,40 @@ async fn data_actor_low_latency(
                         }
                     }
                     None => {
-                        warn!("DataActor[tcp_mq]: connection lost, reconnecting...");
-                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                        // Fallback to HTTP
-                        data_actor_low_latency_http(symbols, interval_secs, base.to_string(), tx, shutdown).await;
-                        return;
+                        // TCP connection lost — retry with exponential backoff
+                        warn!("DataActor[tcp_mq]: connection lost, retrying...");
+                        let mut backoff_ms = 500u64;
+                        let max_backoff_ms = 30_000u64;
+                        let mut reconnected = false;
+                        for attempt in 1..=10 {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                            if shutdown.has_changed().unwrap_or(false) && *shutdown.borrow() { return; }
+                            match tokio::net::TcpStream::connect(&tcp_addr).await {
+                                Ok(new_stream) => {
+                                    let _ = new_stream.set_nodelay(true);
+                                    let (mut new_reader, mut new_writer) = new_stream.into_split();
+                                    // Re-read connected msg
+                                    let _ = tcp_mq_read(&mut new_reader).await;
+                                    // Re-subscribe
+                                    let sub = serde_json::json!({"cmd":"subscribe","symbols":symbols});
+                                    tcp_mq_write(&mut new_writer, &sub).await;
+                                    drop(new_writer);
+                                    reader = new_reader;
+                                    info!("🔗 TCP MQ reconnected after attempt {}", attempt);
+                                    reconnected = true;
+                                    break;
+                                }
+                                Err(e) => {
+                                    warn!("🔗 TCP reconnect attempt {}/10 failed: {}", attempt, e);
+                                    backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
+                                }
+                            }
+                        }
+                        if !reconnected {
+                            warn!("🔗 TCP MQ failed 10 retries, falling back to HTTP polling");
+                            data_actor_low_latency_http(symbols, interval_secs, base.to_string(), tx, shutdown).await;
+                            return;
+                        }
                     }
                 }
             }
@@ -1300,7 +1329,7 @@ async fn tcp_mq_read(
         _ => return None,
     }
     let msg_len = u32::from_be_bytes(header) as usize;
-    if msg_len > 10_000_000 { return None; }
+    if msg_len > 1_000_000 { return None; } // 1MB max per message
 
     // Read body
     let mut body = vec![0u8; msg_len];
@@ -1402,9 +1431,16 @@ async fn data_actor_low_latency_http(
 fn parse_kline_json(symbol: &str, kj: &serde_json::Value) -> Option<Kline> {
     let close = kj.get("close").and_then(|v| v.as_f64())?;
     let date_str = kj.get("date").and_then(|v| v.as_str())?;
-    let datetime = chrono::NaiveDateTime::parse_from_str(
-        &format!("{} 15:00:00", &date_str[..10.min(date_str.len())]), "%Y-%m-%d %H:%M:%S"
-    ).unwrap_or_else(|_| Utc::now().naive_utc());
+    // Parse date without format! allocation — try date+time first, then date-only
+    let datetime = if date_str.len() >= 19 {
+        chrono::NaiveDateTime::parse_from_str(&date_str[..19], "%Y-%m-%d %H:%M:%S").ok()
+    } else {
+        None
+    }.unwrap_or_else(|| {
+        chrono::NaiveDate::parse_from_str(&date_str[..10.min(date_str.len())], "%Y-%m-%d")
+            .map(|d| d.and_hms_opt(15, 0, 0).unwrap())
+            .unwrap_or_else(|_| Utc::now().naive_utc())
+    });
 
     Some(Kline {
         symbol: symbol.to_string(),
@@ -1739,20 +1775,40 @@ async fn strategy_actor<F>(
     F: Fn() -> Box<dyn Strategy> + Send + 'static,
 {
     let mut strategies: HashMap<String, Box<dyn Strategy>> = HashMap::new();
+    let mut last_seen: HashMap<String, std::time::Instant> = HashMap::new();
+    let mut gc_counter = 0u64;
 
     info!("📈 StrategyActor started (lock-free stats)");
 
     loop {
         tokio::select! {
             Some(event) = rx.recv() => {
-                let sym = event.symbol();
-                // Avoid symbol.clone() on cache hit — only clone on first insert
-                if !strategies.contains_key(sym) {
+                let sym = event.symbol().to_string();
+
+                // Periodic GC: evict strategies not seen in 10 minutes (before mutable borrow)
+                gc_counter += 1;
+                if gc_counter % 10000 == 0 && strategies.len() > 20 {
+                    let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(600);
+                    let stale: Vec<String> = last_seen.iter()
+                        .filter(|(_, ts)| **ts < cutoff)
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    for s in &stale {
+                        if let Some(mut old) = strategies.remove(s) { old.on_stop(); }
+                        last_seen.remove(s);
+                    }
+                    if !stale.is_empty() {
+                        info!("📈 GC: evicted {} stale strategies", stale.len());
+                    }
+                }
+
+                if !strategies.contains_key(&sym) {
                     let mut s = strategy_factory();
                     s.on_init();
-                    strategies.insert(sym.to_string(), s);
+                    strategies.insert(sym.clone(), s);
                 }
-                let strategy = strategies.get_mut(sym).unwrap();
+                last_seen.insert(sym.clone(), std::time::Instant::now());
+                let strategy = strategies.get_mut(&sym).unwrap();
 
                 let t0 = std::time::Instant::now();
                 let signal_opt = match &event {
@@ -2007,7 +2063,8 @@ async fn order_actor(
                         stats.total_fills.fetch_add(1, Ordering::Relaxed);
                         stats.last_order_us.store(order_us, Ordering::Relaxed);
                         if let Ok(mut trades) = stats.recent_trades.lock() {
-                            trades.push(report);
+                            if trades.len() >= 1000 { trades.pop_front(); }
+                            trades.push_back(report);
                         }
                     }
                     Err(e) => {

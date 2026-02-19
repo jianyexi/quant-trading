@@ -9,7 +9,7 @@ use crate::log_store::LogStore;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub config: AppConfig,
+    pub config: Arc<AppConfig>,
     pub engine: Arc<Mutex<Option<TradingEngine>>>,
     pub sentiment_store: SentimentStore,
     pub sentiment_collector: Arc<Mutex<SentimentCollector>>,
