@@ -18,6 +18,8 @@ pub struct PaperBroker {
     inner: Mutex<PaperBrokerInner>,
     /// When true, submit_order immediately fills the order (for engine use)
     auto_fill: std::sync::atomic::AtomicBool,
+    /// Slippage in basis points (e.g., 5 = 0.05%), applied as adverse price impact
+    slippage_bps: std::sync::atomic::AtomicU32,
 }
 
 struct PaperBrokerInner {
@@ -51,6 +53,23 @@ impl PaperBroker {
                 stamp_tax_rate,
             }),
             auto_fill: std::sync::atomic::AtomicBool::new(true),
+            slippage_bps: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// Set slippage in basis points (1 bp = 0.01%). Buy fills higher, sell fills lower.
+    pub fn set_slippage_bps(&self, bps: u32) {
+        self.slippage_bps.store(bps, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Apply slippage: buy at higher price, sell at lower price
+    fn apply_slippage(&self, price: f64, side: OrderSide) -> f64 {
+        let bps = self.slippage_bps.load(std::sync::atomic::Ordering::SeqCst) as f64;
+        if bps == 0.0 { return price; }
+        let factor = bps / 10_000.0;
+        match side {
+            OrderSide::Buy => price * (1.0 + factor),
+            OrderSide::Sell => price * (1.0 - factor),
         }
     }
 
@@ -218,7 +237,7 @@ impl Broker for PaperBroker {
                     .map_err(QuantError::BrokerError)?;
             new_order.filled_qty = new_order.quantity;
 
-            let fill_price = new_order.price;
+            let fill_price = self.apply_slippage(new_order.price, new_order.side);
             let trade_value = fill_price * new_order.quantity;
             let commission = {
                 let c = trade_value * inner.commission_rate;

@@ -28,7 +28,7 @@ export default function AutoTrade() {
   const [symbolsInput, setSymbolsInput] = useState('000001.SZ,600036.SH');
   const [interval, setInterval_] = useState(5);
   const [positionSize, setPositionSize] = useState(0.15);
-  const [mode, setMode] = useState<'paper' | 'qmt' | 'replay' | 'l2'>('paper');
+  const [mode, setMode] = useState<'paper' | 'live' | 'qmt' | 'replay' | 'l2'>('paper');
   const [qmtStatus, setQmtStatus] = useState<QmtBridgeStatus | null>(null);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
   const [journalTotal, setJournalTotal] = useState(0);
@@ -37,6 +37,7 @@ export default function AutoTrade() {
   const [replayEnd, setReplayEnd] = useState('2024-12-31');
   const [replaySpeed, setReplaySpeed] = useState(0);
   const [replayPeriod, setReplayPeriod] = useState('daily');
+  const [slippageBps, setSlippageBps] = useState(5);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Fetch initial status
@@ -83,6 +84,7 @@ export default function AutoTrade() {
       const symbols = symbolsInput.split(',').map(s => s.trim()).filter(Boolean);
       await tradeStart({
         strategy, symbols, interval: interval, position_size: positionSize, mode,
+        ...(mode === 'live' || mode === 'paper' ? { slippage_bps: slippageBps } : {}),
         ...(mode === 'replay' ? { replay_start: replayStart, replay_end: replayEnd, replay_speed: replaySpeed, replay_period: replayPeriod } : {}),
       });
       await fetchStatus();
@@ -131,9 +133,9 @@ export default function AutoTrade() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-[#f8fafc]">{mode === 'qmt' ? '🔴' : '🤖'} 自动交易</h1>
+          <h1 className="text-2xl font-bold text-[#f8fafc]">{mode === 'qmt' ? '🔴' : mode === 'live' ? '📊' : '🤖'} 自动交易</h1>
           <p className="text-sm text-[#94a3b8] mt-1">
-            {mode === 'qmt' ? 'QMT实盘引擎 — 数据→策略→风控→QMT下单' : 'Actor模型引擎 — 数据→策略→风控→下单'}
+            {mode === 'qmt' ? 'QMT实盘引擎 — 数据→策略→风控→QMT下单' : mode === 'live' ? '模拟实盘 — 实时行情→策略→风控→模拟下单(含滑点)' : 'Actor模型引擎 — 数据→策略→风控→下单'}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -177,6 +179,14 @@ export default function AutoTrade() {
                 } disabled:opacity-50`}>
                 <Activity className="h-4 w-4" /> 模拟交易
               </button>
+              <button onClick={() => setMode('live')} disabled={isRunning}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${
+                  mode === 'live'
+                    ? 'bg-green-600/20 border-green-500 text-green-400'
+                    : 'bg-[#0f172a] border-[#334155] text-[#94a3b8] hover:border-[#475569]'
+                } disabled:opacity-50`}>
+                <TrendingUp className="h-4 w-4" /> 模拟实盘
+              </button>
               <button onClick={() => setMode('replay')} disabled={isRunning}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${
                   mode === 'replay'
@@ -202,6 +212,26 @@ export default function AutoTrade() {
                 <BarChart3 className="h-4 w-4" /> L2 逐笔
               </button>
             </div>
+
+            {mode === 'live' && (
+              <div className="mt-3 p-3 rounded-lg bg-green-500/5 border border-green-500/20">
+                <div className="text-xs text-green-300 mb-2">📊 模拟实盘 — 使用AKShare实时行情，PaperBroker模拟下单</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-[#94a3b8] mb-1">滑点 (基点, 1bp=0.01%)</label>
+                    <input type="number" min={0} max={50} value={slippageBps}
+                      onChange={e => setSlippageBps(Number(e.target.value))}
+                      disabled={isRunning}
+                      className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-1.5 text-sm text-[#f8fafc] disabled:opacity-50" />
+                  </div>
+                  <div className="flex items-end">
+                    <p className="text-xs text-[#64748b]">
+                      买入价格上浮 {(slippageBps / 100).toFixed(2)}%，卖出价格下浮 {(slippageBps / 100).toFixed(2)}%，模拟真实交易摩擦
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {mode === 'replay' && (
               <div className="mt-3 p-3 rounded-lg bg-purple-500/5 border border-purple-500/20">

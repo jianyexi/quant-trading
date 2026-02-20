@@ -17,8 +17,10 @@ pub struct TradeStartRequest {
     pub symbols: Option<Vec<String>>,
     pub interval: Option<u64>,
     pub position_size: Option<f64>,
-    /// "paper" (default), "qmt" for live trading, or "replay" for historical replay
+    /// "paper" (default), "live" (real data + paper broker), "qmt" for live trading, or "replay" for historical replay
     pub mode: Option<String>,
+    /// Slippage in basis points for paper/live modes (default: 0, recommended: 3-10 for realism)
+    pub slippage_bps: Option<u32>,
     /// Replay start date (YYYY-MM-DD), required for mode="replay"
     pub replay_start: Option<String>,
     /// Replay end date (YYYY-MM-DD), required for mode="replay"
@@ -63,7 +65,7 @@ pub async fn trade_start(
         stamp_tax_rate: state.config.trading.stamp_tax_rate,
         max_concentration: state.config.risk.max_concentration,
         position_size_pct: position_size,
-        data_mode: if mode == "qmt" {
+        data_mode: if mode == "qmt" || mode == "live" {
             quant_broker::engine::DataMode::Live {
                 tushare_url: state.config.tushare.base_url.clone(),
                 tushare_token: state.config.tushare.token.clone(),
@@ -133,7 +135,21 @@ pub async fn trade_start(
 
         TradingEngine::new_with_broker(config, qmt_broker)
     } else {
-        TradingEngine::new(config)
+        let eng = TradingEngine::new(config);
+        // Apply slippage for paper/live modes
+        if let Some(bps) = req.slippage_bps {
+            use quant_broker::paper::PaperBroker;
+            if let Some(paper) = eng.broker().as_any().downcast_ref::<PaperBroker>() {
+                paper.set_slippage_bps(bps);
+            }
+        } else if mode == "live" {
+            // Default 5 bps slippage for live paper trading
+            use quant_broker::paper::PaperBroker;
+            if let Some(paper) = eng.broker().as_any().downcast_ref::<PaperBroker>() {
+                paper.set_slippage_bps(5);
+            }
+        }
+        eng
     };
 
     engine.set_journal(state.journal.clone());
@@ -170,6 +186,7 @@ pub async fn trade_start(
         "symbols": symbols,
         "interval": interval,
         "position_size": position_size,
+        "slippage_bps": if mode == "live" { req.slippage_bps.unwrap_or(5) } else { req.slippage_bps.unwrap_or(0) },
         "replay_start": req.replay_start,
         "replay_end": req.replay_end,
         "replay_speed": req.replay_speed,

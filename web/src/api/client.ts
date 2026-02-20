@@ -216,6 +216,7 @@ export async function tradeStart(params: {
   interval: number;
   position_size: number;
   mode?: string;
+  slippage_bps?: number;
   replay_start?: string;
   replay_end?: string;
   replay_speed?: number;
