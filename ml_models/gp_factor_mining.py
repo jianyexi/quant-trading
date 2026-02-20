@@ -40,6 +40,7 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).parent))
 from train_factor_model import generate_synthetic_data
 from factor_mining import evaluate_factor, retrain_with_factors
+from data_utils import load_data, add_data_args
 
 # ── GP Primitives ────────────────────────────────────────────────────
 
@@ -980,12 +981,7 @@ def deduplicate_results(
 
 def main():
     parser = argparse.ArgumentParser(description="GP Factor Mining (Phase 2)")
-    parser.add_argument("--data", type=str, default=None,
-                        help="Path to OHLCV CSV")
-    parser.add_argument("--synthetic", action="store_true",
-                        help="Use synthetic data")
-    parser.add_argument("--n-bars", type=int, default=3000,
-                        help="Number of bars (synthetic)")
+    add_data_args(parser)
     parser.add_argument("--pop-size", type=int, default=300,
                         help="GP population size")
     parser.add_argument("--generations", type=int, default=50,
@@ -1018,11 +1014,7 @@ def main():
     np.random.seed(args.seed)
 
     # Load data
-    if args.data:
-        df = pd.read_csv(args.data, index_col=0, parse_dates=True)
-    else:
-        print(f"Generating synthetic data ({args.n_bars} bars)...")
-        df = generate_synthetic_data(args.n_bars)
+    df = load_data(args)
 
     registry = load_registry()
 

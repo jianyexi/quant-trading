@@ -522,7 +522,11 @@ export async function factorMineParametric(params?: {
   ic_threshold?: number;
   top_n?: number;
   retrain?: boolean;
-  data?: string;
+  cross_stock?: boolean;
+  data_source?: string;
+  symbols?: string;
+  start_date?: string;
+  end_date?: string;
 }): Promise<FactorMiningResult> {
   return fetchJson('/factor/mine/parametric', {
     method: 'POST',
@@ -537,7 +541,10 @@ export async function factorMineGP(params?: {
   max_depth?: number;
   horizon?: number;
   retrain?: boolean;
-  data?: string;
+  data_source?: string;
+  symbols?: string;
+  start_date?: string;
+  end_date?: string;
 }): Promise<FactorMiningResult> {
   return fetchJson('/factor/mine/gp', {
     method: 'POST',

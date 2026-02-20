@@ -36,6 +36,74 @@ const STATE_LABELS: Record<string, string> = {
   retired: '已退役',
 };
 
+const DEFAULT_SYMBOLS = '600519,000858,300750,600036,601318,002415,000651,600276';
+
+/* ── Data Source Config (shared) ─────────────────────────────────── */
+function DataSourceConfig({
+  dataSource, setDataSource,
+  symbols, setSymbols,
+  startDate, setStartDate,
+  endDate, setEndDate,
+  nBars, setNBars,
+}: {
+  dataSource: string; setDataSource: (v: string) => void;
+  symbols: string; setSymbols: (v: string) => void;
+  startDate: string; setStartDate: (v: string) => void;
+  endDate: string; setEndDate: (v: string) => void;
+  nBars: number; setNBars: (v: number) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-[#334155] bg-[#0f172a] p-4 mb-4">
+      <div className="flex items-center gap-3 mb-3">
+        <span className="text-xs text-[#94a3b8] font-semibold">数据来源</span>
+        {['synthetic', 'akshare'].map((src) => (
+          <button key={src} onClick={() => setDataSource(src)}
+            className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
+              dataSource === src
+                ? 'bg-[#3b82f6] text-white'
+                : 'bg-[#334155] text-[#94a3b8] hover:bg-[#475569]'
+            }`}>
+            {src === 'synthetic' ? '📊 模拟数据' : '📡 真实行情 (akshare)'}
+          </button>
+        ))}
+      </div>
+
+      {dataSource === 'synthetic' ? (
+        <div className="grid grid-cols-4 gap-3">
+          <div>
+            <label className="text-xs text-[#64748b] block mb-1">数据量 (bars)</label>
+            <input type="number" value={nBars} onChange={(e) => setNBars(Number(e.target.value))}
+              className="w-full rounded-lg border border-[#334155] bg-[#1e293b] px-3 py-1.5 text-sm text-[#f8fafc] focus:border-[#3b82f6] focus:outline-none" />
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-[#64748b] block mb-1">
+              股票代码 <span className="text-[#475569]">(逗号分隔，留空用默认20只)</span>
+            </label>
+            <input type="text" value={symbols} onChange={(e) => setSymbols(e.target.value)}
+              placeholder={DEFAULT_SYMBOLS}
+              className="w-full rounded-lg border border-[#334155] bg-[#1e293b] px-3 py-1.5 text-sm text-[#f8fafc] placeholder-[#475569] focus:border-[#3b82f6] focus:outline-none font-mono" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-[#64748b] block mb-1">开始日期</label>
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
+                className="w-full rounded-lg border border-[#334155] bg-[#1e293b] px-3 py-1.5 text-sm text-[#f8fafc] focus:border-[#3b82f6] focus:outline-none" />
+            </div>
+            <div>
+              <label className="text-xs text-[#64748b] block mb-1">结束日期</label>
+              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
+                className="w-full rounded-lg border border-[#334155] bg-[#1e293b] px-3 py-1.5 text-sm text-[#f8fafc] focus:border-[#3b82f6] focus:outline-none" />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Overview Tab ────────────────────────────────────────────────── */
 function OverviewTab({
   registry,
@@ -145,6 +213,11 @@ function ParametricTab() {
   const [icThreshold, setIcThreshold] = useState(0.02);
   const [topN, setTopN] = useState(30);
   const [retrain, setRetrain] = useState(false);
+  const [crossStock, setCrossStock] = useState(false);
+  const [dataSource, setDataSource] = useState('synthetic');
+  const [symbols, setSymbols] = useState('');
+  const [startDate, setStartDate] = useState('2023-01-01');
+  const [endDate, setEndDate] = useState('2024-12-31');
   const [running, setRunning] = useState(false);
   const [output, setOutput] = useState('');
   const [error, setError] = useState('');
@@ -160,6 +233,11 @@ function ParametricTab() {
         ic_threshold: icThreshold,
         top_n: topN,
         retrain,
+        cross_stock: crossStock,
+        data_source: dataSource,
+        symbols: symbols || undefined,
+        start_date: startDate,
+        end_date: endDate,
       });
       setOutput(result.stdout || '完成');
       if (result.stderr) setOutput((prev) => prev + '\n\n--- stderr ---\n' + result.stderr);
@@ -178,12 +256,15 @@ function ParametricTab() {
           在预定义模板（MA、RSI、MACD、Bollinger等）上遍历参数网格，评估IC/IR，Bonferroni校正后去相关
         </p>
 
+        <DataSourceConfig
+          dataSource={dataSource} setDataSource={setDataSource}
+          symbols={symbols} setSymbols={setSymbols}
+          startDate={startDate} setStartDate={setStartDate}
+          endDate={endDate} setEndDate={setEndDate}
+          nBars={nBars} setNBars={setNBars}
+        />
+
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
-          <div>
-            <label className="text-xs text-[#94a3b8] block mb-1">数据量 (bars)</label>
-            <input type="number" value={nBars} onChange={(e) => setNBars(Number(e.target.value))}
-              className="w-full rounded-lg border border-[#334155] bg-[#0f172a] px-3 py-2 text-sm text-[#f8fafc] focus:border-[#3b82f6] focus:outline-none" />
-          </div>
           <div>
             <label className="text-xs text-[#94a3b8] block mb-1">预测窗口</label>
             <input type="number" value={horizon} onChange={(e) => setHorizon(Number(e.target.value))}
@@ -201,17 +282,30 @@ function ParametricTab() {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 flex-wrap">
           <label className="flex items-center gap-2 text-sm text-[#cbd5e1]">
             <input type="checkbox" checked={retrain} onChange={(e) => setRetrain(e.target.checked)}
               className="rounded border-[#334155]" />
             发现后自动重训练模型
           </label>
+          {dataSource === 'akshare' && (
+            <label className="flex items-center gap-2 text-sm text-[#cbd5e1]">
+              <input type="checkbox" checked={crossStock} onChange={(e) => setCrossStock(e.target.checked)}
+                className="rounded border-[#334155]" />
+              跨股票筛选
+            </label>
+          )}
           <button onClick={handleRun} disabled={running}
             className="rounded-lg bg-[#3b82f6] px-5 py-2 text-sm font-medium text-white hover:bg-[#2563eb] disabled:opacity-50">
             {running ? '⏳ 搜索中...' : '🚀 开始搜索'}
           </button>
         </div>
+
+        {running && (
+          <div className="mt-3 text-xs text-[#94a3b8]">
+            ⏱️ {dataSource === 'akshare' ? '正在从akshare拉取真实行情数据，首次可能需要几分钟...' : '搜索中...'}
+          </div>
+        )}
       </div>
 
       {error && <div className="rounded-lg bg-red-500/10 border border-red-500/30 p-3 text-sm text-red-400">{error}</div>}
@@ -234,6 +328,10 @@ function GPTab() {
   const [maxDepth, setMaxDepth] = useState(6);
   const [horizon, setHorizon] = useState(5);
   const [retrain, setRetrain] = useState(false);
+  const [dataSource, setDataSource] = useState('synthetic');
+  const [symbols, setSymbols] = useState('');
+  const [startDate, setStartDate] = useState('2023-01-01');
+  const [endDate, setEndDate] = useState('2024-12-31');
   const [running, setRunning] = useState(false);
   const [output, setOutput] = useState('');
   const [error, setError] = useState('');
@@ -250,6 +348,10 @@ function GPTab() {
         max_depth: maxDepth,
         horizon,
         retrain,
+        data_source: dataSource,
+        symbols: symbols || undefined,
+        start_date: startDate,
+        end_date: endDate,
       });
       setOutput(result.stdout || '完成');
       if (result.stderr) setOutput((prev) => prev + '\n\n--- stderr ---\n' + result.stderr);
@@ -268,12 +370,15 @@ function GPTab() {
           进化表达式树发现新因子：随机生成→交叉/变异→IC适应度选择→自动注册到因子注册表
         </p>
 
+        <DataSourceConfig
+          dataSource={dataSource} setDataSource={setDataSource}
+          symbols={symbols} setSymbols={setSymbols}
+          startDate={startDate} setStartDate={setStartDate}
+          endDate={endDate} setEndDate={setEndDate}
+          nBars={nBars} setNBars={setNBars}
+        />
+
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-4">
-          <div>
-            <label className="text-xs text-[#94a3b8] block mb-1">数据量 (bars)</label>
-            <input type="number" value={nBars} onChange={(e) => setNBars(Number(e.target.value))}
-              className="w-full rounded-lg border border-[#334155] bg-[#0f172a] px-3 py-2 text-sm text-[#f8fafc] focus:border-[#3b82f6] focus:outline-none" />
-          </div>
           <div>
             <label className="text-xs text-[#94a3b8] block mb-1">种群大小</label>
             <input type="number" value={popSize} onChange={(e) => setPopSize(Number(e.target.value))}
@@ -310,7 +415,7 @@ function GPTab() {
 
         {running && (
           <div className="mt-3 text-xs text-[#94a3b8]">
-            ⏱️ GP进化可能需要数分钟，取决于种群大小和代数...
+            ⏱️ {dataSource === 'akshare' ? '正在从akshare拉取真实行情数据并进化，可能需要较长时间...' : 'GP进化可能需要数分钟，取决于种群大小和代数...'}
           </div>
         )}
       </div>

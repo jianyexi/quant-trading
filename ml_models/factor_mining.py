@@ -38,6 +38,7 @@ warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).parent))
 from train_factor_model import compute_features, generate_synthetic_data
+from data_utils import load_data, add_data_args, fetch_akshare_multi
 
 # ── Factor Templates ─────────────────────────────────────────────────
 
@@ -656,14 +657,9 @@ def mine_cross_stock(
 
 def main():
     parser = argparse.ArgumentParser(description="Automated Factor Mining")
-    parser.add_argument("--data", type=str, default=None,
-                        help="Path to OHLCV CSV (optional)")
-    parser.add_argument("--synthetic", action="store_true",
-                        help="Use synthetic data for testing")
+    add_data_args(parser)
     parser.add_argument("--n-stocks", type=int, default=10,
                         help="Number of stocks for cross-stock mining")
-    parser.add_argument("--n-bars", type=int, default=3000,
-                        help="Number of bars per stock (synthetic)")
     parser.add_argument("--horizon", type=int, default=5,
                         help="Forward return horizon (bars)")
     parser.add_argument("--ic-threshold", type=float, default=0.02,
@@ -683,22 +679,20 @@ def main():
     args = parser.parse_args()
 
     # Load data
-    if args.data:
-        print(f"Loading data from {args.data}")
-        df = pd.read_csv(args.data, index_col=0, parse_dates=True)
-        for col in ["open", "high", "low", "close", "volume"]:
-            if col not in df.columns:
-                print(f"ERROR: Missing column '{col}' in CSV")
-                return
-    else:
-        print(f"Generating synthetic data ({args.n_bars} bars)...")
-        df = generate_synthetic_data(args.n_bars)
+    df = load_data(args)
 
     # Cross-stock or single-stock mining
     if args.cross_stock:
-        if args.data:
-            print("Cross-stock mining requires multiple stocks. Using synthetic data.")
-        stocks = generate_multi_stock_data(args.n_stocks, args.n_bars)
+        if args.akshare:
+            symbols = None
+            if args.symbols:
+                symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+            stocks = fetch_akshare_multi(symbols, args.start_date, args.end_date)
+        elif args.data:
+            print("Cross-stock mining with CSV requires per-stock data. Using synthetic.")
+            stocks = generate_multi_stock_data(args.n_stocks, args.n_bars)
+        else:
+            stocks = generate_multi_stock_data(args.n_stocks, args.n_bars)
         results = mine_cross_stock(
             stocks,
             horizon=args.horizon,
