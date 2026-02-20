@@ -12,7 +12,7 @@ import Sentiment from './pages/Sentiment';
 import DLModels from './pages/DLModels';
 import RiskManagement from './pages/RiskManagement';
 import Logs from './pages/Logs';
-import FactorMining from './pages/FactorMining';
+import FactorMining from './pages/factor-mining';
 import Notifications from './pages/Notifications';
 
 export default function App() {

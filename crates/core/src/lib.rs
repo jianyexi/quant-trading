@@ -2,6 +2,7 @@ pub mod error;
 pub mod models;
 pub mod traits;
 pub mod types;
+pub mod utils;
 
 pub use error::{QuantError, Result};
 pub use models::{Account, Kline, Order, OrderBook, Portfolio, Position, StockInfo, Tick, Trade,
