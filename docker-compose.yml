@@ -11,17 +11,26 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quant -d quant_trading"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   quant:
     build: .
     ports:
       - "8080:8080"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://quant:quant_pass@postgres:5432/quant_trading
     volumes:
       - ./config:/app/config
+      - ./data:/app/data
+      - ./ml_models:/app/ml_models
+      - ./scripts:/app/scripts
 
 volumes:
   pgdata:

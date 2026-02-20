@@ -107,6 +107,7 @@ pub async fn trade_start(
             timeout_min_profit_pct: 0.02,
             rebalance_threshold: 0.05,
         },
+        db_pool: state.db.clone(),
     };
 
     let strat_name = strategy_name.clone();
@@ -498,14 +499,81 @@ pub struct TickQuery {
 }
 
 pub async fn get_recorded_ticks(
+    State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<TickQuery>,
 ) -> Json<Value> {
+    let limit = q.limit.unwrap_or(200).min(1000) as i64;
+
+    // Try PostgreSQL first
+    if let Some(ref pool) = state.db {
+        let mut sql = String::from(
+            "SELECT symbol, datetime::text, open, high, low, close, volume, recorded_at::text FROM market_ticks"
+        );
+        let mut conditions = Vec::new();
+        let mut idx = 1u32;
+        let mut binds: Vec<String> = Vec::new();
+
+        if let Some(ref sym) = q.symbol {
+            conditions.push(format!("symbol = ${}", idx)); idx += 1;
+            binds.push(sym.clone());
+        }
+        if let Some(ref since) = q.since {
+            conditions.push(format!("datetime >= ${}::timestamp", idx)); idx += 1;
+            binds.push(since.clone());
+        }
+        let _ = idx;
+        if !conditions.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conditions.join(" AND "));
+        }
+        sql.push_str(&format!(" ORDER BY datetime DESC LIMIT {}", limit));
+
+        let mut query = sqlx::query(&sql);
+        for b in &binds {
+            query = query.bind(b);
+        }
+
+        match query.fetch_all(pool).await {
+            Ok(rows) => {
+                use sqlx::Row;
+                let ticks: Vec<serde_json::Value> = rows.iter().map(|row| {
+                    json!({
+                        "symbol": row.get::<String, _>("symbol"),
+                        "datetime": row.get::<String, _>("datetime"),
+                        "open": row.get::<f64, _>("open"),
+                        "high": row.get::<f64, _>("high"),
+                        "low": row.get::<f64, _>("low"),
+                        "close": row.get::<f64, _>("close"),
+                        "volume": row.get::<f64, _>("volume"),
+                        "recorded_at": row.get::<String, _>("recorded_at"),
+                    })
+                }).collect();
+                let count = ticks.len();
+
+                let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM market_ticks")
+                    .fetch_one(pool).await.unwrap_or(0);
+                let symbols: Vec<String> = sqlx::query_scalar("SELECT DISTINCT symbol FROM market_ticks ORDER BY symbol")
+                    .fetch_all(pool).await.unwrap_or_default();
+
+                return Json(json!({
+                    "ticks": ticks,
+                    "count": count,
+                    "total_recorded": total,
+                    "symbols": symbols,
+                }));
+            }
+            Err(e) => {
+                return Json(json!({"ticks": [], "count": 0, "error": e.to_string()}));
+            }
+        }
+    }
+
+    // Fallback to SQLite
     let conn = match rusqlite::Connection::open("data/market_ticks.db") {
         Ok(c) => c,
         Err(_) => return Json(json!({"ticks": [], "count": 0, "error": "No tick database found"})),
     };
 
-    let limit = q.limit.unwrap_or(200).min(1000);
     let mut sql = String::from(
         "SELECT symbol, datetime, open, high, low, close, volume, recorded_at FROM ticks"
     );
@@ -546,7 +614,6 @@ pub async fn get_recorded_ticks(
 
     let count = rows.len();
 
-    // Also get summary stats
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM ticks", [], |r| r.get(0)).unwrap_or(0);
     let symbols: Vec<String> = conn.prepare("SELECT DISTINCT symbol FROM ticks ORDER BY symbol")
         .ok()

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
+use sqlx::PgPool;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn, error, debug, trace};
 
@@ -19,13 +20,24 @@ use quant_core::models::*;
 use crate::engine::{MarketEvent, DataMode};
 
 // ── Tick Recorder ───────────────────────────────────────────────────
-// Records market data bars to SQLite for future replay & analysis.
+// Records market data bars for future replay & analysis.
+
+enum TickBackend {
+    Pg(PgPool),
+    Sqlite(std::sync::Mutex<rusqlite::Connection>),
+}
 
 struct TickRecorder {
-    conn: std::sync::Mutex<rusqlite::Connection>,
+    backend: TickBackend,
 }
 
 impl TickRecorder {
+    /// Create a TickRecorder backed by PostgreSQL.
+    fn new(pool: PgPool) -> Arc<Self> {
+        Arc::new(Self { backend: TickBackend::Pg(pool) })
+    }
+
+    /// Create a TickRecorder backed by SQLite (fallback).
     fn open(path: &str) -> Option<Arc<Self>> {
         let conn = match rusqlite::Connection::open(path) {
             Ok(c) => c,
@@ -48,20 +60,45 @@ impl TickRecorder {
             );
             CREATE INDEX IF NOT EXISTS idx_ticks_symbol_dt ON ticks(symbol, datetime);"
         ).ok()?;
-        Some(Arc::new(Self { conn: std::sync::Mutex::new(conn) }))
+        Some(Arc::new(Self { backend: TickBackend::Sqlite(std::sync::Mutex::new(conn)) }))
     }
 
     fn record(&self, k: &Kline) {
-        if let Ok(conn) = self.conn.lock() {
-            let _ = conn.execute(
-                "INSERT INTO ticks (symbol, datetime, open, high, low, close, volume, recorded_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-                rusqlite::params![
-                    k.symbol,
-                    k.datetime.format("%Y-%m-%d %H:%M:%S").to_string(),
-                    k.open, k.high, k.low, k.close, k.volume,
-                    Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string(),
-                ],
-            );
+        match &self.backend {
+            TickBackend::Pg(pool) => {
+                let pool = pool.clone();
+                let symbol = k.symbol.clone();
+                let datetime = k.datetime;
+                let open = k.open;
+                let high = k.high;
+                let low = k.low;
+                let close = k.close;
+                let volume = k.volume;
+                tokio::spawn(async move {
+                    if let Err(e) = sqlx::query(
+                        "INSERT INTO market_ticks (symbol, datetime, open, high, low, close, volume, recorded_at)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+                    )
+                    .bind(&symbol).bind(datetime).bind(open).bind(high)
+                    .bind(low).bind(close).bind(volume).bind(Utc::now().naive_utc())
+                    .execute(&pool).await {
+                        error!("Failed to record tick (PG): {}", e);
+                    }
+                });
+            }
+            TickBackend::Sqlite(conn) => {
+                if let Ok(conn) = conn.lock() {
+                    let _ = conn.execute(
+                        "INSERT INTO ticks (symbol, datetime, open, high, low, close, volume, recorded_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                        rusqlite::params![
+                            k.symbol,
+                            k.datetime.format("%Y-%m-%d %H:%M:%S").to_string(),
+                            k.open, k.high, k.low, k.close, k.volume,
+                            Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string(),
+                        ],
+                    );
+                }
+            }
         }
     }
 }
@@ -138,6 +175,7 @@ pub(crate) async fn data_actor(
     data_mode: DataMode,
     tx: mpsc::Sender<MarketEvent>,
     shutdown: watch::Receiver<bool>,
+    db_pool: Option<PgPool>,
 ) {
     match &data_mode {
         DataMode::Simulated => {
@@ -150,8 +188,15 @@ pub(crate) async fn data_actor(
             info!("📊 DataActor started [LIVE] for {:?}", symbols);
             let n = warmup_historical(&symbols, &tx, 80).await;
             if n > 0 { info!("📊 Warmup complete: {} bars pre-loaded", n); }
-            let recorder = TickRecorder::open("data/market_ticks.db");
-            if recorder.is_some() { info!("📼 Tick recording enabled → data/market_ticks.db"); }
+            let recorder = if let Some(pool) = db_pool {
+                let rec = TickRecorder::new(pool);
+                info!("📼 Tick recording enabled → PostgreSQL (market_ticks)");
+                Some(rec)
+            } else {
+                let rec = TickRecorder::open("data/market_ticks.db");
+                if rec.is_some() { info!("📼 Tick recording enabled → data/market_ticks.db"); }
+                rec
+            };
             data_actor_live(
                 symbols, interval_secs,
                 tushare_url.clone(), tushare_token.clone(), akshare_url.clone(),

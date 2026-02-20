@@ -166,6 +166,8 @@ pub struct EngineConfig {
     pub data_mode: DataMode,
     /// Risk enforcement configuration
     pub risk_config: RiskConfig,
+    /// Optional PostgreSQL pool for tick recording and other DB operations
+    pub db_pool: Option<sqlx::PgPool>,
 }
 
 /// Data feed mode for the DataActor.
@@ -222,6 +224,7 @@ impl Default for EngineConfig {
             position_size_pct: 0.10,
             data_mode: DataMode::Simulated,
             risk_config: RiskConfig::default(),
+            db_pool: None,
         }
     }
 }
@@ -428,8 +431,9 @@ impl TradingEngine {
         let data_symbols = self.config.symbols.clone();
         let data_interval = self.config.interval_secs;
         let data_mode = self.config.data_mode.clone();
+        let data_db_pool = self.config.db_pool.clone();
         tokio::spawn(async move {
-            crate::data_actors::data_actor(data_symbols, data_interval, data_mode, market_tx, data_shutdown).await;
+            crate::data_actors::data_actor(data_symbols, data_interval, data_mode, market_tx, data_shutdown, data_db_pool).await;
         });
 
         // Record engine start in journal
@@ -989,6 +993,7 @@ mod tests {
             position_size_pct: 0.10,
             data_mode: DataMode::Simulated,
             risk_config: RiskConfig::default(),
+            db_pool: None,
         };
 
         let mut engine = TradingEngine::new(config);

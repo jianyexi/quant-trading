@@ -1,7 +1,7 @@
 //! Order-fill notification service.
 //!
 //! Supports three channels:
-//! - **In-app**: SQLite-backed notification store (always active)
+//! - **In-app**: PostgreSQL or SQLite-backed notification store (always active)
 //! - **Webhook**: HTTP POST to DingTalk / WeChat Work / Slack / custom URL
 //! - **Email**: SMTP via `lettre`
 
@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use chrono::Utc;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -135,18 +136,66 @@ pub struct Notification {
 
 // ── Notifier ────────────────────────────────────────────────────────
 
+enum NotifierBackend {
+    Pg(PgPool),
+    Sqlite(Mutex<Connection>),
+}
+
 /// Thread-safe notification service.
 pub struct Notifier {
-    db: Mutex<Connection>,
+    db: NotifierBackend,
     config: Mutex<NotificationConfig>,
     config_path: String,
     http: reqwest::Client,
 }
 
 impl Notifier {
-    /// Open or create notification database and load config.
+    /// Create a notifier backed by PostgreSQL (production).
+    pub fn new(pool: PgPool, config_dir: &str) -> Self {
+        let config_path = format!("{}/notification_config.json", config_dir);
+        let config = Self::load_config_from_file(&config_path);
+        info!("🔔 Notifier initialized (PostgreSQL, email={}, webhook={})",
+            config.email.enabled, config.webhook.enabled);
+        Self {
+            db: NotifierBackend::Pg(pool),
+            config: Mutex::new(config),
+            config_path,
+            http: reqwest::Client::new(),
+        }
+    }
+
+    /// Open or create notification database and load config (SQLite fallback).
     pub fn open<P: AsRef<Path>>(db_path: P, config_dir: &str) -> anyhow::Result<Self> {
         let conn = Connection::open(db_path)?;
+        Self::init_sqlite_tables(&conn)?;
+
+        let config_path = format!("{}/notification_config.json", config_dir);
+        let config = Self::load_config_from_file(&config_path);
+
+        info!("🔔 Notifier initialized (SQLite, email={}, webhook={})",
+            config.email.enabled, config.webhook.enabled);
+
+        Ok(Self {
+            db: NotifierBackend::Sqlite(Mutex::new(conn)),
+            config: Mutex::new(config),
+            config_path,
+            http: reqwest::Client::new(),
+        })
+    }
+
+    /// Create in-memory notifier (for testing).
+    pub fn in_memory() -> anyhow::Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        Self::init_sqlite_tables(&conn)?;
+        Ok(Self {
+            db: NotifierBackend::Sqlite(Mutex::new(conn)),
+            config: Mutex::new(NotificationConfig::default()),
+            config_path: String::new(),
+            http: reqwest::Client::new(),
+        })
+    }
+
+    fn init_sqlite_tables(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS notifications (
                 id TEXT PRIMARY KEY,
@@ -165,46 +214,7 @@ impl Notifier {
             CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications(timestamp);
             CREATE INDEX IF NOT EXISTS idx_notif_read ON notifications(read);"
         )?;
-
-        let config_path = format!("{}/notification_config.json", config_dir);
-        let config = Self::load_config_from_file(&config_path);
-
-        info!("🔔 Notifier initialized (email={}, webhook={})",
-            config.email.enabled, config.webhook.enabled);
-
-        Ok(Self {
-            db: Mutex::new(conn),
-            config: Mutex::new(config),
-            config_path,
-            http: reqwest::Client::new(),
-        })
-    }
-
-    /// Create in-memory notifier (for testing).
-    pub fn in_memory() -> anyhow::Result<Self> {
-        let conn = Connection::open_in_memory()?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS notifications (
-                id TEXT PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                title TEXT NOT NULL,
-                message TEXT NOT NULL,
-                symbol TEXT,
-                side TEXT,
-                quantity REAL,
-                price REAL,
-                read INTEGER NOT NULL DEFAULT 0,
-                delivery TEXT NOT NULL DEFAULT 'delivered',
-                channels TEXT NOT NULL DEFAULT 'in_app'
-            );"
-        )?;
-        Ok(Self {
-            db: Mutex::new(conn),
-            config: Mutex::new(NotificationConfig::default()),
-            config_path: String::new(),
-            http: reqwest::Client::new(),
-        })
+        Ok(())
     }
 
     fn load_config_from_file(path: &str) -> NotificationConfig {
@@ -333,7 +343,44 @@ impl Notifier {
 
     /// List notifications (newest first).
     pub fn list(&self, limit: usize, unread_only: bool) -> Vec<Notification> {
-        let conn = self.db.lock().unwrap();
+        match &self.db {
+            NotifierBackend::Pg(_) => {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(self.list_async(limit, unread_only))
+                })
+            }
+            NotifierBackend::Sqlite(conn) => self.list_sqlite(conn, limit, unread_only),
+        }
+    }
+
+    /// Async list for PG backend.
+    pub async fn list_async(&self, limit: usize, unread_only: bool) -> Vec<Notification> {
+        match &self.db {
+            NotifierBackend::Pg(pool) => {
+                let sql = if unread_only {
+                    "SELECT id, timestamp::text, event_type, title, message, symbol, side, quantity, price, read, delivery, channels
+                     FROM notifications WHERE read = false ORDER BY timestamp DESC LIMIT $1"
+                } else {
+                    "SELECT id, timestamp::text, event_type, title, message, symbol, side, quantity, price, read, delivery, channels
+                     FROM notifications ORDER BY timestamp DESC LIMIT $1"
+                };
+                match sqlx::query_as::<_, NotificationRow>(sql)
+                    .bind(limit as i64)
+                    .fetch_all(pool).await
+                {
+                    Ok(rows) => rows.into_iter().map(|r| r.into()).collect(),
+                    Err(e) => {
+                        error!("Failed to list notifications (PG): {}", e);
+                        vec![]
+                    }
+                }
+            }
+            NotifierBackend::Sqlite(conn) => self.list_sqlite(conn, limit, unread_only),
+        }
+    }
+
+    fn list_sqlite(&self, conn: &Mutex<Connection>, limit: usize, unread_only: bool) -> Vec<Notification> {
+        let conn = conn.lock().unwrap();
         let sql = if unread_only {
             format!("SELECT id, timestamp, event_type, title, message, symbol, side, quantity, price, read, delivery, channels
                      FROM notifications WHERE read = 0 ORDER BY timestamp DESC LIMIT {}", limit)
@@ -362,21 +409,68 @@ impl Notifier {
 
     /// Count unread notifications.
     pub fn unread_count(&self) -> u64 {
-        let conn = self.db.lock().unwrap();
-        conn.query_row("SELECT COUNT(*) FROM notifications WHERE read = 0", [], |row| row.get(0))
-            .unwrap_or(0)
+        match &self.db {
+            NotifierBackend::Pg(_) => {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(self.unread_count_async())
+                })
+            }
+            NotifierBackend::Sqlite(conn) => {
+                let conn = conn.lock().unwrap();
+                conn.query_row("SELECT COUNT(*) FROM notifications WHERE read = 0", [], |row| row.get(0))
+                    .unwrap_or(0)
+            }
+        }
+    }
+
+    /// Async unread count for PG backend.
+    pub async fn unread_count_async(&self) -> u64 {
+        match &self.db {
+            NotifierBackend::Pg(pool) => {
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM notifications WHERE read = false")
+                    .fetch_one(pool).await.unwrap_or(0) as u64
+            }
+            NotifierBackend::Sqlite(conn) => {
+                let conn = conn.lock().unwrap();
+                conn.query_row("SELECT COUNT(*) FROM notifications WHERE read = 0", [], |row| row.get(0))
+                    .unwrap_or(0)
+            }
+        }
     }
 
     /// Mark one notification as read.
     pub fn mark_read(&self, id: &str) {
-        let conn = self.db.lock().unwrap();
-        let _ = conn.execute("UPDATE notifications SET read = 1 WHERE id = ?", params![id]);
+        match &self.db {
+            NotifierBackend::Pg(pool) => {
+                let pool = pool.clone();
+                let id = id.to_string();
+                tokio::spawn(async move {
+                    let _ = sqlx::query("UPDATE notifications SET read = true WHERE id = $1")
+                        .bind(&id).execute(&pool).await;
+                });
+            }
+            NotifierBackend::Sqlite(conn) => {
+                let conn = conn.lock().unwrap();
+                let _ = conn.execute("UPDATE notifications SET read = 1 WHERE id = ?", params![id]);
+            }
+        }
     }
 
     /// Mark all as read.
     pub fn mark_all_read(&self) {
-        let conn = self.db.lock().unwrap();
-        let _ = conn.execute("UPDATE notifications SET read = 1 WHERE read = 0", []);
+        match &self.db {
+            NotifierBackend::Pg(pool) => {
+                let pool = pool.clone();
+                tokio::spawn(async move {
+                    let _ = sqlx::query("UPDATE notifications SET read = true WHERE read = false")
+                        .execute(&pool).await;
+                });
+            }
+            NotifierBackend::Sqlite(conn) => {
+                let conn = conn.lock().unwrap();
+                let _ = conn.execute("UPDATE notifications SET read = 1 WHERE read = 0", []);
+            }
+        }
     }
 
     // ── Internal ────────────────────────────────────────────────────
@@ -433,13 +527,39 @@ impl Notifier {
     ) {
         let id = Uuid::new_v4().to_string();
         let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let conn = self.db.lock().unwrap();
-        if let Err(e) = conn.execute(
-            "INSERT INTO notifications (id, timestamp, event_type, title, message, symbol, side, quantity, price, channels)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![id, timestamp, event_type, title, message, symbol, side, quantity, price, channels],
-        ) {
-            error!("Failed to store notification: {}", e);
+        match &self.db {
+            NotifierBackend::Pg(pool) => {
+                let pool = pool.clone();
+                let event_type = event_type.to_string();
+                let title = title.to_string();
+                let message = message.to_string();
+                let symbol = symbol.map(|s| s.to_string());
+                let side = side.map(|s| s.to_string());
+                let channels = channels.to_string();
+                let ts = chrono::NaiveDateTime::parse_from_str(&timestamp, "%Y-%m-%d %H:%M:%S")
+                    .unwrap_or_else(|_| Utc::now().naive_utc());
+                tokio::spawn(async move {
+                    if let Err(e) = sqlx::query(
+                        "INSERT INTO notifications (id, timestamp, event_type, title, message, symbol, side, quantity, price, channels)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+                    )
+                    .bind(&id).bind(ts).bind(&event_type).bind(&title).bind(&message)
+                    .bind(&symbol).bind(&side).bind(quantity).bind(price).bind(&channels)
+                    .execute(&pool).await {
+                        error!("Failed to store notification (PG): {}", e);
+                    }
+                });
+            }
+            NotifierBackend::Sqlite(conn) => {
+                let conn = conn.lock().unwrap();
+                if let Err(e) = conn.execute(
+                    "INSERT INTO notifications (id, timestamp, event_type, title, message, symbol, side, quantity, price, channels)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![id, timestamp, event_type, title, message, symbol, side, quantity, price, channels],
+                ) {
+                    error!("Failed to store notification: {}", e);
+                }
+            }
         }
     }
 
@@ -570,6 +690,43 @@ impl Notifier {
 fn fmt_qty(q: f64) -> String {
     if q >= 10000.0 { format!("{:.0}万股", q / 10000.0) }
     else { format!("{:.0}股", q) }
+}
+
+// ── sqlx row helpers for PG ─────────────────────────────────────────
+
+#[derive(sqlx::FromRow)]
+struct NotificationRow {
+    id: String,
+    timestamp: String,
+    event_type: String,
+    title: String,
+    message: String,
+    symbol: Option<String>,
+    side: Option<String>,
+    quantity: Option<f64>,
+    price: Option<f64>,
+    read: bool,
+    delivery: String,
+    channels: String,
+}
+
+impl From<NotificationRow> for Notification {
+    fn from(r: NotificationRow) -> Self {
+        Self {
+            id: r.id,
+            timestamp: r.timestamp,
+            event_type: r.event_type,
+            title: r.title,
+            message: r.message,
+            symbol: r.symbol,
+            side: r.side,
+            quantity: r.quantity,
+            price: r.price,
+            read: r.read,
+            delivery: r.delivery,
+            channels: r.channels,
+        }
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────

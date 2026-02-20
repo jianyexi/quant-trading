@@ -17,4 +17,5 @@ pub struct AppState {
     pub journal: Arc<JournalStore>,
     pub log_store: Arc<LogStore>,
     pub notifier: Arc<Notifier>,
+    pub db: Option<sqlx::PgPool>,
 }

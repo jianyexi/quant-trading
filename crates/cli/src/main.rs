@@ -1110,6 +1110,7 @@ async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, positi
             timeout_min_profit_pct: 0.02,
             rebalance_threshold: 0.05,
         },
+        db_pool: None,
     };
 
     let strategy_name = strategy.to_string();
@@ -1271,6 +1272,7 @@ async fn cmd_trade_qmt(strategy: &str, symbols_str: &str, interval: u64, positio
             timeout_min_profit_pct: 0.02,
             rebalance_threshold: 0.05,
         },
+        db_pool: None,
     };
 
     let strategy_name = strategy.to_string();
@@ -1595,10 +1597,36 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
     if !std::path::Path::new("data").exists() {
         std::fs::create_dir_all("data").ok();
     }
-    let journal = quant_broker::journal::JournalStore::open("data/trade_journal.db")
-        .expect("Failed to open trade journal");
-    let notifier = quant_broker::notifier::Notifier::open("data/notifications.db", "data")
-        .expect("Failed to open notifier");
+
+    // Try to connect to PostgreSQL; fall back to SQLite if unavailable
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| config.database.url.clone());
+    let db_pool = match quant_data::storage::create_pool(&db_url, config.database.max_connections).await {
+        Ok(pool) => {
+            if let Err(e) = quant_data::storage::run_migrations(&pool).await {
+                tracing::warn!("⚠️  PostgreSQL migrations failed: {}. Falling back to SQLite.", e);
+                None
+            } else {
+                tracing::info!("✅ PostgreSQL connected and migrations applied");
+                Some(pool)
+            }
+        }
+        Err(e) => {
+            tracing::warn!("⚠️  PostgreSQL unavailable: {}. Falling back to SQLite.", e);
+            None
+        }
+    };
+
+    let (journal, notifier) = if let Some(ref pool) = db_pool {
+        let journal = quant_broker::journal::JournalStore::new(pool.clone());
+        let notifier = quant_broker::notifier::Notifier::new(pool.clone(), "data");
+        (journal, notifier)
+    } else {
+        let journal = quant_broker::journal::JournalStore::open("data/trade_journal.db")
+            .expect("Failed to open trade journal");
+        let notifier = quant_broker::notifier::Notifier::open("data/notifications.db", "data")
+            .expect("Failed to open notifier");
+        (journal, notifier)
+    };
 
     let state = AppState {
         config: std::sync::Arc::new(config.clone()),
@@ -1610,6 +1638,7 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
         journal: std::sync::Arc::new(journal),
         log_store: std::sync::Arc::new(quant_api::LogStore::new()),
         notifier: std::sync::Arc::new(notifier),
+        db: db_pool,
     };
 
     // Resolve web/dist path — try CWD first, then relative to the executable
