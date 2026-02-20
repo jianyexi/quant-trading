@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, Filter, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import { Search, Filter, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, Loader2, AlertTriangle } from 'lucide-react';
 import { screenScan, screenFactors, type StockCandidate, type ScreenerResult, type VoteResult } from '../api/client';
 
 function formatVote(vote: VoteResult): { text: string; color: string } {
@@ -23,6 +23,7 @@ export default function Screener() {
   const [error, setError] = useState('');
   const [topN, setTopN] = useState(10);
   const [minVotes, setMinVotes] = useState(1);
+  const [pool, setPool] = useState('custom');
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [factorSymbol, setFactorSymbol] = useState('');
   const [factorData, setFactorData] = useState<StockCandidate | null>(null);
@@ -33,7 +34,7 @@ export default function Screener() {
     setError('');
     setExpandedIdx(null);
     try {
-      const data = await screenScan(topN, minVotes);
+      const data = await screenScan(topN, minVotes, pool);
       setResult(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Scan failed');
@@ -67,6 +68,15 @@ export default function Screener() {
       {/* Controls */}
       <div className="bg-[#1e293b] rounded-xl p-5 border border-[#334155]">
         <div className="flex flex-wrap items-end gap-4">
+          <div>
+            <label className="block text-xs text-[#94a3b8] mb-1">股票池</label>
+            <select value={pool} onChange={e => setPool(e.target.value)}
+              className="bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc]">
+              <option value="custom">自选 (~40)</option>
+              <option value="csi300">沪深300</option>
+              <option value="csi500">中证500</option>
+            </select>
+          </div>
           <div>
             <label className="block text-xs text-[#94a3b8] mb-1">推荐数量</label>
             <input type="number" min={1} max={30} value={topN}
@@ -113,11 +123,25 @@ export default function Screener() {
 
       {/* Scan Stats */}
       {result && (
-        <div className="grid grid-cols-4 gap-4">
-          <StatCard label="扫描股票" value={result.total_scanned} />
-          <StatCard label="因子通过" value={result.phase1_passed} />
-          <StatCard label="策略通过" value={result.phase2_passed} />
-          <StatCard label="最终推荐" value={result.candidates.length} />
+        <div className="space-y-3">
+          {result.regime && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-[#94a3b8]">市场状态:</span>
+              <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                result.regime === 'Trending' ? 'bg-green-500/20 text-green-400 border border-green-500/30' :
+                result.regime === 'Volatile' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
+                'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+              }`}>
+                {result.regime === 'Trending' ? '📈 趋势行情' : result.regime === 'Volatile' ? '⚡ 高波动' : '🔄 震荡行情'}
+              </span>
+            </div>
+          )}
+          <div className="grid grid-cols-4 gap-4">
+            <StatCard label="扫描股票" value={result.total_scanned} />
+            <StatCard label="因子通过" value={result.phase1_passed} />
+            <StatCard label="策略通过" value={result.phase2_passed} />
+            <StatCard label="最终推荐" value={result.candidates.length} />
+          </div>
         </div>
       )}
 
@@ -133,10 +157,12 @@ export default function Screener() {
                 <th className="px-4 py-3 text-left font-medium">排名</th>
                 <th className="px-4 py-3 text-left font-medium">代码</th>
                 <th className="px-4 py-3 text-left font-medium">名称</th>
+                <th className="px-4 py-3 text-left font-medium">行业</th>
                 <th className="px-4 py-3 text-right font-medium">价格</th>
                 <th className="px-4 py-3 text-right font-medium">因子分</th>
                 <th className="px-4 py-3 text-right font-medium">综合分</th>
                 <th className="px-4 py-3 text-center font-medium">投票</th>
+                <th className="px-4 py-3 text-right font-medium">成交额</th>
                 <th className="px-4 py-3 text-right font-medium">RSI</th>
                 <th className="px-4 py-3 text-center font-medium">推荐</th>
                 <th className="px-4 py-3 text-center font-medium">详情</th>
@@ -149,6 +175,7 @@ export default function Screener() {
                     <td className="px-4 py-3 text-[#f8fafc] font-bold">{i + 1}</td>
                     <td className="px-4 py-3 text-[#3b82f6] font-mono">{c.symbol}</td>
                     <td className="px-4 py-3 text-[#f8fafc]">{c.name}</td>
+                    <td className="px-4 py-3 text-[#94a3b8] text-sm">{c.sector}</td>
                     <td className="px-4 py-3 text-right text-[#f8fafc]">¥{c.price.toFixed(2)}</td>
                     <td className="px-4 py-3 text-right text-[#f8fafc]">{c.factor_score.toFixed(1)}</td>
                     <td className="px-4 py-3 text-right font-semibold text-[#f8fafc]">{c.composite_score.toFixed(1)}</td>
@@ -160,6 +187,9 @@ export default function Screener() {
                       }`}>
                         {c.strategy_vote.consensus_count}/3
                       </span>
+                    </td>
+                    <td className="px-4 py-3 text-right text-[#94a3b8] text-sm">
+                      {(c.avg_turnover / 100000000).toFixed(1)}亿
                     </td>
                     <td className="px-4 py-3 text-right">
                       <span className={c.factors.rsi_14 < 30 ? 'text-green-400' : c.factors.rsi_14 > 70 ? 'text-red-400' : 'text-[#f8fafc]'}>
@@ -180,7 +210,7 @@ export default function Screener() {
                   </tr>
                   {expandedIdx === i && (
                     <tr key={`${c.symbol}-detail`}>
-                      <td colSpan={10} className="px-4 py-4 bg-[#0f172a]/50">
+                      <td colSpan={12} className="px-4 py-4 bg-[#0f172a]/50">
                         <CandidateDetail candidate={c} />
                       </td>
                     </tr>
@@ -227,7 +257,7 @@ function StatCard({ label, value }: { label: string; value: number }) {
 
 function CandidateDetail({ candidate: c }: { candidate: StockCandidate }) {
   return (
-    <div className="grid grid-cols-3 gap-6">
+    <div className="grid grid-cols-4 gap-6">
       {/* Factors */}
       <div>
         <h3 className="text-sm font-semibold text-[#f8fafc] mb-3 flex items-center gap-1.5">
@@ -274,6 +304,27 @@ function CandidateDetail({ candidate: c }: { candidate: StockCandidate }) {
               <span className="text-[#94a3b8]">平均置信度</span>
               <span className="text-[#f8fafc]">{(c.strategy_vote.avg_confidence * 100).toFixed(2)}%</span>
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Risk Metrics */}
+      <div>
+        <h3 className="text-sm font-semibold text-[#f8fafc] mb-3 flex items-center gap-1.5">
+          <AlertTriangle className="h-4 w-4 text-[#f59e0b]" /> 风险指标
+        </h3>
+        <div className="space-y-2 text-sm">
+          <FactorRow label="20日最大回撤" value={`${(c.risk.max_drawdown_20d * 100).toFixed(1)}%`}
+            color={c.risk.max_drawdown_20d > 0.15 ? 'text-red-400' : 'text-[#f8fafc]'} />
+          <FactorRow label="连续下跌天数" value={`${c.risk.consecutive_down_days}`}
+            color={c.risk.consecutive_down_days > 5 ? 'text-red-400' : 'text-[#f8fafc]'} />
+          <FactorRow label="距20日高点" value={`${(c.risk.distance_from_high_20d * 100).toFixed(1)}%`}
+            color="text-[#f8fafc]" />
+          <FactorRow label="ATR比率" value={`${(c.risk.atr_ratio * 100).toFixed(2)}%`}
+            color="text-[#f8fafc]" />
+          <div className="pt-2 border-t border-[#334155]">
+            <FactorRow label="行业" value={c.sector} color="text-[#94a3b8]" />
+            <FactorRow label="日均成交额" value={`${(c.avg_turnover / 100000000).toFixed(2)}亿`} color="text-[#94a3b8]" />
           </div>
         </div>
       </div>

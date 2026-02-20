@@ -6,6 +6,7 @@ Commands:
     python market_data.py quote <symbol>
     python market_data.py stock_info <symbol>
     python market_data.py stock_list
+    python market_data.py stock_pool <csi300|csi500|custom>
 
 All output is JSON to stdout.
 """
@@ -179,6 +180,113 @@ def cmd_stock_info(args):
     return result
 
 
+def cmd_stock_pool(args):
+    """Get stock pool by index: csi300, csi500, or custom (curated list).
+
+    Usage: stock_pool [csi300|csi500|custom]
+    Returns cached result if available and fresh (< 1 day old).
+    """
+    import os, time
+    pool = args[0] if args else "custom"
+
+    # Check cache first
+    cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(cache_dir, f"stock_pool_{pool}.json")
+    if os.path.exists(cache_file):
+        age = time.time() - os.path.getmtime(cache_file)
+        if age < 86400:  # 1 day
+            with open(cache_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+
+    if pool == "custom":
+        result = _curated_pool()
+    elif pool in ("csi300", "csi500"):
+        result = _index_pool(pool)
+    else:
+        return {"error": f"Unknown pool: {pool}. Use csi300, csi500, or custom."}
+
+    # Cache result
+    try:
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return result
+
+
+def _index_pool(pool: str) -> dict:
+    """Fetch index constituents via akshare."""
+    import akshare as ak
+
+    idx_map = {"csi300": "000300", "csi500": "000905"}
+    idx_code = idx_map[pool]
+    try:
+        df = ak.index_stock_cons_csindex_df(symbol=idx_code)
+    except Exception as e:
+        return {"error": f"Failed to fetch {pool}: {e}", "stocks": []}
+
+    if df is None or df.empty:
+        return {"error": f"No data for {pool}", "stocks": []}
+
+    stocks = []
+    # Columns: 成分券代码, 成分券名称, etc.
+    code_col = "成分券代码" if "成分券代码" in df.columns else df.columns[0]
+    name_col = "成分券名称" if "成分券名称" in df.columns else df.columns[1]
+
+    for _, row in df.iterrows():
+        code = str(row[code_col]).zfill(6)
+        name = str(row[name_col]) if name_col in df.columns else _STOCK_NAMES.get(code, code)
+        # Try to get industry
+        industry = ""
+        for col in df.columns:
+            if "行业" in str(col):
+                industry = str(row[col]) if row[col] and str(row[col]) != "nan" else ""
+                break
+        stocks.append({
+            "symbol": exchange_suffix(code),
+            "name": name,
+            "industry": industry or _STOCK_NAMES.get(code, ""),
+        })
+    return {"pool": pool, "count": len(stocks), "stocks": stocks}
+
+
+def _curated_pool() -> dict:
+    """Return curated stock list with industry info."""
+    CURATED = [
+        ("600519", "贵州茅台", "白酒"), ("000858", "五粮液", "白酒"),
+        ("601318", "中国平安", "保险"), ("000001", "平安银行", "银行"),
+        ("600036", "招商银行", "银行"), ("600276", "恒瑞医药", "医药"),
+        ("000333", "美的集团", "家电"), ("601888", "中国中免", "零售"),
+        ("002594", "比亚迪", "汽车"), ("601012", "隆基绿能", "光伏"),
+        ("600900", "长江电力", "电力"), ("000568", "泸州老窖", "白酒"),
+        ("600809", "山西汾酒", "白酒"), ("002475", "立讯精密", "电子"),
+        ("600030", "中信证券", "证券"), ("601166", "兴业银行", "银行"),
+        ("000661", "长春高新", "医药"), ("002714", "牧原股份", "农牧"),
+        ("600585", "海螺水泥", "建材"), ("603259", "药明康德", "医药"),
+        ("601899", "紫金矿业", "矿业"), ("600031", "三一重工", "机械"),
+        ("600309", "万华化学", "化工"), ("002304", "洋河股份", "白酒"),
+        ("600887", "伊利股份", "乳业"), ("000651", "格力电器", "家电"),
+        ("002415", "海康威视", "安防"),
+        ("300750", "宁德时代", "电池"), ("300760", "迈瑞医疗", "医疗器械"),
+        ("300059", "东方财富", "金融IT"), ("300122", "智飞生物", "疫苗"),
+        ("300782", "卓胜微", "芯片"), ("300015", "爱尔眼科", "医疗"),
+        ("300274", "阳光电源", "光伏"),
+        ("688981", "中芯国际", "半导体"), ("688111", "金山办公", "软件"),
+        ("688036", "传音控股", "手机"), ("688561", "奇安信", "网络安全"),
+        ("688005", "容百科技", "锂电材料"), ("688012", "中微公司", "半导体设备"),
+        ("002230", "科大讯飞", "AI"),
+    ]
+    stocks = []
+    for code, name, industry in CURATED:
+        stocks.append({
+            "symbol": exchange_suffix(code),
+            "name": name,
+            "industry": industry,
+        })
+    return {"pool": "custom", "count": len(stocks), "stocks": stocks}
+
+
 def cmd_stock_list(args):
     """Get list of A-share stocks (curated, with batch spot data for speed)."""
     import akshare as ak
@@ -249,6 +357,8 @@ def main():
             result = cmd_stock_info(args)
         elif cmd == "stock_list":
             result = cmd_stock_list(args)
+        elif cmd == "stock_pool":
+            result = cmd_stock_pool(args)
         else:
             result = {"error": f"Unknown command: {cmd}"}
         print(json.dumps(result, ensure_ascii=False))

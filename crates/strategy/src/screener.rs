@@ -14,6 +14,41 @@ use crate::indicators::{BollingerBands, KDJ, MACD, RSI, SMA};
 
 // ── Types ───────────────────────────────────────────────────────────
 
+/// Market regime detected from index data
+#[derive(Debug, Clone, Serialize)]
+pub enum MarketRegime {
+    Trending,
+    MeanReverting,
+    Volatile,
+}
+
+/// Risk metrics for a stock candidate
+#[derive(Debug, Clone, Serialize)]
+pub struct RiskMetrics {
+    pub max_drawdown_20d: f64,
+    pub consecutive_down_days: u32,
+    pub distance_from_high_20d: f64,
+    pub atr_ratio: f64,
+}
+
+/// A mined factor loaded from the factor registry
+#[derive(Debug, Clone)]
+pub struct MinedFactor {
+    pub name: String,
+    pub expression: String,
+    pub ic: f64,
+    pub ir: f64,
+    pub weight: f64,
+}
+
+/// Input entry for each stock (name, klines, sector)
+#[derive(Debug, Clone)]
+pub struct StockEntry {
+    pub name: String,
+    pub klines: Vec<Kline>,
+    pub sector: String,
+}
+
 /// Per-stock factor scores from Phase 1
 #[derive(Debug, Clone, Serialize)]
 pub struct FactorScores {
@@ -57,6 +92,10 @@ pub struct StockCandidate {
     pub composite_score: f64,   // Final weighted score
     pub recommendation: String, // "强烈推荐" / "推荐" / "观望" / "回避"
     pub reasons: Vec<String>,
+    pub sector: String,
+    pub avg_turnover: f64,
+    pub mined_factor_bonus: f64,
+    pub risk: RiskMetrics,
 }
 
 /// Full screening result
@@ -66,6 +105,7 @@ pub struct ScreenerResult {
     pub total_scanned: usize,
     pub phase1_passed: usize,
     pub phase2_passed: usize,
+    pub regime: Option<MarketRegime>,
 }
 
 /// Screening configuration
@@ -75,6 +115,11 @@ pub struct ScreenerConfig {
     pub phase1_cutoff: usize,      // how many pass Phase 1 to Phase 2
     pub factor_weights: FactorWeights,
     pub min_consensus: u32,        // min strategy votes for Phase 2 pass
+    pub buy_threshold: f64,        // composite score >= this for "推荐"
+    pub strong_buy_threshold: f64, // for "强烈推荐"
+    pub lookback_days: u32,        // data lookback
+    pub min_turnover: f64,         // minimum avg daily turnover (volume * price)
+    pub max_per_sector: usize,     // max stocks from same sector
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +144,11 @@ impl Default for ScreenerConfig {
                 volume: 0.15,
                 volatility: 0.10,
             },
+            buy_threshold: 60.0,
+            strong_buy_threshold: 75.0,
+            lookback_days: 150,
+            min_turnover: 50_000_000.0,
+            max_per_sector: 3,
         }
     }
 }
@@ -114,51 +164,226 @@ impl StockScreener {
         Self { config }
     }
 
+    /// Detect market regime from index kline data
+    pub fn detect_regime(index_klines: &[Kline]) -> MarketRegime {
+        if index_klines.len() < 60 {
+            return MarketRegime::MeanReverting;
+        }
+        let closes: Vec<f64> = index_klines.iter().map(|k| k.close).collect();
+        let n = closes.len();
+
+        // Compute MA20 and MA60
+        let ma20: f64 = closes[n - 20..].iter().sum::<f64>() / 20.0;
+        let ma60: f64 = closes[n - 60..].iter().sum::<f64>() / 60.0;
+
+        // 20-day volatility
+        let daily_returns: Vec<f64> = closes.windows(2).skip(n - 21)
+            .map(|w| (w[1] / w[0]).ln()).collect();
+        let mean_ret = daily_returns.iter().sum::<f64>() / daily_returns.len() as f64;
+        let var = daily_returns.iter().map(|r| (r - mean_ret).powi(2)).sum::<f64>()
+            / (daily_returns.len() - 1) as f64;
+        let ann_vol = var.sqrt() * (252.0_f64).sqrt();
+
+        let ma_diff_pct = (ma20 - ma60).abs() / ma60;
+        if ann_vol > 0.35 {
+            MarketRegime::Volatile
+        } else if ma20 > ma60 && ma_diff_pct > 0.01 {
+            MarketRegime::Trending
+        } else {
+            MarketRegime::MeanReverting
+        }
+    }
+
+    /// Adjust factor weights based on market regime
+    pub fn regime_adjusted_weights(regime: &MarketRegime) -> FactorWeights {
+        match regime {
+            MarketRegime::Trending => FactorWeights {
+                momentum: 0.35, trend: 0.35, mean_reversion: 0.10, volume: 0.10, volatility: 0.10,
+            },
+            MarketRegime::MeanReverting => FactorWeights {
+                momentum: 0.15, trend: 0.20, mean_reversion: 0.35, volume: 0.15, volatility: 0.15,
+            },
+            MarketRegime::Volatile => FactorWeights {
+                momentum: 0.15, trend: 0.25, mean_reversion: 0.20, volume: 0.15, volatility: 0.25,
+            },
+        }
+    }
+
+    /// Load mined factors from factor registry SQLite DB
+    pub fn load_mined_factors() -> Vec<MinedFactor> {
+        let db_path = std::path::Path::new("data/factor_registry.db");
+        if !db_path.exists() {
+            return Vec::new();
+        }
+        let conn = match rusqlite::Connection::open(db_path) {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let mut stmt = match conn.prepare(
+            "SELECT expression, expression, ic_mean, ir, ic_mean \
+             FROM factors WHERE state = 'promoted' ORDER BY ir DESC LIMIT 5"
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map([], |row| {
+            Ok(MinedFactor {
+                name: row.get::<_, String>(0)?,
+                expression: row.get::<_, String>(1)?,
+                ic: row.get::<_, f64>(2)?,
+                ir: row.get::<_, f64>(3)?,
+                weight: row.get::<_, f64>(4)?.abs().min(1.0),
+            })
+        });
+        match rows {
+            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Compute mined factor bonus (0-20)
+    pub(crate) fn compute_mined_bonus(factors: &[MinedFactor]) -> f64 {
+        if factors.is_empty() {
+            return 0.0;
+        }
+        let total_weight: f64 = factors.iter().map(|f| f.weight).sum();
+        if total_weight <= 0.0 {
+            return 0.0;
+        }
+        let weighted_ic: f64 = factors.iter().map(|f| f.ic.abs() * f.weight).sum::<f64>() / total_weight;
+        // Scale IC (0..0.1) to bonus (0..20)
+        (weighted_ic / 0.1 * 20.0).clamp(0.0, 20.0)
+    }
+
+    /// Compute risk metrics from kline data
+    pub(crate) fn compute_risk(klines: &[Kline]) -> RiskMetrics {
+        let n = klines.len();
+        let window = n.min(20);
+        let recent = &klines[n - window..];
+        let closes: Vec<f64> = recent.iter().map(|k| k.close).collect();
+
+        // Max drawdown over last 20 days
+        let mut peak = closes[0];
+        let mut max_dd = 0.0_f64;
+        for &c in &closes {
+            if c > peak { peak = c; }
+            let dd = (peak - c) / peak;
+            if dd > max_dd { max_dd = dd; }
+        }
+
+        // Consecutive down days (from end)
+        let mut consecutive_down = 0u32;
+        for w in closes.windows(2).rev() {
+            if w[1] < w[0] { consecutive_down += 1; } else { break; }
+        }
+
+        // Distance from 20-day high
+        let high_20d = closes.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let last = *closes.last().unwrap_or(&1.0);
+        let dist = if high_20d > 0.0 { (high_20d - last) / high_20d } else { 0.0 };
+
+        // ATR ratio (ATR / price)
+        let atr_vals: Vec<f64> = recent.windows(2).map(|w| {
+            let tr = (w[1].high - w[1].low)
+                .max((w[1].high - w[0].close).abs())
+                .max((w[1].low - w[0].close).abs());
+            tr
+        }).collect();
+        let atr = if atr_vals.is_empty() { 0.0 } else { atr_vals.iter().sum::<f64>() / atr_vals.len() as f64 };
+        let atr_ratio = if last > 0.0 { atr / last } else { 0.0 };
+
+        RiskMetrics {
+            max_drawdown_20d: max_dd,
+            consecutive_down_days: consecutive_down,
+            distance_from_high_20d: dist,
+            atr_ratio,
+        }
+    }
+
+    /// Compute average daily turnover (volume * close) over last 20 days
+    pub(crate) fn compute_avg_turnover(klines: &[Kline]) -> f64 {
+        let n = klines.len();
+        let window = n.min(20);
+        let recent = &klines[n - window..];
+        let sum: f64 = recent.iter().map(|k| k.volume * k.close).sum();
+        sum / window as f64
+    }
+
     /// Run full 3-phase screening pipeline.
-    /// Input: map of symbol -> (name, kline_data)
+    /// Input: map of symbol -> StockEntry (name, klines, sector)
     /// Returns scored and ranked candidates.
     pub fn screen(
         &self,
-        stock_data: &HashMap<String, (String, Vec<Kline>)>,
+        stock_data: &HashMap<String, StockEntry>,
+    ) -> ScreenerResult {
+        self.screen_with_regime(stock_data, None)
+    }
+
+    /// Screen with optional regime detection
+    pub fn screen_with_regime(
+        &self,
+        stock_data: &HashMap<String, StockEntry>,
+        regime: Option<MarketRegime>,
     ) -> ScreenerResult {
         let total_scanned = stock_data.len();
+        let mined_factors = Self::load_mined_factors();
+        let mined_bonus = Self::compute_mined_bonus(&mined_factors);
 
-        // Phase 1: Multi-factor scoring
-        let mut scored: Vec<(String, String, f64, FactorScores, f64)> = stock_data
+        // Phase 1: Multi-factor scoring + liquidity filtering
+        let mut scored: Vec<(String, String, String, f64, FactorScores, f64, f64, RiskMetrics)> = stock_data
             .iter()
-            .filter_map(|(symbol, (name, klines))| {
-                if klines.len() < 30 {
-                    return None; // need at least 30 bars
+            .filter_map(|(symbol, entry)| {
+                if entry.klines.len() < 30 {
+                    return None;
                 }
-                let factors = self.compute_factors(klines);
+                let avg_turnover = Self::compute_avg_turnover(&entry.klines);
+                if avg_turnover < self.config.min_turnover {
+                    return None;
+                }
+                let factors = self.compute_factors(&entry.klines);
                 let score = self.composite_factor_score(&factors);
-                let price = klines.last().unwrap().close;
-                Some((symbol.clone(), name.clone(), price, factors, score))
+                let price = entry.klines.last().unwrap().close;
+                let risk = Self::compute_risk(&entry.klines);
+                Some((symbol.clone(), entry.name.clone(), entry.sector.clone(), price, factors, score, avg_turnover, risk))
             })
             .collect();
 
         // Sort by factor score descending
-        scored.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| b.5.partial_cmp(&a.5).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Sector neutralization: limit max_per_sector
+        let mut sector_counts: HashMap<String, usize> = HashMap::new();
+        scored.retain(|item| {
+            let count = sector_counts.entry(item.2.clone()).or_insert(0);
+            if *count < self.config.max_per_sector {
+                *count += 1;
+                true
+            } else {
+                false
+            }
+        });
+
         scored.truncate(self.config.phase1_cutoff);
         let phase1_passed = scored.len();
 
         // Phase 2: Strategy signal aggregation
         let mut candidates: Vec<StockCandidate> = scored
             .into_iter()
-            .filter_map(|(symbol, name, price, factors, factor_score)| {
-                let klines = &stock_data[&symbol].1;
+            .filter_map(|(symbol, name, sector, price, factors, factor_score, avg_turnover, risk)| {
+                let klines = &stock_data[&symbol].klines;
                 let vote = self.run_strategy_votes(klines);
 
-                // Filter: need >= min_consensus strategies agreeing BUY
                 if vote.consensus_count < self.config.min_consensus {
                     return None;
                 }
 
-                // Composite: 60% factor score + 40% strategy confidence
-                let composite = factor_score * 0.6 + vote.avg_confidence * 100.0 * 0.4;
+                // Composite: factor_score * 0.5 + strategy * 0.3 + mined_bonus * 0.2
+                let composite = factor_score * 0.5
+                    + vote.avg_confidence * 100.0 * 0.3
+                    + mined_bonus * 0.2;
 
                 let (recommendation, reasons) =
-                    self.generate_recommendation(&factors, &vote, composite);
+                    self.generate_recommendation(&factors, &vote, composite, &risk);
 
                 Some(StockCandidate {
                     symbol,
@@ -170,13 +395,16 @@ impl StockScreener {
                     composite_score: composite,
                     recommendation,
                     reasons,
+                    sector,
+                    avg_turnover,
+                    mined_factor_bonus: mined_bonus,
+                    risk,
                 })
             })
             .collect();
 
         let phase2_passed = candidates.len();
 
-        // Sort by composite score descending, take top N
         candidates
             .sort_by(|a, b| b.composite_score.partial_cmp(&a.composite_score).unwrap_or(std::cmp::Ordering::Equal));
         candidates.truncate(self.config.top_n);
@@ -186,6 +414,7 @@ impl StockScreener {
             total_scanned,
             phase1_passed,
             phase2_passed,
+            regime,
         }
     }
 
@@ -423,6 +652,7 @@ impl StockScreener {
         factors: &FactorScores,
         vote: &StrategyVote,
         composite: f64,
+        risk: &RiskMetrics,
     ) -> (String, Vec<String>) {
         let mut reasons = Vec::new();
 
@@ -466,9 +696,17 @@ impl StockScreener {
             reasons.push(format!("KDJ J值={:.1}，超卖金叉可期", factors.kdj_j));
         }
 
-        let recommendation = if composite >= 75.0 && vote.consensus_count >= 3 {
+        // Risk warnings
+        if risk.max_drawdown_20d > 0.15 {
+            reasons.push(format!("⚠️ 20日最大回撤 {:.1}%，风险较高", risk.max_drawdown_20d * 100.0));
+        }
+        if risk.consecutive_down_days > 5 {
+            reasons.push(format!("⚠️ 连续下跌{}天，注意风险", risk.consecutive_down_days));
+        }
+
+        let recommendation = if composite >= self.config.strong_buy_threshold && vote.consensus_count >= 3 {
             "强烈推荐".to_string()
-        } else if composite >= 60.0 && vote.consensus_count >= 2 {
+        } else if composite >= self.config.buy_threshold && vote.consensus_count >= 2 {
             "推荐".to_string()
         } else if composite >= 45.0 {
             "观望".to_string()
@@ -569,6 +807,10 @@ mod tests {
         klines
     }
 
+    fn make_entry(name: &str, klines: Vec<Kline>) -> StockEntry {
+        StockEntry { name: name.to_string(), klines, sector: "测试".to_string() }
+    }
+
     #[test]
     fn test_factor_computation() {
         let screener = StockScreener::new(ScreenerConfig::default());
@@ -586,6 +828,8 @@ mod tests {
             top_n: 5,
             phase1_cutoff: 10,
             min_consensus: 1,
+            min_turnover: 0.0,
+            max_per_sector: 100,
             ..ScreenerConfig::default()
         });
 
@@ -599,13 +843,12 @@ mod tests {
         ];
 
         for (sym, name, price) in stocks {
-            data.insert(sym.to_string(), (name.to_string(), make_klines(sym, price, 60)));
+            data.insert(sym.to_string(), make_entry(name, make_klines(sym, price, 60)));
         }
 
         let result = screener.screen(&data);
         assert_eq!(result.total_scanned, 5);
         assert!(result.phase1_passed <= 5);
-        // Candidates should have composite scores and recommendations
         for c in &result.candidates {
             assert!(!c.recommendation.is_empty());
             assert!(c.composite_score > 0.0);
@@ -618,6 +861,7 @@ mod tests {
         let klines = make_klines("600519.SH", 1700.0, 60);
         let factors = screener.compute_factors(&klines);
         let vote = screener.run_strategy_votes(&klines);
+        let risk = StockScreener::compute_risk(&klines);
         let candidate = StockCandidate {
             symbol: "600519.SH".to_string(),
             name: "贵州茅台".to_string(),
@@ -628,11 +872,63 @@ mod tests {
             composite_score: 72.0,
             recommendation: "推荐".to_string(),
             reasons: vec!["测试".to_string()],
+            sector: "白酒".to_string(),
+            avg_turnover: 100_000_000.0,
+            mined_factor_bonus: 0.0,
+            risk,
         };
 
         let prompt = screener.generate_llm_prompt(&[candidate]);
         assert!(prompt.contains("600519.SH"));
         assert!(prompt.contains("贵州茅台"));
         assert!(prompt.contains("RSI"));
+    }
+
+    #[test]
+    fn test_market_regime_detection() {
+        let klines = make_klines("000001.SH", 3000.0, 120);
+        let regime = StockScreener::detect_regime(&klines);
+        // Just check it returns a valid regime
+        match regime {
+            MarketRegime::Trending | MarketRegime::MeanReverting | MarketRegime::Volatile => {}
+        }
+    }
+
+    #[test]
+    fn test_risk_metrics() {
+        let klines = make_klines("600519.SH", 1700.0, 60);
+        let risk = StockScreener::compute_risk(&klines);
+        assert!(risk.max_drawdown_20d >= 0.0);
+        assert!(risk.atr_ratio >= 0.0);
+    }
+
+    #[test]
+    fn test_sector_neutralization() {
+        let screener = StockScreener::new(ScreenerConfig {
+            top_n: 10,
+            phase1_cutoff: 10,
+            min_consensus: 0,
+            min_turnover: 0.0,
+            max_per_sector: 1,
+            ..ScreenerConfig::default()
+        });
+
+        let mut data = HashMap::new();
+        // All same sector
+        for (sym, name, price) in &[
+            ("600519.SH", "贵州茅台", 1700.0),
+            ("000858.SZ", "五粮液", 150.0),
+            ("000568.SZ", "泸州老窖", 200.0),
+        ] {
+            data.insert(sym.to_string(), StockEntry {
+                name: name.to_string(),
+                klines: make_klines(sym, *price, 60),
+                sector: "白酒".to_string(),
+            });
+        }
+
+        let result = screener.screen(&data);
+        // max_per_sector=1, so at most 1 白酒 stock should pass phase 1
+        assert!(result.phase1_passed <= 1);
     }
 }

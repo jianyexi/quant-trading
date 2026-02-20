@@ -113,6 +113,13 @@ export interface StrategyVote {
   avg_confidence: number;
 }
 
+export interface RiskMetrics {
+  max_drawdown_20d: number;
+  consecutive_down_days: number;
+  distance_from_high_20d: number;
+  atr_ratio: number;
+}
+
 export interface StockCandidate {
   symbol: string;
   name: string;
@@ -123,6 +130,10 @@ export interface StockCandidate {
   composite_score: number;
   recommendation: string;
   reasons: string[];
+  sector: string;
+  avg_turnover: number;
+  mined_factor_bonus: number;
+  risk: RiskMetrics;
 }
 
 export interface ScreenerResult {
@@ -130,12 +141,27 @@ export interface ScreenerResult {
   total_scanned: number;
   phase1_passed: number;
   phase2_passed: number;
+  regime: string | null;
 }
 
-export async function screenScan(topN: number = 10, minVotes: number = 2): Promise<ScreenerResult> {
+export async function screenScan(
+  topN: number = 10,
+  minVotes: number = 2,
+  pool?: string,
+  buyThreshold?: number,
+  strongBuyThreshold?: number,
+  minTurnover?: number,
+  maxPerSector?: number,
+): Promise<ScreenerResult> {
+  const body: Record<string, unknown> = { top_n: topN, min_votes: minVotes };
+  if (pool) body.pool = pool;
+  if (buyThreshold !== undefined) body.buy_threshold = buyThreshold;
+  if (strongBuyThreshold !== undefined) body.strong_buy_threshold = strongBuyThreshold;
+  if (minTurnover !== undefined) body.min_turnover = minTurnover;
+  if (maxPerSector !== undefined) body.max_per_sector = maxPerSector;
   return fetchJson('/screen/scan', {
     method: 'POST',
-    body: JSON.stringify({ top_n: topN, min_votes: minVotes }),
+    body: JSON.stringify(body),
   });
 }
 

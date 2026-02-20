@@ -19,7 +19,6 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use quant_core::models::Kline;
 use crate::state::AppState;
 
 // ── Query Parameters ────────────────────────────────────────────────
@@ -356,6 +355,12 @@ pub async fn chat_history(
 pub struct ScreenRequest {
     pub top_n: Option<usize>,
     pub min_votes: Option<u32>,
+    pub pool: Option<String>,
+    pub lookback_days: Option<u32>,
+    pub buy_threshold: Option<f64>,
+    pub strong_buy_threshold: Option<f64>,
+    pub min_turnover: Option<f64>,
+    pub max_per_sector: Option<usize>,
 }
 
 pub async fn screen_scan(
@@ -363,53 +368,94 @@ pub async fn screen_scan(
     Json(req): Json<ScreenRequest>,
 ) -> Json<Value> {
     use std::collections::HashMap;
-    use quant_strategy::screener::{ScreenerConfig, StockScreener};
+    use quant_strategy::screener::{ScreenerConfig, StockScreener, StockEntry};
 
     let top_n = req.top_n.unwrap_or(10);
     let min_votes = req.min_votes.unwrap_or(2);
+    let pool_name = req.pool.as_deref().unwrap_or("custom");
+    let lookback = req.lookback_days.unwrap_or(150) as i64;
 
-    let symbols: Vec<(&str, &str)> = vec![
-        ("600519.SH", "贵州茅台"), ("000858.SZ", "五粮液"),
-        ("601318.SH", "中国平安"), ("000001.SZ", "平安银行"),
-        ("600036.SH", "招商银行"), ("300750.SZ", "宁德时代"),
-        ("600276.SH", "恒瑞医药"), ("000333.SZ", "美的集团"),
-        ("601888.SH", "中国中免"), ("002594.SZ", "比亚迪"),
-        ("601012.SH", "隆基绿能"), ("600900.SH", "长江电力"),
-        ("000568.SZ", "泸州老窖"), ("600809.SH", "山西汾酒"),
-        ("002475.SZ", "立讯精密"), ("600030.SH", "中信证券"),
-        ("601166.SH", "兴业银行"), ("000661.SZ", "长春高新"),
-        ("002714.SZ", "牧原股份"), ("600585.SH", "海螺水泥"),
-    ];
+    // Fetch stock pool dynamically
+    let symbols_with_sector: Vec<(String, String, String)> = match market::call_market_data(&["stock_pool", pool_name]) {
+        Ok(val) => {
+            if let Some(stocks) = val.get("stocks").and_then(|s| s.as_array()) {
+                stocks.iter().filter_map(|s| {
+                    let sym = s["symbol"].as_str()?.to_string();
+                    let name = s["name"].as_str()?.to_string();
+                    let sector = s["industry"].as_str().unwrap_or("未知").to_string();
+                    Some((sym, name, sector))
+                }).collect()
+            } else {
+                Vec::new()
+            }
+        }
+        Err(_) => {
+            // Fallback to hardcoded list
+            vec![
+                ("600519.SH", "贵州茅台", "白酒"), ("000858.SZ", "五粮液", "白酒"),
+                ("601318.SH", "中国平安", "保险"), ("000001.SZ", "平安银行", "银行"),
+                ("600036.SH", "招商银行", "银行"), ("300750.SZ", "宁德时代", "电池"),
+                ("600276.SH", "恒瑞医药", "医药"), ("000333.SZ", "美的集团", "家电"),
+                ("601888.SH", "中国中免", "零售"), ("002594.SZ", "比亚迪", "汽车"),
+                ("601012.SH", "隆基绿能", "光伏"), ("600900.SH", "长江电力", "电力"),
+                ("000568.SZ", "泸州老窖", "白酒"), ("600809.SH", "山西汾酒", "白酒"),
+                ("002475.SZ", "立讯精密", "电子"), ("600030.SH", "中信证券", "证券"),
+                ("601166.SH", "兴业银行", "银行"), ("000661.SZ", "长春高新", "医药"),
+                ("002714.SZ", "牧原股份", "农牧"), ("600585.SH", "海螺水泥", "建材"),
+            ].into_iter().map(|(s, n, sec)| (s.to_string(), n.to_string(), sec.to_string())).collect()
+        }
+    };
 
     let today = chrono::Local::now().naive_local().date();
     let end_str = today.format("%Y-%m-%d").to_string();
-    let start_date = today - chrono::Duration::days(150);
+    let start_date = today - chrono::Duration::days(lookback);
     let start_str = start_date.format("%Y-%m-%d").to_string();
 
-    let mut stock_data: HashMap<String, (String, Vec<Kline>)> = HashMap::new();
-    for (symbol, name) in &symbols {
+    let mut stock_data: HashMap<String, StockEntry> = HashMap::new();
+    for (symbol, name, sector) in &symbols_with_sector {
         match market::fetch_real_klines(symbol, &start_str, &end_str) {
             Ok(klines) if !klines.is_empty() => {
-                stock_data.insert(symbol.to_string(), (name.to_string(), klines));
+                stock_data.insert(symbol.to_string(), StockEntry {
+                    name: name.to_string(), klines, sector: sector.to_string(),
+                });
             }
             _ => {
                 let klines = market::generate_backtest_klines(symbol, &start_str, &end_str);
                 if !klines.is_empty() {
-                    stock_data.insert(symbol.to_string(), (name.to_string(), klines));
+                    stock_data.insert(symbol.to_string(), StockEntry {
+                        name: name.to_string(), klines, sector: sector.to_string(),
+                    });
                 }
             }
         }
     }
 
-    let config = ScreenerConfig {
+    // Detect market regime from index data
+    let regime = match market::fetch_real_klines("000001.SH", &start_str, &end_str) {
+        Ok(index_klines) if index_klines.len() >= 60 => {
+            Some(StockScreener::detect_regime(&index_klines))
+        }
+        _ => None,
+    };
+
+    let mut config = ScreenerConfig {
         top_n,
-        phase1_cutoff: 20,
+        phase1_cutoff: symbols_with_sector.len().min(100),
         min_consensus: min_votes,
         ..ScreenerConfig::default()
     };
+    if let Some(bt) = req.buy_threshold { config.buy_threshold = bt; }
+    if let Some(sbt) = req.strong_buy_threshold { config.strong_buy_threshold = sbt; }
+    if let Some(mt) = req.min_turnover { config.min_turnover = mt; }
+    if let Some(mps) = req.max_per_sector { config.max_per_sector = mps; }
+
+    // Adjust weights based on regime
+    if let Some(ref r) = regime {
+        config.factor_weights = StockScreener::regime_adjusted_weights(r);
+    }
 
     let screener = StockScreener::new(config);
-    let result = screener.screen(&stock_data);
+    let result = screener.screen_with_regime(&stock_data, regime);
 
     Json(json!(result))
 }
@@ -419,7 +465,7 @@ pub async fn screen_factors(
     Path(symbol): Path<String>,
 ) -> Json<Value> {
     use std::collections::HashMap;
-    use quant_strategy::screener::{ScreenerConfig, StockScreener};
+    use quant_strategy::screener::{ScreenerConfig, StockScreener, StockEntry};
 
     let today = chrono::Local::now().naive_local().date();
     let end_str = today.format("%Y-%m-%d").to_string();
@@ -436,13 +482,16 @@ pub async fn screen_factors(
         _ => market::generate_backtest_klines(&symbol, &start_str, &end_str),
     };
 
-    let mut stock_data: HashMap<String, (String, Vec<Kline>)> = HashMap::new();
-    stock_data.insert(symbol.clone(), (name, klines));
+    let mut stock_data: HashMap<String, StockEntry> = HashMap::new();
+    stock_data.insert(symbol.clone(), StockEntry {
+        name, klines, sector: "未知".to_string(),
+    });
 
     let config = ScreenerConfig {
         top_n: 1,
         phase1_cutoff: 1,
         min_consensus: 0,
+        min_turnover: 0.0,
         ..ScreenerConfig::default()
     };
 
