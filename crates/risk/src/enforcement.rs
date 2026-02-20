@@ -4,9 +4,8 @@
 /// as opposed to the pre-trade checks in `checks.rs`.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 // ── Configuration ──────────────────────────────────────────────────
 
@@ -23,16 +22,31 @@ pub struct RiskConfig {
     pub circuit_breaker_failures: u32,
     /// Whether the engine should auto-halt on max drawdown.
     pub halt_on_drawdown: bool,
+    /// Max holding days before timeout exit (0 = disabled)
+    #[serde(default)]
+    pub max_holding_days: u32,
+    /// Min profit % to keep position past timeout (e.g. 0.02 = 2%)
+    #[serde(default = "default_timeout_min_profit")]
+    pub timeout_min_profit_pct: f64,
+    /// Rebalance threshold: trigger when weight drifts this much from target (e.g. 0.05 = 5%)
+    #[serde(default = "default_rebalance_threshold")]
+    pub rebalance_threshold: f64,
 }
+
+fn default_timeout_min_profit() -> f64 { 0.02 }
+fn default_rebalance_threshold() -> f64 { 0.05 }
 
 impl Default for RiskConfig {
     fn default() -> Self {
         Self {
-            stop_loss_pct: 0.05,       // 5% stop-loss per position
-            max_daily_loss_pct: 0.03,  // 3% daily loss limit
-            max_drawdown_pct: 0.10,    // 10% max drawdown
+            stop_loss_pct: 0.05,
+            max_daily_loss_pct: 0.03,
+            max_drawdown_pct: 0.10,
             circuit_breaker_failures: 5,
             halt_on_drawdown: true,
+            max_holding_days: 30,
+            timeout_min_profit_pct: 0.02,
+            rebalance_threshold: 0.05,
         }
     }
 }
@@ -46,6 +60,8 @@ pub struct PositionInfo {
     pub quantity: f64,
     pub avg_cost: f64,
     pub current_price: f64,
+    pub entry_time: chrono::NaiveDateTime,
+    pub target_weight: f64,
 }
 
 impl PositionInfo {
@@ -57,6 +73,40 @@ impl PositionInfo {
         if self.avg_cost <= 0.0 { return 0.0; }
         (self.current_price - self.avg_cost) / self.avg_cost
     }
+
+    pub fn holding_days(&self) -> i64 {
+        let now = chrono::Utc::now().naive_utc();
+        (now - self.entry_time).num_days()
+    }
+
+    pub fn market_value(&self) -> f64 {
+        self.current_price * self.quantity
+    }
+}
+
+// ── Timeout Signal ─────────────────────────────────────────────────
+
+/// A timeout exit signal when position held too long without sufficient profit.
+#[derive(Debug, Clone, Serialize)]
+pub struct TimeoutSignal {
+    pub symbol: String,
+    pub quantity: f64,
+    pub holding_days: i64,
+    pub profit_pct: f64,
+    pub max_days: u32,
+}
+
+// ── Rebalance Signal ───────────────────────────────────────────────
+
+/// A rebalance signal when position weight drifts from target.
+#[derive(Debug, Clone, Serialize)]
+pub struct RebalanceSignal {
+    pub symbol: String,
+    pub current_weight: f64,
+    pub target_weight: f64,
+    pub drift: f64,
+    /// Positive = need to buy more, negative = need to sell
+    pub adjustment_shares: f64,
 }
 
 // ── Stop-Loss Signal ───────────────────────────────────────────────
@@ -217,6 +267,71 @@ impl RiskEnforcer {
         self.consecutive_failures.store(0, Ordering::SeqCst);
     }
 
+    // ── Position Timeout ─────────────────────────────────────────────
+
+    /// Check positions that exceeded max holding period without sufficient profit.
+    pub fn check_timeouts(&self, positions: &[PositionInfo]) -> Vec<TimeoutSignal> {
+        if self.config.max_holding_days == 0 {
+            return Vec::new();
+        }
+        let mut signals = Vec::new();
+        for pos in positions {
+            let days = pos.holding_days();
+            if days > self.config.max_holding_days as i64 {
+                let profit_pct = pos.unrealized_pnl_pct();
+                if profit_pct < self.config.timeout_min_profit_pct {
+                    signals.push(TimeoutSignal {
+                        symbol: pos.symbol.clone(),
+                        quantity: pos.quantity,
+                        holding_days: days,
+                        profit_pct,
+                        max_days: self.config.max_holding_days,
+                    });
+                }
+            }
+        }
+        signals
+    }
+
+    // ── Rebalance ──────────────────────────────────────────────────
+
+    /// Check if any positions need rebalancing (weight drift from target).
+    pub fn check_rebalance(
+        &self,
+        positions: &[PositionInfo],
+        portfolio_value: f64,
+    ) -> Vec<RebalanceSignal> {
+        if portfolio_value <= 0.0 {
+            return Vec::new();
+        }
+        let mut signals = Vec::new();
+        for pos in positions {
+            if pos.target_weight <= 0.0 {
+                continue; // no target set
+            }
+            let current_weight = pos.market_value() / portfolio_value;
+            let drift = current_weight - pos.target_weight;
+            if drift.abs() > self.config.rebalance_threshold {
+                let target_value = portfolio_value * pos.target_weight;
+                let current_value = pos.market_value();
+                let diff_value = target_value - current_value;
+                let adjustment = if pos.current_price > 0.0 {
+                    (diff_value / pos.current_price).round()
+                } else {
+                    0.0
+                };
+                signals.push(RebalanceSignal {
+                    symbol: pos.symbol.clone(),
+                    current_weight,
+                    target_weight: pos.target_weight,
+                    drift,
+                    adjustment_shares: adjustment,
+                });
+            }
+        }
+        signals
+    }
+
     // ── Combined Check ─────────────────────────────────────────────
 
     /// Check if a new BUY order should be blocked. Returns reason string or Ok.
@@ -283,18 +398,23 @@ mod tests {
     #[test]
     fn test_stop_loss_triggers() {
         let enforcer = default_enforcer();
+        let now = chrono::Utc::now().naive_utc();
         let positions = vec![
             PositionInfo {
                 symbol: "600519.SH".into(),
                 quantity: 100.0,
                 avg_cost: 100.0,
                 current_price: 93.0, // -7% loss, threshold is 5%
+                entry_time: now,
+                target_weight: 0.0,
             },
             PositionInfo {
                 symbol: "000858.SZ".into(),
                 quantity: 200.0,
                 avg_cost: 50.0,
                 current_price: 48.0, // -4% loss, below threshold
+                entry_time: now,
+                target_weight: 0.0,
             },
         ];
         let signals = enforcer.check_stop_losses(&positions);
@@ -306,11 +426,14 @@ mod tests {
     #[test]
     fn test_stop_loss_no_trigger() {
         let enforcer = default_enforcer();
+        let now = chrono::Utc::now().naive_utc();
         let positions = vec![PositionInfo {
             symbol: "600519.SH".into(),
             quantity: 100.0,
             avg_cost: 100.0,
             current_price: 98.0, // -2%, within threshold
+            entry_time: now,
+            target_weight: 0.0,
         }];
         assert!(enforcer.check_stop_losses(&positions).is_empty());
     }

@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, BarChart3, Percent, Loader2 } from 'lucide-react';
-import { getPortfolio } from '../api/client';
+import { TrendingUp, TrendingDown, Wallet, PiggyBank, BarChart3, Percent, Loader2, X, Archive } from 'lucide-react';
+import { getPortfolio, closePosition, getClosedPositions } from '../api/client';
 
 // --- Types ---
 
@@ -12,6 +12,21 @@ interface PositionRow {
   avg_cost: number;
   current_price: number;
   pnl: number;
+  pnl_pct?: number;
+  entry_time?: string;
+  holding_days?: number;
+  scale_level?: number;
+}
+
+interface ClosedPositionRow {
+  symbol: string;
+  entry_time: string;
+  exit_time: string;
+  entry_price: number;
+  exit_price: number;
+  quantity: number;
+  realized_pnl: number;
+  holding_days: number;
 }
 
 interface PortfolioData {
@@ -31,7 +46,7 @@ function computePositionStats(p: PositionRow) {
   const marketValue = p.shares * p.current_price;
   const cost = p.shares * p.avg_cost;
   const pnl = p.pnl;
-  const pnlPercent = cost !== 0 ? (pnl / cost) * 100 : 0;
+  const pnlPercent = p.pnl_pct ?? (cost !== 0 ? (pnl / cost) * 100 : 0);
   return { ...p, marketValue, pnl, pnlPercent };
 }
 
@@ -109,13 +124,41 @@ function SummaryCard({
 
 export default function Portfolio() {
   const [data, setData] = useState<PortfolioData | null>(null);
+  const [closedPositions, setClosedPositions] = useState<ClosedPositionRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<'open' | 'closed'>('open');
+  const [closingSymbol, setClosingSymbol] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadData = useCallback(() => {
     getPortfolio()
       .then((d) => setData(d as PortfolioData))
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load'));
+    getClosedPositions()
+      .then((d) => {
+        const result = d as { closed_positions: ClosedPositionRow[] };
+        setClosedPositions(result.closed_positions || []);
+      })
+      .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    loadData();
+    const interval = setInterval(loadData, 10000);
+    return () => clearInterval(interval);
+  }, [loadData]);
+
+  const handleClose = async (symbol: string) => {
+    if (!confirm(`确认平仓 ${symbol}？`)) return;
+    setClosingSymbol(symbol);
+    try {
+      await closePosition(symbol);
+      loadData();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '平仓失败');
+    } finally {
+      setClosingSymbol(null);
+    }
+  };
 
   if (error) {
     return <div className="text-red-400 p-6">Error: {error}</div>;
@@ -130,7 +173,7 @@ export default function Portfolio() {
   const totalPnlPercent = totalCost !== 0 ? (totalPnl / totalCost) * 100 : 0;
 
   const allocationData = [
-    ...positionsWithStats.map((p) => ({ name: p.name, value: p.marketValue })),
+    ...positionsWithStats.map((p) => ({ name: p.name || p.symbol, value: p.marketValue })),
     { name: '现金', value: data.cash },
   ];
 
@@ -181,47 +224,124 @@ export default function Portfolio() {
         </ResponsiveContainer>
       </div>
 
-      {/* Positions Table */}
-      <div className="mb-6 rounded-xl border border-slate-700 bg-[#1e293b]">
-        <p className="border-b border-slate-700 px-5 py-3 text-sm font-medium text-slate-400">持仓明细</p>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-700 text-left text-xs text-slate-400">
-                <th className="px-4 py-3">代码</th>
-                <th className="px-4 py-3">名称</th>
-                <th className="px-4 py-3 text-right">持仓</th>
-                <th className="px-4 py-3 text-right">成本价</th>
-                <th className="px-4 py-3 text-right">现价</th>
-                <th className="px-4 py-3 text-right">市值</th>
-                <th className="px-4 py-3 text-right">盈亏</th>
-                <th className="px-4 py-3 text-right">盈亏%</th>
-              </tr>
-            </thead>
-            <tbody>
-              {positionsWithStats.map((p) => {
-                const color = p.pnl >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]';
-                return (
-                  <tr key={p.symbol} className="border-b border-slate-700/50 hover:bg-slate-700/30">
-                    <td className="px-4 py-2.5 font-mono text-[#3b82f6]">{p.symbol}</td>
-                    <td className="px-4 py-2.5">{p.name}</td>
-                    <td className="px-4 py-2.5 text-right">{p.shares.toLocaleString()}</td>
-                    <td className="px-4 py-2.5 text-right">{p.avg_cost.toFixed(2)}</td>
-                    <td className="px-4 py-2.5 text-right">{p.current_price.toFixed(2)}</td>
-                    <td className="px-4 py-2.5 text-right">¥{fmt(p.marketValue)}</td>
-                    <td className={`px-4 py-2.5 text-right font-medium ${color}`}>
-                      {p.pnl >= 0 ? '+' : ''}¥{fmt(p.pnl)}
-                    </td>
-                    <td className={`px-4 py-2.5 text-right font-medium ${color}`}>
-                      {p.pnlPercent >= 0 ? '+' : ''}{p.pnlPercent.toFixed(2)}%
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+      {/* Tab Switcher */}
+      <div className="mb-4 flex gap-2">
+        <button
+          onClick={() => setTab('open')}
+          className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition ${tab === 'open' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+        >
+          <BarChart3 size={14} /> 持仓明细 ({positionsWithStats.length})
+        </button>
+        <button
+          onClick={() => setTab('closed')}
+          className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition ${tab === 'closed' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+        >
+          <Archive size={14} /> 已平仓 ({closedPositions.length})
+        </button>
       </div>
+
+      {/* Open Positions Table */}
+      {tab === 'open' && (
+        <div className="mb-6 rounded-xl border border-slate-700 bg-[#1e293b]">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-700 text-left text-xs text-slate-400">
+                  <th className="px-4 py-3">代码</th>
+                  <th className="px-4 py-3">名称</th>
+                  <th className="px-4 py-3 text-right">持仓</th>
+                  <th className="px-4 py-3 text-right">成本价</th>
+                  <th className="px-4 py-3 text-right">现价</th>
+                  <th className="px-4 py-3 text-right">市值</th>
+                  <th className="px-4 py-3 text-right">盈亏</th>
+                  <th className="px-4 py-3 text-right">盈亏%</th>
+                  <th className="px-4 py-3 text-right">持仓天数</th>
+                  <th className="px-4 py-3 text-right">加仓次数</th>
+                  <th className="px-4 py-3 text-center">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {positionsWithStats.length === 0 ? (
+                  <tr><td colSpan={11} className="px-4 py-8 text-center text-slate-500">暂无持仓</td></tr>
+                ) : positionsWithStats.map((p) => {
+                  const color = p.pnl >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]';
+                  return (
+                    <tr key={p.symbol} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                      <td className="px-4 py-2.5 font-mono text-[#3b82f6]">{p.symbol}</td>
+                      <td className="px-4 py-2.5">{p.name}</td>
+                      <td className="px-4 py-2.5 text-right">{p.shares.toLocaleString()}</td>
+                      <td className="px-4 py-2.5 text-right">{p.avg_cost.toFixed(2)}</td>
+                      <td className="px-4 py-2.5 text-right">{p.current_price.toFixed(2)}</td>
+                      <td className="px-4 py-2.5 text-right">¥{fmt(p.marketValue)}</td>
+                      <td className={`px-4 py-2.5 text-right font-medium ${color}`}>
+                        {p.pnl >= 0 ? '+' : ''}¥{fmt(p.pnl)}
+                      </td>
+                      <td className={`px-4 py-2.5 text-right font-medium ${color}`}>
+                        {p.pnlPercent >= 0 ? '+' : ''}{p.pnlPercent.toFixed(2)}%
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-slate-300">{p.holding_days ?? '-'}</td>
+                      <td className="px-4 py-2.5 text-right text-slate-300">{p.scale_level ?? '-'}</td>
+                      <td className="px-4 py-2.5 text-center">
+                        <button
+                          onClick={() => handleClose(p.symbol)}
+                          disabled={closingSymbol === p.symbol}
+                          className="inline-flex items-center gap-1 rounded bg-red-600/80 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50"
+                        >
+                          {closingSymbol === p.symbol ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
+                          平仓
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Closed Positions Table */}
+      {tab === 'closed' && (
+        <div className="mb-6 rounded-xl border border-slate-700 bg-[#1e293b]">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-700 text-left text-xs text-slate-400">
+                  <th className="px-4 py-3">代码</th>
+                  <th className="px-4 py-3 text-right">买入价</th>
+                  <th className="px-4 py-3 text-right">卖出价</th>
+                  <th className="px-4 py-3 text-right">数量</th>
+                  <th className="px-4 py-3 text-right">已实现盈亏</th>
+                  <th className="px-4 py-3 text-right">持仓天数</th>
+                  <th className="px-4 py-3">开仓时间</th>
+                  <th className="px-4 py-3">平仓时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                {closedPositions.length === 0 ? (
+                  <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-500">暂无已平仓记录</td></tr>
+                ) : closedPositions.map((c, i) => {
+                  const color = c.realized_pnl >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]';
+                  return (
+                    <tr key={`${c.symbol}-${i}`} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                      <td className="px-4 py-2.5 font-mono text-[#3b82f6]">{c.symbol}</td>
+                      <td className="px-4 py-2.5 text-right">{c.entry_price.toFixed(2)}</td>
+                      <td className="px-4 py-2.5 text-right">{c.exit_price.toFixed(2)}</td>
+                      <td className="px-4 py-2.5 text-right">{c.quantity.toLocaleString()}</td>
+                      <td className={`px-4 py-2.5 text-right font-medium ${color}`}>
+                        {c.realized_pnl >= 0 ? '+' : ''}¥{fmt(c.realized_pnl)}
+                      </td>
+                      <td className="px-4 py-2.5 text-right">{c.holding_days}</td>
+                      <td className="px-4 py-2.5 text-slate-400 text-xs">{c.entry_time}</td>
+                      <td className="px-4 py-2.5 text-slate-400 text-xs">{c.exit_time}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

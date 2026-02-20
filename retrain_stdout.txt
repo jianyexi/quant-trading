@@ -1,0 +1,39 @@
+📂 No market data provided, using synthetic (5000 bars)
+⚠️  Error reading journal: Execution failed on sql '
+            SELECT timestamp, symbol, entry_type, side, price, pnl, quantity
+            FROM journal
+            WHERE entry_type IN ('order_filled', 'signal')
+            AND symbol IS NOT NULL AND symbol != ''
+            ORDER BY timestamp
+        ': no such table: journal
+
+🔧 Dataset: 4941 samples, 22 features
+   Label dist: {'positive': 2089, 'negative': 2852}
+
+🏁 Algorithms to compete: ['lightgbm']
+
+============================================================
+📊 Walk-forward CV: lightgbm
+   ➜ AUC: 0.5020 ± 0.0266
+
+🏆 Winner: lightgbm (AUC=0.5020)
+
+🏋️ Training final lightgbm model on full dataset...
+✅ Final lightgbm: AUC=0.5287, Acc=0.4960
+
+📊 Top 10 features:
+   volatility_20d                 359.5
+   volatility_5d                  352.0
+   ma60_ratio                     255.4
+   upper_shadow_ratio             200.4
+   ret_1d                         191.5
+   ret_10d                        169.7
+   macd_histogram                 168.8
+   ret_5d                         150.4
+   ma5_ma20_cross                 149.0
+   lower_shadow_ratio             128.1
+
+💾 Model saved: ml_models\factor_model_20260216_133824.model
+📄 Report: ml_models\retrain_report_20260216_133824.json
+
+🎉 Retrain complete! Best: lightgbm AUC=0.5287

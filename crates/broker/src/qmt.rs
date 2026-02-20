@@ -273,7 +273,10 @@ impl Broker for QmtBroker {
                     avg_cost: p.cost_price,
                     current_price: if p.volume > 0.0 { p.market_value / p.volume } else { 0.0 },
                     unrealized_pnl: unrealized,
-                    realized_pnl: 0.0, // QMT doesn't expose this per-position easily
+                    realized_pnl: 0.0,
+                    entry_time: chrono::Utc::now().naive_utc(),
+                    scale_level: 1,
+                    target_weight: 0.0,
                 }
             })
             .collect();
@@ -313,6 +316,10 @@ impl Broker for QmtBroker {
             },
             initial_capital: total, // QMT doesn't track initial capital
         })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

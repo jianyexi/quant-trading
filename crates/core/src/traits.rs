@@ -39,6 +39,8 @@ pub trait Broker: Send + Sync {
     async fn cancel_order(&self, order_id: Uuid) -> Result<()>;
     async fn get_positions(&self) -> Result<Vec<Position>>;
     async fn get_account(&self) -> Result<Account>;
+    /// Downcast support for concrete broker type access
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 pub trait RiskManager: Send + Sync {

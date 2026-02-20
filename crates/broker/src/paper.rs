@@ -24,6 +24,7 @@ struct PaperBrokerInner {
     account: Account,
     pending_orders: Vec<Order>,
     filled_trades: Vec<Trade>,
+    closed_positions: Vec<ClosedPosition>,
     commission_rate: f64,
     stamp_tax_rate: f64,
 }
@@ -45,6 +46,7 @@ impl PaperBroker {
                 account,
                 pending_orders: Vec::new(),
                 filled_trades: Vec::new(),
+                closed_positions: Vec::new(),
                 commission_rate,
                 stamp_tax_rate,
             }),
@@ -57,6 +59,49 @@ impl PaperBroker {
         self.auto_fill.store(auto_fill, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Get archived closed positions.
+    pub fn closed_positions(&self) -> Vec<ClosedPosition> {
+        self.inner.lock().map(|inner| inner.closed_positions.clone()).unwrap_or_default()
+    }
+
+    /// Force close a position at current price. Returns the realized PnL.
+    pub fn force_close_position(&self, symbol: &str, price: f64) -> std::result::Result<ClosedPosition, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let commission_rate = inner.commission_rate;
+        let stamp_tax_rate = inner.stamp_tax_rate;
+
+        let pos = inner.account.portfolio.positions.get(symbol)
+            .ok_or_else(|| format!("No position in {}", symbol))?
+            .clone();
+
+        let trade_value = price * pos.quantity;
+        let commission = (trade_value * commission_rate).max(5.0);
+        let stamp_tax = trade_value * stamp_tax_rate;
+        let total_cost = commission + stamp_tax;
+
+        let realized = (price - pos.avg_cost) * pos.quantity;
+        inner.account.portfolio.cash += trade_value - total_cost;
+        inner.account.portfolio.positions.remove(symbol);
+
+        let positions_value: f64 = inner.account.portfolio.positions.values()
+            .map(|p| p.quantity * p.current_price).sum();
+        inner.account.portfolio.total_value = inner.account.portfolio.cash + positions_value;
+
+        let now = Utc::now().naive_utc();
+        let closed = ClosedPosition {
+            symbol: symbol.to_string(),
+            entry_time: pos.entry_time,
+            exit_time: now,
+            entry_price: pos.avg_cost,
+            exit_price: price,
+            quantity: pos.quantity,
+            realized_pnl: realized,
+            holding_days: (now - pos.entry_time).num_days(),
+        };
+        inner.closed_positions.push(closed.clone());
+        Ok(closed)
+    }
+
     /// Simulate filling an order at the given price.
     pub fn fill_order(&self, order_id: Uuid, fill_price: f64) -> std::result::Result<Trade, String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
@@ -67,24 +112,16 @@ impl PaperBroker {
             .position(|o| o.id == order_id)
             .ok_or_else(|| format!("Order {} not found in pending orders", order_id))?;
 
-        // Remove the order from pending so we own it outright
         let mut order = inner.pending_orders.remove(order_idx);
-
-        // Transition to Filled
         order.status = OrderStateMachine::transition(&order.status, OrderStatus::Filled)?;
         order.filled_qty = order.quantity;
         order.updated_at = Utc::now().naive_utc();
 
+        let commission_rate = inner.commission_rate;
+        let stamp_tax_rate = inner.stamp_tax_rate;
         let trade_value = fill_price * order.quantity;
-        let commission = {
-            let c = trade_value * inner.commission_rate;
-            if c < 5.0 { 5.0 } else { c }
-        };
-        let stamp_tax = if order.side == OrderSide::Sell {
-            trade_value * inner.stamp_tax_rate
-        } else {
-            0.0
-        };
+        let commission = (trade_value * commission_rate).max(5.0);
+        let stamp_tax = if order.side == OrderSide::Sell { trade_value * stamp_tax_rate } else { 0.0 };
         let total_cost = commission + stamp_tax;
 
         let trade = Trade {
@@ -98,12 +135,11 @@ impl PaperBroker {
             timestamp: Utc::now().naive_utc(),
         };
 
-        // Update portfolio
-        let portfolio = &mut inner.account.portfolio;
+        let mut should_archive = None;
         match order.side {
             OrderSide::Buy => {
-                portfolio.cash -= trade_value + total_cost;
-                let pos = portfolio
+                inner.account.portfolio.cash -= trade_value + total_cost;
+                let pos = inner.account.portfolio
                     .positions
                     .entry(order.symbol.clone())
                     .or_insert(Position {
@@ -113,35 +149,51 @@ impl PaperBroker {
                         current_price: fill_price,
                         unrealized_pnl: 0.0,
                         realized_pnl: 0.0,
+                        entry_time: Utc::now().naive_utc(),
+                        scale_level: 0,
+                        target_weight: 0.0,
                     });
                 let total_qty = pos.quantity + order.quantity;
                 pos.avg_cost =
                     (pos.avg_cost * pos.quantity + fill_price * order.quantity) / total_qty;
                 pos.quantity = total_qty;
                 pos.current_price = fill_price;
+                pos.scale_level += 1;
             }
             OrderSide::Sell => {
-                portfolio.cash += trade_value - total_cost;
-                if let Some(pos) = portfolio.positions.get_mut(&order.symbol) {
+                inner.account.portfolio.cash += trade_value - total_cost;
+                if let Some(pos) = inner.account.portfolio.positions.get_mut(&order.symbol) {
                     let realized = (fill_price - pos.avg_cost) * order.quantity;
                     pos.realized_pnl += realized;
                     pos.quantity -= order.quantity;
                     pos.current_price = fill_price;
                     if pos.quantity <= 0.0 {
-                        portfolio.positions.remove(&order.symbol);
+                        let now = Utc::now().naive_utc();
+                        should_archive = Some(ClosedPosition {
+                            symbol: order.symbol.clone(),
+                            entry_time: pos.entry_time,
+                            exit_time: now,
+                            entry_price: pos.avg_cost,
+                            exit_price: fill_price,
+                            quantity: order.quantity,
+                            realized_pnl: pos.realized_pnl,
+                            holding_days: (now - pos.entry_time).num_days(),
+                        });
                     }
+                }
+                if should_archive.is_some() {
+                    inner.account.portfolio.positions.remove(&order.symbol);
                 }
             }
         }
 
-        // Recalculate total value
-        let positions_value: f64 = portfolio
-            .positions
-            .values()
-            .map(|p| p.quantity * p.current_price)
-            .sum();
-        portfolio.total_value = portfolio.cash + positions_value;
+        let positions_value: f64 = inner.account.portfolio.positions.values()
+            .map(|p| p.quantity * p.current_price).sum();
+        inner.account.portfolio.total_value = inner.account.portfolio.cash + positions_value;
 
+        if let Some(closed) = should_archive {
+            inner.closed_positions.push(closed);
+        }
         inner.filled_trades.push(trade.clone());
 
         Ok(trade)
@@ -191,11 +243,11 @@ impl Broker for PaperBroker {
             };
 
             // Update portfolio
-            let portfolio = &mut inner.account.portfolio;
+            let mut should_archive = None;
             match new_order.side {
                 OrderSide::Buy => {
-                    portfolio.cash -= trade_value + total_cost;
-                    let pos = portfolio
+                    inner.account.portfolio.cash -= trade_value + total_cost;
+                    let pos = inner.account.portfolio
                         .positions
                         .entry(new_order.symbol.clone())
                         .or_insert(Position {
@@ -205,35 +257,51 @@ impl Broker for PaperBroker {
                             current_price: fill_price,
                             unrealized_pnl: 0.0,
                             realized_pnl: 0.0,
+                            entry_time: Utc::now().naive_utc(),
+                            scale_level: 0,
+                            target_weight: 0.0,
                         });
                     let total_qty = pos.quantity + new_order.quantity;
                     pos.avg_cost =
                         (pos.avg_cost * pos.quantity + fill_price * new_order.quantity) / total_qty;
                     pos.quantity = total_qty;
                     pos.current_price = fill_price;
+                    pos.scale_level += 1;
                 }
                 OrderSide::Sell => {
-                    portfolio.cash += trade_value - total_cost;
-                    if let Some(pos) = portfolio.positions.get_mut(&new_order.symbol) {
+                    inner.account.portfolio.cash += trade_value - total_cost;
+                    if let Some(pos) = inner.account.portfolio.positions.get_mut(&new_order.symbol) {
                         let realized = (fill_price - pos.avg_cost) * new_order.quantity;
                         pos.realized_pnl += realized;
                         pos.quantity -= new_order.quantity;
                         pos.current_price = fill_price;
                         if pos.quantity <= 0.0 {
-                            portfolio.positions.remove(&new_order.symbol);
+                            let now = Utc::now().naive_utc();
+                            should_archive = Some(ClosedPosition {
+                                symbol: new_order.symbol.clone(),
+                                entry_time: pos.entry_time,
+                                exit_time: now,
+                                entry_price: pos.avg_cost,
+                                exit_price: fill_price,
+                                quantity: new_order.quantity,
+                                realized_pnl: pos.realized_pnl,
+                                holding_days: (now - pos.entry_time).num_days(),
+                            });
                         }
+                    }
+                    if should_archive.is_some() {
+                        inner.account.portfolio.positions.remove(&new_order.symbol);
                     }
                 }
             }
 
-            // Recalculate total value
-            let positions_value: f64 = portfolio
-                .positions
-                .values()
-                .map(|p| p.quantity * p.current_price)
-                .sum();
-            portfolio.total_value = portfolio.cash + positions_value;
+            let positions_value: f64 = inner.account.portfolio.positions.values()
+                .map(|p| p.quantity * p.current_price).sum();
+            inner.account.portfolio.total_value = inner.account.portfolio.cash + positions_value;
 
+            if let Some(closed) = should_archive {
+                inner.closed_positions.push(closed);
+            }
             inner.filled_trades.push(trade);
         } else {
             inner.pending_orders.push(new_order.clone());
@@ -268,6 +336,10 @@ impl Broker for PaperBroker {
     async fn get_account(&self) -> Result<Account> {
         let inner = self.inner.lock().map_err(|e| QuantError::BrokerError(e.to_string()))?;
         Ok(inner.account.clone())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

@@ -197,6 +197,36 @@ pub struct Position {
     pub current_price: f64,
     pub unrealized_pnl: f64,
     pub realized_pnl: f64,
+    /// When the position was first opened
+    #[serde(default = "default_entry_time")]
+    pub entry_time: NaiveDateTime,
+    /// Scaling level: 1 = initial, 2 = added, 3 = full
+    #[serde(default = "default_scale_level")]
+    pub scale_level: u32,
+    /// Target weight in portfolio (0.0 - 1.0), for rebalancing
+    #[serde(default)]
+    pub target_weight: f64,
+}
+
+fn default_entry_time() -> NaiveDateTime {
+    chrono::Utc::now().naive_utc()
+}
+
+fn default_scale_level() -> u32 {
+    1
+}
+
+/// A closed position archived for history
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClosedPosition {
+    pub symbol: String,
+    pub entry_time: NaiveDateTime,
+    pub exit_time: NaiveDateTime,
+    pub entry_price: f64,
+    pub exit_price: f64,
+    pub quantity: f64,
+    pub realized_pnl: f64,
+    pub holding_days: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

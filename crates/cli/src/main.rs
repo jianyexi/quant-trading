@@ -761,11 +761,15 @@ async fn cmd_screen_scan(top: usize, min_votes: u32, use_llm: bool, config: &App
     let end_date = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
     let start_date = end_date - chrono::Duration::days(120); // ~60 trading days
 
-    let mut stock_data: HashMap<String, (String, Vec<Kline>)> = HashMap::new();
+    let mut stock_data: HashMap<String, quant_strategy::screener::StockEntry> = HashMap::new();
     for (symbol, name, _price) in &pool {
         let klines = generate_realistic_klines(symbol, start_date, end_date);
         if !klines.is_empty() {
-            stock_data.insert(symbol.to_string(), (name.to_string(), klines));
+            stock_data.insert(symbol.to_string(), quant_strategy::screener::StockEntry {
+                name: name.to_string(),
+                klines,
+                sector: "未知".to_string(),
+            });
         }
     }
     println!("  ✅ 加载完成: {} 只股票, 每只 ~60 根日线", stock_data.len());
@@ -908,8 +912,7 @@ fn cmd_screen_factors(symbol: &str) {
         return;
     }
 
-    // Use the screen method to also get strategy votes
-    let mut stock_data: HashMap<String, (String, Vec<Kline>)> = HashMap::new();
+    let mut stock_data: HashMap<String, quant_strategy::screener::StockEntry> = HashMap::new();
     let name = match symbol {
         "600519.SH" => "贵州茅台",
         "000858.SZ" => "五粮液",
@@ -919,7 +922,11 @@ fn cmd_screen_factors(symbol: &str) {
         "300750.SZ" => "宁德时代",
         _ => "未知",
     };
-    stock_data.insert(symbol.to_string(), (name.to_string(), klines));
+    stock_data.insert(symbol.to_string(), quant_strategy::screener::StockEntry {
+        name: name.to_string(),
+        klines,
+        sector: "未知".to_string(),
+    });
 
     let config_1vote = ScreenerConfig {
         top_n: 1,
@@ -1099,6 +1106,9 @@ async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, positi
             max_drawdown_pct: config.risk.max_drawdown,
             circuit_breaker_failures: 5,
             halt_on_drawdown: true,
+            max_holding_days: 30,
+            timeout_min_profit_pct: 0.02,
+            rebalance_threshold: 0.05,
         },
     };
 
@@ -1257,6 +1267,9 @@ async fn cmd_trade_qmt(strategy: &str, symbols_str: &str, interval: u64, positio
             max_drawdown_pct: config.risk.max_drawdown,
             circuit_breaker_failures: 5,
             halt_on_drawdown: true,
+            max_holding_days: 30,
+            timeout_min_profit_pct: 0.02,
+            rebalance_threshold: 0.05,
         },
     };
 

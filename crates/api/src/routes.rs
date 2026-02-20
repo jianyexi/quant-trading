@@ -35,6 +35,8 @@ fn order_routes() -> Router<AppState> {
 fn portfolio_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(handlers::get_portfolio))
+        .route("/close", post(handlers::close_position))
+        .route("/closed", get(handlers::get_closed_positions))
 }
 
 fn chat_routes() -> Router<AppState> {

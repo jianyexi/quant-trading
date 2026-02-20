@@ -65,6 +65,18 @@ export async function getPortfolio() {
   return fetchJson('/portfolio');
 }
 
+export async function closePosition(symbol: string, price?: number) {
+  return fetchJson('/portfolio/close', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol, price }),
+  });
+}
+
+export async function getClosedPositions() {
+  return fetchJson('/portfolio/closed');
+}
+
 export async function getOrders() {
   return fetchJson('/orders');
 }

@@ -101,6 +101,9 @@ pub async fn trade_start(
             max_drawdown_pct: state.config.risk.max_drawdown,
             circuit_breaker_failures: 5,
             halt_on_drawdown: true,
+            max_holding_days: 30,
+            timeout_min_profit_pct: 0.02,
+            rebalance_threshold: 0.05,
         },
     };
 
@@ -399,4 +402,71 @@ pub async fn ml_model_info() -> Json<Value> {
     });
 
     Json(info)
+}
+
+// ── Position Management ─────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct ClosePositionRequest {
+    pub symbol: String,
+    pub price: Option<f64>,
+}
+
+pub async fn close_position(
+    State(state): State<AppState>,
+    Json(req): Json<ClosePositionRequest>,
+) -> (StatusCode, Json<Value>) {
+    let engine = state.engine.lock().await;
+    let eng = match engine.as_ref() {
+        Some(e) => e,
+        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "Engine not running"}))),
+    };
+
+    // Get current price: from request, quote, or last known
+    let price = if let Some(p) = req.price {
+        p
+    } else {
+        super::market::fetch_real_quote(&req.symbol)
+            .ok()
+            .and_then(|q| q["price"].as_f64())
+            .unwrap_or_else(|| {
+                // Fallback to position's current_price
+                0.0
+            })
+    };
+
+    if price <= 0.0 {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "Cannot determine current price"})));
+    }
+
+    // Downcast broker to PaperBroker
+    use quant_broker::paper::PaperBroker;
+    let broker = eng.broker();
+    let paper = match broker.as_any().downcast_ref::<PaperBroker>() {
+        Some(p) => p,
+        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "Close only supported for paper trading"}))),
+    };
+
+    match paper.force_close_position(&req.symbol, price) {
+        Ok(closed) => (StatusCode::OK, Json(json!({
+            "status": "closed",
+            "closed_position": closed,
+        }))),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e}))),
+    }
+}
+
+pub async fn get_closed_positions(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let engine = state.engine.lock().await;
+    if let Some(eng) = engine.as_ref() {
+        use quant_broker::paper::PaperBroker;
+        let broker = eng.broker();
+        if let Some(paper) = broker.as_any().downcast_ref::<PaperBroker>() {
+            let closed = paper.closed_positions();
+            return Json(json!({"closed_positions": closed, "count": closed.len()}));
+        }
+    }
+    Json(json!({"closed_positions": [], "count": 0}))
 }

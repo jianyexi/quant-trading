@@ -124,6 +124,9 @@ impl BacktestEngine {
                                             current_price: 0.0,
                                             unrealized_pnl: 0.0,
                                             realized_pnl: 0.0,
+                                            entry_time: kline.datetime,
+                                            scale_level: 1,
+                                            target_weight: 0.0,
                                         });
                                     let total_cost =
                                         pos.avg_cost * pos.quantity + trade.price * trade.quantity;

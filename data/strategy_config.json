@@ -1,18 +1,33 @@
 {
-  "paramValues": {
-    "DualMaCrossover": {
-      "fast_period": 32
+  "config": {
+    "config": {
+      "config": {
+        "config": {
+          "config": {
+            "paramValues": {
+              "DualMaCrossover": {
+                "fast_period": 32
+              },
+              "MlFactor": {
+                "buy_threshold": 0.6,
+                "sell_threshold": 0.4
+              }
+            },
+            "selectedStrategy": "MlFactor",
+            "tradingConfig": {
+              "endDate": "2025-10-01",
+              "initialCapital": 1000000,
+              "startDate": "2025-02-01",
+              "symbol": "600519.SH"
+            }
+          },
+          "exists": true
+        },
+        "exists": true
+      },
+      "exists": true
     },
-    "MlFactor": {
-      "buy_threshold": 0.6,
-      "sell_threshold": 0.4
-    }
+    "exists": true
   },
-  "selectedStrategy": "RsiMeanReversion",
-  "tradingConfig": {
-    "endDate": "2025-10-01",
-    "initialCapital": 1000000,
-    "startDate": "2025-02-01",
-    "symbol": "600519.SH"
-  }
+  "exists": true
 }

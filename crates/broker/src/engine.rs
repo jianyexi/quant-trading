@@ -732,7 +732,9 @@ async fn risk_actor(
                         symbol: sym.clone(),
                         quantity: pos.quantity,
                         avg_cost: pos.avg_cost,
-                        current_price: ts.price, // approximate with latest bar price
+                        current_price: ts.price,
+                        entry_time: pos.entry_time,
+                        target_weight: pos.target_weight,
                     }
                 }).collect();
 

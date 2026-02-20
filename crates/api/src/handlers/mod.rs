@@ -244,6 +244,7 @@ pub async fn get_portfolio(
                     .and_then(|q| q["price"].as_f64())
                     .unwrap_or(pos.current_price);
                 let pnl = (current_price - pos.avg_cost) * pos.quantity;
+                let holding_days = (chrono::Utc::now().naive_utc() - pos.entry_time).num_days();
                 positions_json.push(json!({
                     "symbol": sym,
                     "name": "",
@@ -251,6 +252,10 @@ pub async fn get_portfolio(
                     "avg_cost": (pos.avg_cost * 100.0).round() / 100.0,
                     "current_price": (current_price * 100.0).round() / 100.0,
                     "pnl": (pnl * 100.0).round() / 100.0,
+                    "entry_time": pos.entry_time.format("%Y-%m-%d %H:%M").to_string(),
+                    "holding_days": holding_days,
+                    "scale_level": pos.scale_level,
+                    "pnl_pct": if pos.avg_cost > 0.0 { ((current_price - pos.avg_cost) / pos.avg_cost * 100.0 * 100.0).round() / 100.0 } else { 0.0 },
                 }));
             }
             return Json(json!({

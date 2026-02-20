@@ -1,0 +1,145 @@
+{
+  "timestamp": "20260220_143117",
+  "status": "started",
+  "data_rows": 12940,
+  "data_source": "akshare",
+  "journal_trades": 0,
+  "n_features": 22,
+  "n_samples": 12855,
+  "label_distribution": {
+    "positive": 6191,
+    "negative": 6664
+  },
+  "cv_competition": [
+    {
+      "algorithm": "lightgbm",
+      "avg_auc": 0.8362,
+      "std_auc": 0.0122,
+      "n_folds": 5,
+      "folds": [
+        {
+          "fold": 1,
+          "auc": 0.8329,
+          "accuracy": 0.7551
+        },
+        {
+          "fold": 2,
+          "auc": 0.8272,
+          "accuracy": 0.7502
+        },
+        {
+          "fold": 3,
+          "auc": 0.8258,
+          "accuracy": 0.7512
+        },
+        {
+          "fold": 4,
+          "auc": 0.8596,
+          "accuracy": 0.7745
+        },
+        {
+          "fold": 5,
+          "auc": 0.8357,
+          "accuracy": 0.7415
+        }
+      ]
+    }
+  ],
+  "best_algorithm": "lightgbm",
+  "final_model": {
+    "algorithm": "lightgbm",
+    "auc": 0.8345,
+    "accuracy": 0.7486
+  },
+  "feature_importance": [
+    {
+      "feature": "ma60_ratio",
+      "importance": 21191.87
+    },
+    {
+      "feature": "bollinger_pctb",
+      "importance": 16295.49
+    },
+    {
+      "feature": "price_position",
+      "importance": 6681.35
+    },
+    {
+      "feature": "ma20_ratio",
+      "importance": 5517.12
+    },
+    {
+      "feature": "ma5_ratio",
+      "importance": 2364.66
+    },
+    {
+      "feature": "ret_5d",
+      "importance": 778.84
+    },
+    {
+      "feature": "intraday_range",
+      "importance": 591.47
+    },
+    {
+      "feature": "rsi_14",
+      "importance": 534.43
+    },
+    {
+      "feature": "macd_histogram",
+      "importance": 532.46
+    },
+    {
+      "feature": "upper_shadow_ratio",
+      "importance": 513.27
+    },
+    {
+      "feature": "ret_20d",
+      "importance": 492.79
+    },
+    {
+      "feature": "volume_ratio_5_20",
+      "importance": 490.19
+    },
+    {
+      "feature": "ma5_ma20_cross",
+      "importance": 483.21
+    },
+    {
+      "feature": "volatility_5d",
+      "importance": 482.49
+    },
+    {
+      "feature": "ma10_ratio",
+      "importance": 446.04
+    },
+    {
+      "feature": "ret_10d",
+      "importance": 443.24
+    },
+    {
+      "feature": "volatility_20d",
+      "importance": 405.96
+    },
+    {
+      "feature": "macd_normalized",
+      "importance": 340.77
+    },
+    {
+      "feature": "lower_shadow_ratio",
+      "importance": 323.0
+    },
+    {
+      "feature": "volume_change",
+      "importance": 272.65
+    },
+    {
+      "feature": "ret_1d",
+      "importance": 155.13
+    },
+    {
+      "feature": "gap",
+      "importance": 96.37
+    }
+  ],
+  "model_path": "ml_models\\factor_model_20260220_143117.model"
+}

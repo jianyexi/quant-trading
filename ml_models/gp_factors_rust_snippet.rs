@@ -4,15 +4,55 @@
 
 pub const GP_FACTOR_NAMES: &[&str] = &[
     "gp_log_678fa802",
+    "gp_ts_mean_36a2fb67",
+    "gp_delta_3cad6872",
+    "gp_delta_9e7e6de3",
+    "gp_390d175a",
+    "gp_ts_std_6b19a484",
+    "gp_acb1788a",
+    "gp_210ab9e7",
+    "gp_ts_std_2e3c7ab3",
+    "gp_1aa5045b",
+    "gp_ts_std_5b6e875a",
 ];
 
-pub const NUM_GP_FACTORS: usize = 1;
+pub const NUM_GP_FACTORS: usize = 11;
 
 /*
 GP-discovered factor expressions:
 
   gp_log_678fa802: IC=-0.5959
     expr = ((close - log(open)) + sqrt(ts_max(ts_max(ts_min(open, 3), 3), 3)))
+
+  gp_ts_mean_36a2fb67: IC=-0.4109
+    expr = (sqrt(delta(ts_mean((low + low), 5), 30)) + log(open))
+
+  gp_delta_3cad6872: IC=-0.3125
+    expr = delta(max(close, (returns / volume)), 5)
+
+  gp_delta_9e7e6de3: IC=-0.3017
+    expr = delta(open, 30)
+
+  gp_390d175a: IC=-0.1788
+    expr = (returns * tr)
+
+  gp_ts_std_6b19a484: IC=0.1203
+    expr = max((high / volume), ts_std(low, 60))
+
+  gp_acb1788a: IC=-0.1129
+    expr = (sign(sqrt(returns)) * ts_max(low, 30))
+
+  gp_210ab9e7: IC=0.0851
+    expr = volume
+
+  gp_ts_std_2e3c7ab3: IC=-0.0607
+    expr = (ts_std(low, 30) / volume)
+
+  gp_1aa5045b: IC=-0.0531
+    expr = (tr / volume)
+
+  gp_ts_std_5b6e875a: IC=-0.0428
+    expr = (tr / ts_std(low, 20))
 
 Implementation guide:
   Each expression uses: close, open, high, low, volume, returns, vwap, tr
