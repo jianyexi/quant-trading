@@ -666,47 +666,95 @@ def _fetch_akshare_data(
     symbols: Optional[List[str]] = None,
     start_date: str = "2022-01-01",
     end_date: str = "2024-12-31",
+    max_retries: int = 3,
+    base_delay: float = 0.8,
 ) -> pd.DataFrame:
-    """Fetch real A-share daily data from akshare for multiple stocks."""
+    """Fetch real A-share daily data from akshare for multiple stocks.
+
+    Features:
+    - Exponential backoff retry (up to max_retries) per stock
+    - Throttle delay between requests to avoid rate limiting
+    - Per-stock status tracking for diagnostics
+    """
     import akshare as ak
+    import time
 
     stock_list = symbols if symbols else DEFAULT_TRAIN_STOCKS
     print(f"📡 Fetching real data from akshare: {len(stock_list)} stocks, {start_date} ~ {end_date}")
 
     all_data = []
+    # Per-stock fetch statistics
+    fetch_stats: Dict[str, dict] = {}
+    n_ok, n_skip, n_fail = 0, 0, 0
+
     for i, sym in enumerate(stock_list):
-        # Strip exchange suffix (600519.SH -> 600519)
         code = sym.split(".")[0]
         print(f"  [{i+1}/{len(stock_list)}] {code}...", end=" ", flush=True)
-        try:
-            df = ak.stock_zh_a_hist(
-                symbol=code, period="daily",
-                start_date=start_date.replace("-", ""),
-                end_date=end_date.replace("-", ""),
-                adjust="qfq",
-            )
-            if df is None or df.empty or len(df) < 200:
-                print(f"skip ({0 if df is None else len(df)} bars)")
-                continue
-            df = df.rename(columns={
-                "日期": "date", "开盘": "open", "最高": "high",
-                "最低": "low", "收盘": "close", "成交量": "volume",
-            })
-            df["date"] = pd.to_datetime(df["date"])
-            df.set_index("date", inplace=True)
-            df = df[["open", "high", "low", "close", "volume"]].astype(float)
-            all_data.append(df)
-            print(f"OK ({len(df)} bars)")
-        except Exception as e:
-            print(f"ERROR: {e}")
-            continue
+
+        last_err = None
+        success = False
+        for attempt in range(1, max_retries + 1):
+            try:
+                df = ak.stock_zh_a_hist(
+                    symbol=code, period="daily",
+                    start_date=start_date.replace("-", ""),
+                    end_date=end_date.replace("-", ""),
+                    adjust="qfq",
+                )
+                if df is None or df.empty:
+                    fetch_stats[code] = {"status": "skip", "bars": 0, "reason": "empty"}
+                    print(f"skip (empty)")
+                    n_skip += 1
+                    success = True  # not an error, just no data
+                    break
+                if len(df) < 200:
+                    fetch_stats[code] = {"status": "skip", "bars": len(df), "reason": "< 200 bars"}
+                    print(f"skip ({len(df)} bars < 200)")
+                    n_skip += 1
+                    success = True
+                    break
+
+                df = df.rename(columns={
+                    "日期": "date", "开盘": "open", "最高": "high",
+                    "最低": "low", "收盘": "close", "成交量": "volume",
+                })
+                df["date"] = pd.to_datetime(df["date"])
+                df.set_index("date", inplace=True)
+                df = df[["open", "high", "low", "close", "volume"]].astype(float)
+                all_data.append(df)
+                fetch_stats[code] = {"status": "ok", "bars": len(df)}
+                print(f"OK ({len(df)} bars)")
+                n_ok += 1
+                success = True
+                break
+            except Exception as e:
+                last_err = str(e)
+                if attempt < max_retries:
+                    wait = base_delay * (2 ** (attempt - 1))
+                    print(f"retry {attempt}/{max_retries} ({wait:.1f}s)...", end=" ", flush=True)
+                    time.sleep(wait)
+
+        if not success:
+            fetch_stats[code] = {"status": "error", "bars": 0, "reason": last_err}
+            print(f"FAILED after {max_retries} retries: {last_err}")
+            n_fail += 1
+
+        # Throttle between requests to avoid rate limiting
+        if i < len(stock_list) - 1:
+            time.sleep(base_delay)
+
+    # Summary
+    print(f"\n📊 Fetch summary: {n_ok} OK, {n_skip} skipped, {n_fail} failed (total {len(stock_list)})")
 
     if not all_data:
         print("⚠️  No data fetched from akshare, falling back to synthetic")
         return generate_synthetic_data(5000)
 
     combined = pd.concat(all_data, axis=0).sort_index()
-    print(f"✅ Total: {len(combined)} bars from {len(all_data)} stocks")
+    print(f"✅ Total: {len(combined)} bars from {len(all_data)}/{len(stock_list)} stocks")
+
+    # Attach fetch stats as an attribute for the report
+    combined.attrs["fetch_stats"] = fetch_stats
     return combined
 
 
@@ -752,6 +800,14 @@ def retrain(
         df = generate_synthetic_data(5000)
     report["data_rows"] = len(df)
     report["data_source"] = data_source if not data_path else "csv"
+    # Include per-stock fetch statistics in report
+    if hasattr(df, 'attrs') and 'fetch_stats' in df.attrs:
+        stats = df.attrs['fetch_stats']
+        report["fetch_stats"] = stats
+        ok = sum(1 for v in stats.values() if v["status"] == "ok")
+        skip = sum(1 for v in stats.values() if v["status"] == "skip")
+        fail = sum(1 for v in stats.values() if v["status"] == "error")
+        report["fetch_summary"] = {"ok": ok, "skipped": skip, "failed": fail, "total": len(stats)}
 
     # 2. Collect journal labels
     journal_df = collect_journal_labels(journal_path)
