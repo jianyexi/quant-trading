@@ -1,11 +1,36 @@
-import { Outlet } from 'react-router-dom';
+import { Outlet, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Bell } from 'lucide-react';
 import Sidebar from './Sidebar';
+import { getUnreadCount } from '../api/client';
 
 export default function Layout() {
+  const [unread, setUnread] = useState(0);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const poll = () => getUnreadCount().then(d => setUnread(d.unread_count)).catch(() => {});
+    poll();
+    const id = setInterval(poll, 15000);
+    return () => clearInterval(id);
+  }, []);
+
   return (
     <div className="min-h-screen bg-[#0f172a]">
       <Sidebar />
       <div className="pl-60 h-screen flex flex-col">
+        {/* Top bar with notification bell */}
+        <div className="flex items-center justify-end px-6 py-2 border-b border-[#1e293b]">
+          <button onClick={() => navigate('/notifications')}
+            className="relative p-2 rounded-lg hover:bg-[#1e293b] text-[#94a3b8] hover:text-[#f8fafc] transition-colors">
+            <Bell className="h-5 w-5" />
+            {unread > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold px-1">
+                {unread > 99 ? '99+' : unread}
+              </span>
+            )}
+          </button>
+        </div>
         <main className="flex-1 overflow-y-auto p-6">
           <div className="mx-auto max-w-7xl">
             <Outlet />

@@ -1584,6 +1584,8 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
     }
     let journal = quant_broker::journal::JournalStore::open("data/trade_journal.db")
         .expect("Failed to open trade journal");
+    let notifier = quant_broker::notifier::Notifier::open("data/notifications.db", "data")
+        .expect("Failed to open notifier");
 
     let state = AppState {
         config: std::sync::Arc::new(config.clone()),
@@ -1594,6 +1596,7 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
         )),
         journal: std::sync::Arc::new(journal),
         log_store: std::sync::Arc::new(quant_api::LogStore::new()),
+        notifier: std::sync::Arc::new(notifier),
     };
 
     // Resolve web/dist path — try CWD first, then relative to the executable

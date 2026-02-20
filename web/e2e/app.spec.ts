@@ -36,6 +36,7 @@ test.describe('Navigation & Layout', () => {
       'DL',
       '因子',
       'Portfolio',
+      '通知',
       '日志',
       'Chat',
     ];
@@ -59,6 +60,7 @@ test.describe('Navigation & Layout', () => {
       { path: '/dl-models', heading: /dl|model|研究/i },
       { path: '/factor-mining', heading: /factor|因子/i },
       { path: '/portfolio', heading: /portfolio|持仓/i },
+      { path: '/notifications', heading: /通知/i },
       { path: '/logs', heading: /log|日志/i },
       { path: '/chat', heading: /chat|ai/i },
     ];

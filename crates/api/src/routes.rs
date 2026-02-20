@@ -98,6 +98,16 @@ fn journal_routes() -> Router<AppState> {
         .route("/snapshots", get(handlers::get_journal_snapshots))
 }
 
+fn notification_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(handlers::list_notifications))
+        .route("/unread-count", get(handlers::notification_unread_count))
+        .route("/read-all", post(handlers::notification_mark_all_read))
+        .route("/config", get(handlers::notification_config_get).post(handlers::notification_config_save))
+        .route("/test", post(handlers::notification_test))
+        .route("/:id/read", post(handlers::notification_mark_read))
+}
+
 fn log_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(handlers::get_logs).delete(handlers::clear_logs))
@@ -149,6 +159,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/research", research_routes())
         .nest("/api/factor", factor_routes())
         .nest("/api/journal", journal_routes())
+        .nest("/api/notifications", notification_routes())
         .nest("/api/logs", log_routes())
         .layer(middleware::from_fn_with_state(state.clone(), request_logger))
         .layer(middleware::from_fn(api_key_auth))

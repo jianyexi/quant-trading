@@ -180,7 +180,7 @@ test.describe('No console errors on page load', () => {
   const pages = [
     '/', '/market', '/strategy', '/backtest', '/screener',
     '/autotrade', '/risk', '/sentiment', '/dl-models',
-    '/factor-mining', '/portfolio', '/logs', '/chat',
+    '/factor-mining', '/portfolio', '/notifications', '/logs', '/chat',
   ];
 
   for (const path of pages) {

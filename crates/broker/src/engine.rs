@@ -227,6 +227,7 @@ impl Default for EngineConfig {
 }
 
 use crate::journal::JournalStore;
+use crate::notifier::Notifier;
 
 // ── Lock-Free Shared State ──────────────────────────────────────────
 // All hot-path stats use atomics to avoid Mutex contention.
@@ -337,6 +338,8 @@ pub struct TradingEngine {
     journal: Option<Arc<JournalStore>>,
     /// Active risk enforcement (stop-loss, daily loss, drawdown, circuit breaker)
     risk_enforcer: Arc<RiskEnforcer>,
+    /// Notification service for order fills, risk alerts, etc.
+    notifier: Option<Arc<Notifier>>,
 }
 
 impl TradingEngine {
@@ -353,6 +356,9 @@ impl TradingEngine {
             .map(Arc::new)
             .ok();
         let risk_enforcer = Arc::new(RiskEnforcer::new(config.risk_config.clone(), config.initial_capital));
+        let notifier = Notifier::open("data/notifications.db", "data")
+            .map(Arc::new)
+            .ok();
         Self {
             config,
             shutdown_tx: None,
@@ -362,6 +368,7 @@ impl TradingEngine {
             auto_fill: true,
             journal,
             risk_enforcer,
+            notifier,
         }
     }
 
@@ -371,6 +378,9 @@ impl TradingEngine {
             .map(Arc::new)
             .ok();
         let risk_enforcer = Arc::new(RiskEnforcer::new(config.risk_config.clone(), config.initial_capital));
+        let notifier = Notifier::open("data/notifications.db", "data")
+            .map(Arc::new)
+            .ok();
         Self {
             config,
             shutdown_tx: None,
@@ -380,12 +390,18 @@ impl TradingEngine {
             auto_fill: false,
             journal,
             risk_enforcer,
+            notifier,
         }
     }
 
     /// Set an external journal store (e.g., from AppState).
     pub fn set_journal(&mut self, journal: Arc<JournalStore>) {
         self.journal = Some(journal);
+    }
+
+    /// Set an external notifier (e.g., from AppState).
+    pub fn set_notifier(&mut self, notifier: Arc<Notifier>) {
+        self.notifier = Some(notifier);
     }
 
     /// Start the actor system with the given strategy factory.
@@ -447,8 +463,9 @@ impl TradingEngine {
         let auto_fill = self.auto_fill;
         let order_journal = self.journal.clone();
         let order_enforcer = self.risk_enforcer.clone();
+        let order_notifier = self.notifier.clone();
         tokio::spawn(async move {
-            order_actor(order_rx, order_broker, order_stats, order_journal, order_enforcer, order_shutdown, auto_fill).await;
+            order_actor(order_rx, order_broker, order_stats, order_journal, order_enforcer, order_notifier, order_shutdown, auto_fill).await;
         });
 
         info!("🚀 Trading engine started: {} on {:?}", self.config.strategy_name, self.config.symbols);
@@ -2022,6 +2039,7 @@ async fn order_actor(
     stats: Arc<EngineStatsAtomic>,
     journal: Option<Arc<JournalStore>>,
     enforcer: Arc<RiskEnforcer>,
+    notifier: Option<Arc<Notifier>>,
     mut shutdown: watch::Receiver<bool>,
     _auto_fill: bool,
 ) {
@@ -2058,6 +2076,18 @@ async fn order_actor(
                             j.record_order_filled(submitted.id, &order.symbol, order.side,
                                 order.quantity, order.price, 0.0, 0.0, 0.0);
                         }
+                        // Send fill notification
+                        if let Some(ref n) = notifier {
+                            let sym = order.symbol.clone();
+                            let side_s = side_str.to_string();
+                            let qty = order.quantity;
+                            let px = order.price;
+                            let oid = submitted.id.to_string();
+                            let n = n.clone();
+                            tokio::spawn(async move {
+                                n.notify_order_filled(&sym, &side_s, qty, px, &oid).await;
+                            });
+                        }
                         // Lock-free stats
                         stats.total_orders.fetch_add(1, Ordering::Relaxed);
                         stats.total_fills.fetch_add(1, Ordering::Relaxed);
@@ -2071,11 +2101,31 @@ async fn order_actor(
                         let tripped = enforcer.record_failure();
                         if tripped {
                             warn!("🔴 Circuit breaker tripped after consecutive failures!");
+                            // Notify risk alert on circuit breaker
+                            if let Some(ref n) = notifier {
+                                let n = n.clone();
+                                let sym = order.symbol.clone();
+                                tokio::spawn(async move {
+                                    n.notify_risk_alert(&sym, "Circuit breaker tripped after consecutive order failures").await;
+                                });
+                            }
                         }
                         error!("❌ Submit failed: {} — {}", order.symbol, e);
                         if let Some(ref j) = journal {
                             j.record_risk_rejected(&order.symbol, order.side, order.quantity, order.price,
                                 &format!("submit_error: {}", e));
+                        }
+                        // Notify order rejected
+                        if let Some(ref n) = notifier {
+                            let sym = order.symbol.clone();
+                            let side_s = side_str.to_string();
+                            let qty = order.quantity;
+                            let px = order.price;
+                            let reason = format!("submit_error: {}", e);
+                            let n = n.clone();
+                            tokio::spawn(async move {
+                                n.notify_order_rejected(&sym, &side_s, qty, px, &reason).await;
+                            });
                         }
                         stats.total_rejected.fetch_add(1, Ordering::Relaxed);
                     }

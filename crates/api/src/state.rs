@@ -2,6 +2,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use quant_broker::engine::TradingEngine;
 use quant_broker::journal::JournalStore;
+use quant_broker::notifier::Notifier;
 use quant_config::AppConfig;
 use quant_strategy::sentiment::SentimentStore;
 use quant_strategy::collector::SentimentCollector;
@@ -15,4 +16,5 @@ pub struct AppState {
     pub sentiment_collector: Arc<Mutex<SentimentCollector>>,
     pub journal: Arc<JournalStore>,
     pub log_store: Arc<LogStore>,
+    pub notifier: Arc<Notifier>,
 }

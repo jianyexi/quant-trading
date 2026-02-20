@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   ScrollText,
   Dna,
+  Bell,
 } from 'lucide-react';
 
 const navItems = [
@@ -27,6 +28,7 @@ const navItems = [
   { to: '/dl-models', label: 'DL模型研究', icon: Brain },
   { to: '/factor-mining', label: '因子挖掘', icon: Dna },
   { to: '/portfolio', label: 'Portfolio', icon: Wallet },
+  { to: '/notifications', label: '通知中心', icon: Bell },
   { to: '/logs', label: '系统日志', icon: ScrollText },
   { to: '/chat', label: 'AI Chat', icon: MessageSquare },
 ];

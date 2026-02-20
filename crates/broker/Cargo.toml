@@ -19,3 +19,4 @@ sqlx = { workspace = true }
 reqwest = { workspace = true }
 rusqlite = { workspace = true }
 futures = { workspace = true }
+base64 = "0.22"

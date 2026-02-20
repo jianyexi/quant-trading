@@ -579,3 +579,85 @@ export async function factorExportPromoted(params?: {
 export async function factorResults(): Promise<FactorResults> {
   return fetchJson('/factor/results');
 }
+
+// ── Notifications ───────────────────────────────────────────────────
+
+export interface NotificationItem {
+  id: string;
+  timestamp: string;
+  event_type: string;
+  title: string;
+  message: string;
+  symbol?: string;
+  side?: string;
+  quantity?: number;
+  price?: number;
+  read: boolean;
+  delivery: string;
+  channels: string;
+}
+
+export interface NotificationList {
+  notifications: NotificationItem[];
+  unread_count: number;
+}
+
+export interface NotificationConfig {
+  enabled: boolean;
+  in_app: boolean;
+  email: {
+    enabled: boolean;
+    smtp_host: string;
+    smtp_port: number;
+    username: string;
+    password: string;
+    from: string;
+    to: string[];
+    tls: boolean;
+  };
+  webhook: {
+    enabled: boolean;
+    provider: string;
+    url: string;
+    secret: string;
+  };
+  events: {
+    order_filled: boolean;
+    order_rejected: boolean;
+    risk_alert: boolean;
+    engine_started: boolean;
+    engine_stopped: boolean;
+  };
+}
+
+export async function getNotifications(limit = 50, unread_only = false): Promise<NotificationList> {
+  return fetchJson(`/notifications?limit=${limit}&unread_only=${unread_only}`);
+}
+
+export async function getUnreadCount(): Promise<{ unread_count: number }> {
+  return fetchJson('/notifications/unread-count');
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  await fetch(`${API_BASE}/notifications/${id}/read`, { method: 'POST' });
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  await fetch(`${API_BASE}/notifications/read-all`, { method: 'POST' });
+}
+
+export async function getNotificationConfig(): Promise<NotificationConfig> {
+  return fetchJson('/notifications/config');
+}
+
+export async function saveNotificationConfig(cfg: NotificationConfig): Promise<void> {
+  await fetch(`${API_BASE}/notifications/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cfg),
+  });
+}
+
+export async function testNotification(): Promise<{ results: Array<{ channel: string; success: boolean; message: string }> }> {
+  return fetchJson('/notifications/test', { method: 'POST' });
+}

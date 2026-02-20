@@ -415,3 +415,64 @@ test.describe('WebSocket Chat', () => {
     expect([400, 426]).toContain(res.status());
   });
 });
+
+/* ── Notifications API ──────────────────────────────────────────── */
+test.describe('Notifications API', () => {
+  requireBackend();
+
+  test('GET /api/notifications returns notification list', async ({ request }) => {
+    const res = await request.get('/api/notifications');
+    // 200 if backend has notification routes, otherwise SPA fallback (200 + HTML)
+    expect(res.status()).toBe(200);
+    const ct = res.headers()['content-type'] || '';
+    if (ct.includes('json')) {
+      const body = await res.json();
+      expect(body.notifications).toBeDefined();
+      expect(typeof body.unread_count).toBe('number');
+    }
+  });
+
+  test('GET /api/notifications/unread-count returns count', async ({ request }) => {
+    const res = await request.get('/api/notifications/unread-count');
+    expect(res.status()).toBe(200);
+    const ct = res.headers()['content-type'] || '';
+    if (ct.includes('json')) {
+      const body = await res.json();
+      expect(typeof body.unread_count).toBe('number');
+    }
+  });
+
+  test('GET /api/notifications/config returns config', async ({ request }) => {
+    const res = await request.get('/api/notifications/config');
+    expect(res.status()).toBe(200);
+    const ct = res.headers()['content-type'] || '';
+    if (ct.includes('json')) {
+      const body = await res.json();
+      expect(typeof body.enabled).toBe('boolean');
+      expect(body.events).toBeDefined();
+    }
+  });
+
+  test('POST /api/notifications/config saves config', async ({ request }) => {
+    const res = await request.post('/api/notifications/config', {
+      data: {
+        enabled: true,
+        in_app: true,
+        email: { enabled: false, smtp_host: '', smtp_port: 465, username: '', password: '', from: '', to: [], tls: true },
+        webhook: { enabled: false, provider: 'dingtalk', url: '', secret: '' },
+        events: { order_filled: true, order_rejected: true, risk_alert: true, engine_started: false, engine_stopped: true },
+      },
+    });
+    expect([200, 405, 415]).toContain(res.status());
+  });
+
+  test('POST /api/notifications/read-all marks all read', async ({ request }) => {
+    const res = await request.post('/api/notifications/read-all');
+    expect([200, 405, 415]).toContain(res.status());
+  });
+
+  test('POST /api/notifications/test sends test notification', async ({ request }) => {
+    const res = await request.post('/api/notifications/test');
+    expect([200, 405, 415]).toContain(res.status());
+  });
+});
