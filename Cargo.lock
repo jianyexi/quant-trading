@@ -1671,6 +1671,7 @@ dependencies = [
  "quant-risk",
  "quant-strategy",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "sqlx",

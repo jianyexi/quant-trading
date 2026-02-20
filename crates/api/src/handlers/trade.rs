@@ -487,3 +487,78 @@ pub async fn get_closed_positions(
     }
     Json(json!({"closed_positions": [], "count": 0}))
 }
+
+// ── Tick Recording ──────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct TickQuery {
+    pub symbol: Option<String>,
+    pub limit: Option<u32>,
+    pub since: Option<String>,
+}
+
+pub async fn get_recorded_ticks(
+    axum::extract::Query(q): axum::extract::Query<TickQuery>,
+) -> Json<Value> {
+    let conn = match rusqlite::Connection::open("data/market_ticks.db") {
+        Ok(c) => c,
+        Err(_) => return Json(json!({"ticks": [], "count": 0, "error": "No tick database found"})),
+    };
+
+    let limit = q.limit.unwrap_or(200).min(1000);
+    let mut sql = String::from(
+        "SELECT symbol, datetime, open, high, low, close, volume, recorded_at FROM ticks"
+    );
+    let mut conditions = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+    if let Some(ref sym) = q.symbol {
+        conditions.push(format!("symbol = ?{}", params.len() + 1));
+        params.push(Box::new(sym.clone()));
+    }
+    if let Some(ref since) = q.since {
+        conditions.push(format!("datetime >= ?{}", params.len() + 1));
+        params.push(Box::new(since.clone()));
+    }
+    if !conditions.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conditions.join(" AND "));
+    }
+    sql.push_str(&format!(" ORDER BY datetime DESC LIMIT {}", limit));
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => return Json(json!({"ticks": [], "count": 0, "error": e.to_string()})),
+    };
+    let rows: Vec<serde_json::Value> = stmt.query_map(param_refs.as_slice(), |row| {
+        Ok(serde_json::json!({
+            "symbol": row.get::<_, String>(0)?,
+            "datetime": row.get::<_, String>(1)?,
+            "open": row.get::<_, f64>(2)?,
+            "high": row.get::<_, f64>(3)?,
+            "low": row.get::<_, f64>(4)?,
+            "close": row.get::<_, f64>(5)?,
+            "volume": row.get::<_, f64>(6)?,
+            "recorded_at": row.get::<_, String>(7)?,
+        }))
+    }).ok().map(|r| r.filter_map(|x| x.ok()).collect()).unwrap_or_default();
+
+    let count = rows.len();
+
+    // Also get summary stats
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM ticks", [], |r| r.get(0)).unwrap_or(0);
+    let symbols: Vec<String> = conn.prepare("SELECT DISTINCT symbol FROM ticks ORDER BY symbol")
+        .ok()
+        .map(|mut s| s.query_map([], |r| r.get(0)).ok()
+            .map(|r| r.filter_map(|x| x.ok()).collect())
+            .unwrap_or_default())
+        .unwrap_or_default();
+
+    Json(json!({
+        "ticks": rows,
+        "count": count,
+        "total_recorded": total,
+        "symbols": symbols,
+    }))
+}

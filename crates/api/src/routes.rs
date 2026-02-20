@@ -58,6 +58,7 @@ fn trade_routes() -> Router<AppState> {
         .route("/retrain", post(handlers::ml_retrain))
         .route("/model-info", get(handlers::ml_model_info))
         .route("/qmt/status", get(handlers::qmt_bridge_status))
+        .route("/ticks", get(handlers::get_recorded_ticks))
 }
 
 fn screen_routes() -> Router<AppState> {

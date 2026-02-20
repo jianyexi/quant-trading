@@ -8,6 +8,7 @@
 //!   - L2: Level-2 tick/depth data via TCP MQ
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use chrono::Utc;
 use tokio::sync::{mpsc, watch};
@@ -16,6 +17,54 @@ use tracing::{info, warn, error, debug, trace};
 use quant_core::models::*;
 
 use crate::engine::{MarketEvent, DataMode};
+
+// ── Tick Recorder ───────────────────────────────────────────────────
+// Records market data bars to SQLite for future replay & analysis.
+
+struct TickRecorder {
+    conn: std::sync::Mutex<rusqlite::Connection>,
+}
+
+impl TickRecorder {
+    fn open(path: &str) -> Option<Arc<Self>> {
+        let conn = match rusqlite::Connection::open(path) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("TickRecorder: cannot open {}: {}", path, e);
+                return None;
+            }
+        };
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ticks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                datetime TEXT NOT NULL,
+                open REAL NOT NULL,
+                high REAL NOT NULL,
+                low REAL NOT NULL,
+                close REAL NOT NULL,
+                volume REAL NOT NULL,
+                recorded_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ticks_symbol_dt ON ticks(symbol, datetime);"
+        ).ok()?;
+        Some(Arc::new(Self { conn: std::sync::Mutex::new(conn) }))
+    }
+
+    fn record(&self, k: &Kline) {
+        if let Ok(conn) = self.conn.lock() {
+            let _ = conn.execute(
+                "INSERT INTO ticks (symbol, datetime, open, high, low, close, volume, recorded_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                rusqlite::params![
+                    k.symbol,
+                    k.datetime.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    k.open, k.high, k.low, k.close, k.volume,
+                    Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string(),
+                ],
+            );
+        }
+    }
+}
 
 // ── DataActor ───────────────────────────────────────────────────────
 // Provides market data bars at a configurable interval.
@@ -101,10 +150,12 @@ pub(crate) async fn data_actor(
             info!("📊 DataActor started [LIVE] for {:?}", symbols);
             let n = warmup_historical(&symbols, &tx, 80).await;
             if n > 0 { info!("📊 Warmup complete: {} bars pre-loaded", n); }
+            let recorder = TickRecorder::open("data/market_ticks.db");
+            if recorder.is_some() { info!("📼 Tick recording enabled → data/market_ticks.db"); }
             data_actor_live(
                 symbols, interval_secs,
                 tushare_url.clone(), tushare_token.clone(), akshare_url.clone(),
-                tx, shutdown,
+                tx, shutdown, recorder,
             ).await;
         }
         DataMode::LowLatency { server_url } => {
@@ -197,11 +248,13 @@ async fn data_actor_live(
     akshare_url: String,
     tx: mpsc::Sender<MarketEvent>,
     mut shutdown: watch::Receiver<bool>,
+    recorder: Option<Arc<TickRecorder>>,
 ) {
     let client = reqwest::Client::new();
 
     // Track previous prices for OHLC construction
     let mut prev_prices: HashMap<String, f64> = HashMap::new();
+    let mut tick_count: u64 = 0;
 
     loop {
         tokio::select! {
@@ -215,8 +268,18 @@ async fn data_actor_live(
                         None => continue,
                     };
 
+                    // Record tick to SQLite
+                    if let Some(ref rec) = recorder {
+                        rec.record(&kline);
+                        tick_count += 1;
+                        if tick_count % 100 == 0 {
+                            info!("📼 Recorded {} ticks to market_ticks.db", tick_count);
+                        }
+                    }
+
                     if tx.send(MarketEvent::Bar(kline)).await.is_err() {
                         info!("DataActor[live]: channel closed");
+                        if tick_count > 0 { info!("📼 Total ticks recorded: {}", tick_count); }
                         return;
                     }
                 }
@@ -224,6 +287,7 @@ async fn data_actor_live(
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
                     info!("DataActor[live]: shutdown");
+                    if tick_count > 0 { info!("📼 Total ticks recorded: {}", tick_count); }
                     return;
                 }
             }
