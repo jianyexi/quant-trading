@@ -1600,14 +1600,24 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
 
     // Try to connect to PostgreSQL; fall back to SQLite if unavailable
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| config.database.url.clone());
+    tracing::info!("🔌 Connecting to PostgreSQL: {}...", db_url.split('@').last().unwrap_or(&db_url));
     let db_pool = match quant_data::storage::create_pool(&db_url, config.database.max_connections).await {
         Ok(pool) => {
-            if let Err(e) = quant_data::storage::run_migrations(&pool).await {
-                tracing::warn!("⚠️  PostgreSQL migrations failed: {}. Falling back to SQLite.", e);
-                None
-            } else {
-                tracing::info!("✅ PostgreSQL connected and migrations applied");
-                Some(pool)
+            // Verify connection works with a test query
+            match sqlx::query("SELECT 1").execute(&pool).await {
+                Ok(_) => {
+                    if let Err(e) = quant_data::storage::run_migrations(&pool).await {
+                        tracing::warn!("⚠️  PostgreSQL migrations failed: {}. Falling back to SQLite.", e);
+                        None
+                    } else {
+                        tracing::info!("✅ PostgreSQL connected and migrations applied");
+                        Some(pool)
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("⚠️  PostgreSQL test query failed: {}. Falling back to SQLite.", e);
+                    None
+                }
             }
         }
         Err(e) => {
