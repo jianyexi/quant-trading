@@ -7,6 +7,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use uuid::Uuid;
 
+use tracing::{debug, trace};
+
 use quant_core::error::{QuantError, Result};
 use quant_core::models::*;
 use quant_core::traits::Broker;
@@ -250,6 +252,8 @@ impl Broker for PaperBroker {
             };
             let total_cost = commission + stamp_tax;
 
+            debug!(order_id=%new_order.id, symbol=%new_order.symbol, side=?new_order.side, fill_price=%format!("{:.2}", fill_price), slippage_bps=%self.slippage_bps.load(std::sync::atomic::Ordering::Relaxed), commission=%format!("{:.2}", total_cost), "Order auto-filled");
+
             let trade = Trade {
                 id: Uuid::new_v4(),
                 order_id: new_order.id,
@@ -286,6 +290,7 @@ impl Broker for PaperBroker {
                     pos.quantity = total_qty;
                     pos.current_price = fill_price;
                     pos.scale_level += 1;
+                    debug!(symbol=%new_order.symbol, qty=%format!("{:.0}", total_qty), avg_cost=%format!("{:.2}", pos.avg_cost), cash=%format!("{:.2}", inner.account.portfolio.cash), "Position opened/scaled");
                 }
                 OrderSide::Sell => {
                     inner.account.portfolio.cash += trade_value - total_cost;
@@ -294,6 +299,7 @@ impl Broker for PaperBroker {
                         pos.realized_pnl += realized;
                         pos.quantity -= new_order.quantity;
                         pos.current_price = fill_price;
+                        debug!(symbol=%new_order.symbol, sold_qty=%format!("{:.0}", new_order.quantity), realized=%format!("{:.2}", realized), remaining=%format!("{:.0}", pos.quantity), "Position reduced");
                         if pos.quantity <= 0.0 {
                             let now = Utc::now().naive_utc();
                             should_archive = Some(ClosedPosition {
@@ -319,6 +325,7 @@ impl Broker for PaperBroker {
             inner.account.portfolio.total_value = inner.account.portfolio.cash + positions_value;
 
             if let Some(closed) = should_archive {
+                debug!(symbol=%closed.symbol, pnl=%format!("{:.2}", closed.realized_pnl), holding_days=%closed.holding_days, "Position closed");
                 inner.closed_positions.push(closed);
             }
             inner.filled_trades.push(trade);

@@ -700,3 +700,9 @@ export async function saveNotificationConfig(cfg: NotificationConfig): Promise<v
 export async function testNotification(): Promise<{ results: Array<{ channel: string; success: boolean; message: string }> }> {
   return fetchJson('/notifications/test', { method: 'POST' });
 }
+
+// ── Metrics ─────────────────────────────────────────────────────────
+
+export async function getMetrics(): Promise<any> {
+  return fetchJson('/metrics');
+}

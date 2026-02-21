@@ -66,6 +66,7 @@ impl TickRecorder {
     fn record(&self, k: &Kline) {
         match &self.backend {
             TickBackend::Pg(pool) => {
+                trace!(symbol=%k.symbol, "Tick recorded to PG");
                 let pool = pool.clone();
                 let symbol = k.symbol.clone();
                 let datetime = k.datetime;
@@ -87,6 +88,7 @@ impl TickRecorder {
                 });
             }
             TickBackend::Sqlite(conn) => {
+                trace!(symbol=%k.symbol, "Tick recorded to SQLite");
                 if let Ok(conn) = conn.lock() {
                     let _ = conn.execute(
                         "INSERT INTO ticks (symbol, datetime, open, high, low, close, volume, recorded_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
@@ -119,6 +121,7 @@ async fn warmup_historical(
     tx: &mpsc::Sender<MarketEvent>,
     warmup_days: usize,
 ) -> usize {
+    debug!(symbols=?symbols, warmup_bars=%warmup_days, "Starting historical warmup");
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
@@ -158,6 +161,7 @@ async fn warmup_historical(
                             }
                         }
                         info!("📊 Warmup: {} loaded {} historical bars", sym, n);
+                        debug!(symbol=%sym, bars=%n, "Warmup bars loaded");
                     }
                 }
             }
@@ -265,6 +269,7 @@ async fn data_actor_simulated(
                         close: (close * 100.0).round() / 100.0,
                         volume,
                     };
+                    trace!(symbol=%sym, close=%format!("{:.2}", close), volume=%format!("{:.0}", volume), tick=%tick, "Sim tick");
 
                     if tx.send(MarketEvent::Bar(kline)).await.is_err() {
                         info!("DataActor: channel closed, shutting down");
@@ -305,13 +310,20 @@ async fn data_actor_live(
         tokio::select! {
             _ = tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)) => {
                 for sym in &symbols {
+                    let fetch_start = std::time::Instant::now();
                     let kline = match fetch_realtime_kline(
                         &client, sym, &tushare_url, &tushare_token,
                         &akshare_url, &mut prev_prices,
                     ).await {
                         Some(k) => k,
-                        None => continue,
+                        None => {
+                            debug!(symbol=%sym, "Live fetch: no data");
+                            continue;
+                        }
                     };
+                    let fetch_us = fetch_start.elapsed().as_micros();
+                    trace!(symbol=%sym, fetch_us=%fetch_us, "Fetch latency");
+                    trace!(symbol=%sym, close=%format!("{:.2}", kline.close), volume=%format!("{:.0}", kline.volume), "Live tick");
 
                     // Record tick to SQLite
                     if let Some(ref rec) = recorder {
@@ -352,13 +364,15 @@ async fn fetch_realtime_kline(
 ) -> Option<Kline> {
     // Try AKShare real-time spot API first
     if let Some(kline) = try_akshare_quote(client, symbol, akshare_url, prev_prices).await {
+        debug!(symbol=%symbol, source="akshare", price=%format!("{:.2}", kline.close), "Quote fetched");
         return Some(kline);
     }
     // Fall back to Tushare
+    debug!(symbol=%symbol, "AKShare failed, trying Tushare");
     if let Some(kline) = try_tushare_quote(client, symbol, tushare_url, tushare_token, prev_prices).await {
         return Some(kline);
     }
-    warn!("DataActor[live]: failed to fetch quote for {}, skipping", symbol);
+    warn!(symbol=%symbol, "All data sources failed");
     None
 }
 
@@ -701,6 +715,7 @@ async fn data_actor_low_latency(
     }
 
     // Connect TCP message queue
+    debug!(server=%server_url, "TCP MQ connecting");
     let stream = match tokio::net::TcpStream::connect(&tcp_addr).await {
         Ok(s) => {
             info!("🔗 TCP MQ connected at {}", tcp_addr);
@@ -789,6 +804,7 @@ async fn data_actor_low_latency(
                                 volume: data.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0),
                             };
                             trace!("📡 TCP {} ¥{:.2}", sym, close);
+                            trace!(symbol=%sym, "LowLatency bar received");
                             if tx.send(MarketEvent::Bar(kline)).await.is_err() {
                                 info!("DataActor[tcp_mq]: channel closed");
                                 return;
@@ -1056,6 +1072,7 @@ async fn data_actor_replay(
     all_klines.sort_by_key(|k| k.datetime);
 
     let total = all_klines.len();
+    debug!(bars=%total, speed=%speed, "Replay started");
     info!("🔄 Replaying {} bars (speed={}x)", total, if speed == 0.0 { "max".to_string() } else { format!("{}", speed) });
 
     // Calculate delay between bars
@@ -1087,6 +1104,7 @@ async fn data_actor_replay(
 
         prev_dt = Some(kline.datetime);
 
+        trace!(symbol=%kline.symbol, bar_idx=%i, close=%format!("{:.2}", kline.close), "Replay bar");
         if tx.send(MarketEvent::Bar(kline)).await.is_err() {
             info!("DataActor[replay]: channel closed at bar {}/{}", i, total);
             return;
@@ -1181,6 +1199,7 @@ async fn data_actor_l2(
     mut shutdown: watch::Receiver<bool>,
 ) {
     // Connect to L2 TCP MQ server
+    debug!(addr=%l2_addr, "L2 connecting");
     let stream = match tokio::net::TcpStream::connect(&l2_addr).await {
         Ok(s) => {
             info!("🔗 L2 TCP connected at {}", l2_addr);
@@ -1227,6 +1246,7 @@ async fn data_actor_l2(
                             _ => None,
                         };
                         if let Some(ev) = event {
+                            trace!(symbol=%data.get("symbol").and_then(|v| v.as_str()).unwrap_or("?"), "L2 data received");
                             if tx.send(ev).await.is_err() {
                                 info!("DataActor[l2]: channel closed");
                                 return;

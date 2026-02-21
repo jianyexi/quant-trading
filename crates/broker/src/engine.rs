@@ -23,7 +23,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
-use tracing::{info, warn, error};
+use tracing::{info, warn, error, debug, trace};
 use uuid::Uuid;
 
 use quant_core::models::*;
@@ -425,6 +425,7 @@ impl TradingEngine {
         let (market_tx, market_rx) = mpsc::channel::<MarketEvent>(512);
         let (signal_tx, signal_rx) = mpsc::channel::<TradeSignal>(64);
         let (order_tx, order_rx) = mpsc::channel::<OrderRequest>(64);
+        debug!(market_buf=512, signal_buf=64, order_buf=64, "Actor channels created");
 
         // Spawn DataActor
         let data_shutdown = shutdown_rx.clone();
@@ -489,6 +490,7 @@ impl TradingEngine {
                 let pnl = account.portfolio.total_value - self.config.initial_capital;
                 j.record_engine_stopped(pnl, account.portfolio.total_value);
             }
+            debug!("Engine shutdown signal sent");
             let _ = tx.send(true);
             self.running.store(false, std::sync::atomic::Ordering::SeqCst);
             info!("🛑 Trading engine stopped");
@@ -501,6 +503,7 @@ impl TradingEngine {
 
     /// Get current engine status (lock-free reads).
     pub async fn status(&self) -> EngineStatus {
+        trace!("Status snapshot requested");
         let stats = &self.stats;
         let account = self.broker.get_account().await.unwrap_or_else(|_| Account {
             id: Uuid::new_v4(),
@@ -635,6 +638,7 @@ async fn strategy_actor<F>(
                     let mut s = strategy_factory();
                     s.on_init();
                     strategies.insert(sym.clone(), s);
+                    debug!("📈 Strategy initialized for {}", sym);
                 }
                 last_seen.insert(sym.clone(), std::time::Instant::now());
                 let strategy = strategies.get_mut(&sym).unwrap();
@@ -646,6 +650,7 @@ async fn strategy_actor<F>(
                     MarketEvent::Depth(depth) => strategy.on_depth(depth),
                 };
                 let factor_us = t0.elapsed().as_micros() as u64;
+                trace!(symbol=%sym, factor_us=%factor_us, "Factor computed");
 
                 // Lock-free latency stats update
                 stats.last_factor_us.store(factor_us, Ordering::Relaxed);
@@ -658,6 +663,7 @@ async fn strategy_actor<F>(
 
                 if let Some(signal) = signal_opt {
                     if signal.is_buy() || signal.is_sell() {
+
                         stats.total_signals.fetch_add(1, Ordering::Relaxed);
                         let action_str = if signal.is_buy() { "BUY" } else { "SELL" };
                         let price = event.price();
@@ -672,6 +678,8 @@ async fn strategy_actor<F>(
                             return;
                         }
                     }
+                } else {
+                    trace!(symbol=%sym, "Signal: HOLD");
                 }
             }
             _ = shutdown.changed() => {
@@ -719,9 +727,11 @@ async fn risk_actor(
                     }
                 };
                 let portfolio = &account.portfolio;
+                debug!(cash = %format!("{:.2}", account.portfolio.cash), positions = account.portfolio.positions.len(), total_value = %format!("{:.2}", account.portfolio.total_value), "Risk check: portfolio snapshot");
 
                 // Update portfolio value for drawdown tracking
                 let halted = enforcer.update_portfolio_value(portfolio.total_value);
+                trace!(total_value = %format!("{:.2}", portfolio.total_value), halted = halted, "Drawdown check");
                 if halted {
                     warn!("🔴 Max drawdown breached! Engine trading halted.");
                     if let Some(ref j) = journal {
@@ -799,7 +809,14 @@ async fn risk_actor(
                         .unwrap_or(0.0)
                 };
 
+                {
+                    let side_str_for_log = if side == OrderSide::Buy { "BUY" } else { "SELL" };
+                    let allocation_or_na = if side == OrderSide::Buy { portfolio.total_value * position_size_pct } else { 0.0 };
+                    debug!(symbol = %ts.signal.symbol, side = %side_str_for_log, qty = %format!("{:.0}", quantity), price = %format!("{:.2}", price), allocation = %format!("{:.2}", allocation_or_na), "Position sized");
+                }
+
                 if quantity <= 0.0 {
+                    debug!(symbol=%ts.signal.symbol, "Skip: zero quantity");
                     continue;
                 }
 
@@ -865,12 +882,14 @@ async fn order_actor(
                 let order = req.order;
                 let side_str = if order.side == OrderSide::Buy { "BUY" } else { "SELL" };
 
+                debug!(order_id = %order.id, symbol = %order.symbol, side = %side_str, qty = %format!("{:.0}", order.quantity), price = %format!("{:.2}", order.price), "Submitting order");
                 let t0 = std::time::Instant::now();
                 match broker.submit_order(&order).await {
                     Ok(submitted) => {
                         let order_us = t0.elapsed().as_micros() as u64;
                         enforcer.record_success();
                         let status_str = format!("{:?}", submitted.status);
+                        debug!(order_id=%submitted.id, symbol=%order.symbol, fill_status=%status_str, latency_us=%order_us, "Order filled");
                         let report = ExecutionReport {
                             order_id: submitted.id,
                             symbol: order.symbol.clone(),

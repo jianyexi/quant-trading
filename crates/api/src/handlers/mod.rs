@@ -3,12 +3,14 @@ mod backtest;
 mod trade;
 mod factor;
 mod notification;
+mod metrics;
 
 pub use market::*;
 pub use backtest::*;
 pub use trade::*;
 pub use factor::*;
 pub use notification::*;
+pub use metrics::*;
 
 use axum::{
     extract::{Path, Query, State},
@@ -18,6 +20,8 @@ use axum::{
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+use tracing::debug;
 
 use crate::state::AppState;
 
@@ -232,6 +236,7 @@ pub async fn list_orders(
 pub async fn get_portfolio(
     State(state): State<AppState>,
 ) -> Json<Value> {
+    debug!("Portfolio requested");
     let engine = state.engine.lock().await;
     if let Some(eng) = engine.as_ref() {
         let status = eng.status().await;
@@ -372,6 +377,7 @@ pub async fn screen_scan(
     State(_state): State<AppState>,
     Json(req): Json<ScreenRequest>,
 ) -> Json<Value> {
+    debug!("Screener scan requested");
     use std::collections::HashMap;
     use quant_strategy::screener::{ScreenerConfig, StockScreener, StockEntry};
 

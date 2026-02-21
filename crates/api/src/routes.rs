@@ -125,7 +125,7 @@ async fn request_logger(
     let method = request.method().to_string();
     let path = request.uri().path().to_string();
     // Skip logging the logs endpoint itself to avoid recursion
-    if path == "/api/logs" {
+    if path == "/api/logs" || path == "/api/metrics" {
         return next.run(request).await;
     }
     let start = std::time::Instant::now();
@@ -149,6 +149,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
     let api_routes = Router::new()
         .route("/api/health", get(handlers::health))
         .route("/api/dashboard", get(handlers::get_dashboard))
+        .route("/api/metrics", get(handlers::get_metrics))
         .route("/api/strategies", get(handlers::list_strategies))
         .route("/api/strategy/config", get(handlers::load_strategy_config).post(handlers::save_strategy_config))
         .nest("/api/market", market_routes())

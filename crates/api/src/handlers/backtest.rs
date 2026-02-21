@@ -5,6 +5,8 @@ use axum::{
 };
 use serde_json::{json, Value};
 
+use tracing::debug;
+
 use crate::state::AppState;
 use super::BacktestRequest;
 use super::market::{fetch_real_klines_with_period, generate_backtest_klines};
@@ -19,6 +21,7 @@ pub async fn run_backtest(
 
     let capital = req.capital.unwrap_or(1_000_000.0);
     let period = req.period.as_deref().unwrap_or("daily");
+    debug!(symbol=%req.symbol, "Backtest started");
 
     let (klines, data_source) = match fetch_real_klines_with_period(&req.symbol, &req.start, &req.end, period) {
         Ok(k) if !k.is_empty() => {

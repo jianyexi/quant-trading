@@ -14,6 +14,7 @@ import {
   ScrollText,
   Dna,
   Bell,
+  Activity,
 } from 'lucide-react';
 
 const navItems = [
@@ -30,6 +31,7 @@ const navItems = [
   { to: '/portfolio', label: 'Portfolio', icon: Wallet },
   { to: '/notifications', label: '通知中心', icon: Bell },
   { to: '/logs', label: '系统日志', icon: ScrollText },
+  { to: '/metrics', label: '性能监控', icon: Activity },
   { to: '/chat', label: 'AI Chat', icon: MessageSquare },
 ];
 

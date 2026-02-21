@@ -6,6 +6,8 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use tracing::{debug, warn};
+
 use crate::state::AppState;
 use super::find_python;
 
@@ -55,6 +57,8 @@ pub async fn trade_start(
     let interval = req.interval.unwrap_or(5);
     let position_size = req.position_size.unwrap_or(0.15);
     let mode = req.mode.as_deref().unwrap_or("paper");
+
+    debug!(mode=%mode, strategy=%strategy_name, symbols=?symbols, interval=%interval, "Trade start request");
 
     let config = EngineConfig {
         strategy_name: strategy_name.clone(),
@@ -128,6 +132,7 @@ pub async fn trade_start(
                 })));
             },
             Err(e) => {
+                warn!(error=%e, "Engine start failed");
                 return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
                     "error": format!("Cannot reach QMT bridge: {}", e)
                 })));
@@ -198,6 +203,7 @@ pub async fn trade_start(
 pub async fn trade_stop(
     State(state): State<AppState>,
 ) -> Json<Value> {
+    debug!("Trade stop request");
     let mut engine_guard = state.engine.lock().await;
     if let Some(ref mut eng) = *engine_guard {
         eng.stop().await;
