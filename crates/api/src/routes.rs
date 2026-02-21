@@ -150,6 +150,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .route("/api/health", get(handlers::health))
         .route("/api/dashboard", get(handlers::get_dashboard))
         .route("/api/metrics", get(handlers::get_metrics))
+        .route("/api/reports", get(handlers::get_reports))
         .route("/api/strategies", get(handlers::list_strategies))
         .route("/api/strategy/config", get(handlers::load_strategy_config).post(handlers::save_strategy_config))
         .nest("/api/market", market_routes())

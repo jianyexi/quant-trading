@@ -706,3 +706,9 @@ export async function testNotification(): Promise<{ results: Array<{ channel: st
 export async function getMetrics(): Promise<any> {
   return fetchJson('/metrics');
 }
+
+// ── Reports ─────────────────────────────────────────────────────────
+
+export async function getReports(): Promise<any> {
+  return fetchJson('/reports');
+}

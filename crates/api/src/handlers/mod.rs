@@ -4,6 +4,7 @@ mod trade;
 mod factor;
 mod notification;
 mod metrics;
+mod reports;
 
 pub use market::*;
 pub use backtest::*;
@@ -11,6 +12,7 @@ pub use trade::*;
 pub use factor::*;
 pub use notification::*;
 pub use metrics::*;
+pub use reports::*;
 
 use axum::{
     extract::{Path, Query, State},

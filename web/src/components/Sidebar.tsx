@@ -15,6 +15,7 @@ import {
   Dna,
   Bell,
   Activity,
+  FileBarChart,
 } from 'lucide-react';
 
 const navItems = [
@@ -32,6 +33,7 @@ const navItems = [
   { to: '/notifications', label: '通知中心', icon: Bell },
   { to: '/logs', label: '系统日志', icon: ScrollText },
   { to: '/metrics', label: '性能监控', icon: Activity },
+  { to: '/reports', label: '统计报表', icon: FileBarChart },
   { to: '/chat', label: 'AI Chat', icon: MessageSquare },
 ];
 
