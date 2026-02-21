@@ -300,6 +300,8 @@ impl MlInferenceClient {
 
         let addr = self.host_port().ok_or("Invalid bridge URL")?;
 
+        let infer_t0 = std::time::Instant::now();
+
         use std::io::{Read, Write};
         let mut stream = std::net::TcpStream::connect_timeout(
             &addr.parse().map_err(|e| format!("Addr parse: {}", e))?,
@@ -337,6 +339,8 @@ impl MlInferenceClient {
                 .map_err(|e| format!("JSON parse error: {} (raw: {})", e, &json_clean[..json_clean.len().min(100)]))?;
             let prob = result["probability"].as_f64().unwrap_or(0.5);
             *self.available.lock().unwrap() = Some(true);
+            let infer_us = infer_t0.elapsed().as_micros();
+            tracing::debug!(mode="http", latency_us=%infer_us, "ML inference");
             Ok(prob)
         } else {
             Err(format!("Invalid HTTP response"))
@@ -471,6 +475,8 @@ impl TcpMqInferenceClient {
     pub fn predict(&self, features: &[f32; NUM_FEATURES]) -> Result<f64, String> {
         self.ensure_connected()?;
 
+        let infer_t0 = std::time::Instant::now();
+
         let mut conn = self.conn.lock().unwrap();
         let stream = conn.as_mut().ok_or("No connection")?;
 
@@ -489,6 +495,8 @@ impl TcpMqInferenceClient {
         match Self::recv_msg_inner(stream) {
             Ok(resp) => {
                 if let Some(prob) = resp.get("probability").and_then(|v| v.as_f64()) {
+                    let infer_us = infer_t0.elapsed().as_micros();
+                    tracing::debug!(mode="tcp", latency_us=%infer_us, "ML inference");
                     Ok(prob)
                 } else if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
                     Err(format!("Server error: {}", err))

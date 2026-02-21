@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::Utc;
 use sqlx::PgPool;
@@ -18,6 +19,27 @@ use tracing::{info, warn, error, debug, trace};
 use quant_core::models::*;
 
 use crate::engine::{MarketEvent, DataMode};
+
+// ── Data Actor Stats ────────────────────────────────────────────────
+
+/// Shared counters for data fetch latency tracking.
+pub struct DataActorStats {
+    pub last_fetch_us: AtomicU64,
+    pub total_fetch_us: AtomicU64,
+    pub fetch_count: AtomicU64,
+    pub errors: AtomicU64,
+}
+
+impl Default for DataActorStats {
+    fn default() -> Self {
+        Self {
+            last_fetch_us: AtomicU64::new(0),
+            total_fetch_us: AtomicU64::new(0),
+            fetch_count: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+        }
+    }
+}
 
 // ── Tick Recorder ───────────────────────────────────────────────────
 // Records market data bars for future replay & analysis.
@@ -180,6 +202,7 @@ pub(crate) async fn data_actor(
     tx: mpsc::Sender<MarketEvent>,
     shutdown: watch::Receiver<bool>,
     db_pool: Option<PgPool>,
+    stats: Option<Arc<DataActorStats>>,
 ) {
     match &data_mode {
         DataMode::Simulated => {
@@ -204,7 +227,7 @@ pub(crate) async fn data_actor(
             data_actor_live(
                 symbols, interval_secs,
                 tushare_url.clone(), tushare_token.clone(), akshare_url.clone(),
-                tx, shutdown, recorder,
+                tx, shutdown, recorder, stats,
             ).await;
         }
         DataMode::LowLatency { server_url } => {
@@ -299,6 +322,7 @@ async fn data_actor_live(
     tx: mpsc::Sender<MarketEvent>,
     mut shutdown: watch::Receiver<bool>,
     recorder: Option<Arc<TickRecorder>>,
+    stats: Option<Arc<DataActorStats>>,
 ) {
     let client = reqwest::Client::new();
 
@@ -318,10 +342,18 @@ async fn data_actor_live(
                         Some(k) => k,
                         None => {
                             debug!(symbol=%sym, "Live fetch: no data");
+                            if let Some(ref s) = stats {
+                                s.errors.fetch_add(1, Ordering::Relaxed);
+                            }
                             continue;
                         }
                     };
                     let fetch_us = fetch_start.elapsed().as_micros();
+                    if let Some(ref s) = stats {
+                        s.last_fetch_us.store(fetch_us as u64, Ordering::Relaxed);
+                        s.total_fetch_us.fetch_add(fetch_us as u64, Ordering::Relaxed);
+                        s.fetch_count.fetch_add(1, Ordering::Relaxed);
+                    }
                     trace!(symbol=%sym, fetch_us=%fetch_us, "Fetch latency");
                     trace!(symbol=%sym, close=%format!("{:.2}", kline.close), volume=%format!("{:.0}", kline.volume), "Live tick");
 

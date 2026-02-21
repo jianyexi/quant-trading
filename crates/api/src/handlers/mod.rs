@@ -5,6 +5,7 @@ mod factor;
 mod notification;
 mod metrics;
 mod reports;
+mod latency;
 
 pub use market::*;
 pub use backtest::*;
@@ -13,6 +14,7 @@ pub use factor::*;
 pub use notification::*;
 pub use metrics::*;
 pub use reports::*;
+pub use latency::*;
 
 use axum::{
     extract::{Path, Query, State},

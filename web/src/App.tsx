@@ -16,6 +16,7 @@ import FactorMining from './pages/factor-mining';
 import Notifications from './pages/Notifications';
 import Metrics from './pages/Metrics';
 import Reports from './pages/Reports';
+import Latency from './pages/Latency';
 
 export default function App() {
   return (
@@ -37,6 +38,7 @@ export default function App() {
           <Route path="logs" element={<Logs />} />
           <Route path="metrics" element={<Metrics />} />
           <Route path="reports" element={<Reports />} />
+          <Route path="latency" element={<Latency />} />
           <Route path="chat" element={<Chat />} />
         </Route>
       </Routes>

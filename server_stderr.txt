@@ -1,3 +1,0 @@
-[ml_retrain] handler entered, algorithms=lgb
-[ml_retrain] using python: C:\Users\jianyxi\AppData\Local\Programs\Python\Python312\python.exe
-[ml_retrain] exit=exit code: 0, stdout_len=1422, stderr_len=0

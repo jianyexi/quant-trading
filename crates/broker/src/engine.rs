@@ -31,6 +31,8 @@ use quant_core::traits::{Broker, Strategy};
 use quant_core::types::*;
 use quant_risk::enforcement::{RiskConfig, RiskEnforcer, PositionInfo};
 
+use crate::data_actors::DataActorStats;
+
 // ── Messages ────────────────────────────────────────────────────────
 
 /// Market data event from DataActor → StrategyActor.
@@ -117,6 +119,13 @@ pub struct PipelineLatency {
     pub last_order_submit_us: u64,
     pub avg_factor_compute_us: u64,
     pub total_bars_processed: u64,
+    pub avg_risk_check_us: u64,
+    pub avg_order_submit_us: u64,
+    pub total_risk_checks: u64,
+    pub total_orders_submitted: u64,
+    pub last_data_fetch_us: u64,
+    pub avg_data_fetch_us: u64,
+    pub total_data_fetches: u64,
 }
 
 /// Real-time performance metrics.
@@ -288,6 +297,10 @@ struct EngineStatsAtomic {
     last_order_us: AtomicU64,
     total_factor_us: AtomicU64,
     total_bars: AtomicU64,
+    total_risk_us: AtomicU64,
+    risk_checks: AtomicU64,
+    total_order_us: AtomicU64,
+    order_count: AtomicU64,
     // Recent trades use Mutex (infrequent cold-path writes), bounded VecDeque
     recent_trades: std::sync::Mutex<std::collections::VecDeque<ExecutionReport>>,
 }
@@ -309,6 +322,10 @@ impl Default for EngineStatsAtomic {
             last_order_us: AtomicU64::new(0),
             total_factor_us: AtomicU64::new(0),
             total_bars: AtomicU64::new(0),
+            total_risk_us: AtomicU64::new(0),
+            risk_checks: AtomicU64::new(0),
+            total_order_us: AtomicU64::new(0),
+            order_count: AtomicU64::new(0),
             recent_trades: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(1000)),
         }
     }
@@ -343,6 +360,8 @@ pub struct TradingEngine {
     risk_enforcer: Arc<RiskEnforcer>,
     /// Notification service for order fills, risk alerts, etc.
     notifier: Option<Arc<Notifier>>,
+    /// Shared data actor fetch latency stats
+    data_stats: Arc<DataActorStats>,
 }
 
 impl TradingEngine {
@@ -372,6 +391,7 @@ impl TradingEngine {
             journal,
             risk_enforcer,
             notifier,
+            data_stats: Arc::new(DataActorStats::default()),
         }
     }
 
@@ -394,6 +414,7 @@ impl TradingEngine {
             journal,
             risk_enforcer,
             notifier,
+            data_stats: Arc::new(DataActorStats::default()),
         }
     }
 
@@ -433,8 +454,9 @@ impl TradingEngine {
         let data_interval = self.config.interval_secs;
         let data_mode = self.config.data_mode.clone();
         let data_db_pool = self.config.db_pool.clone();
+        let data_stats = Some(self.data_stats.clone());
         tokio::spawn(async move {
-            crate::data_actors::data_actor(data_symbols, data_interval, data_mode, market_tx, data_shutdown, data_db_pool).await;
+            crate::data_actors::data_actor(data_symbols, data_interval, data_mode, market_tx, data_shutdown, data_db_pool, data_stats).await;
         });
 
         // Record engine start in journal
@@ -457,8 +479,9 @@ impl TradingEngine {
         let risk_pos_pct = self.config.position_size_pct;
         let risk_journal = self.journal.clone();
         let risk_enforcer = self.risk_enforcer.clone();
+        let risk_stats = self.stats.clone();
         tokio::spawn(async move {
-            risk_actor(signal_rx, order_tx, risk_broker, risk_max_conc, risk_pos_pct, risk_journal, risk_enforcer, risk_shutdown).await;
+            risk_actor(signal_rx, order_tx, risk_broker, risk_max_conc, risk_pos_pct, risk_journal, risk_enforcer, risk_stats, risk_shutdown).await;
         });
 
         // Spawn OrderActor
@@ -573,6 +596,22 @@ impl TradingEngine {
                     stats.total_factor_us.load(Ordering::Relaxed) / total_bars
                 } else { 0 },
                 total_bars_processed: total_bars,
+                avg_risk_check_us: {
+                    let rc = stats.risk_checks.load(Ordering::Relaxed);
+                    if rc > 0 { stats.total_risk_us.load(Ordering::Relaxed) / rc } else { 0 }
+                },
+                avg_order_submit_us: {
+                    let oc = stats.order_count.load(Ordering::Relaxed);
+                    if oc > 0 { stats.total_order_us.load(Ordering::Relaxed) / oc } else { 0 }
+                },
+                total_risk_checks: stats.risk_checks.load(Ordering::Relaxed),
+                total_orders_submitted: stats.order_count.load(Ordering::Relaxed),
+                last_data_fetch_us: self.data_stats.last_fetch_us.load(Ordering::Relaxed),
+                avg_data_fetch_us: {
+                    let df = self.data_stats.fetch_count.load(Ordering::Relaxed);
+                    if df > 0 { self.data_stats.total_fetch_us.load(Ordering::Relaxed) / df } else { 0 }
+                },
+                total_data_fetches: self.data_stats.fetch_count.load(Ordering::Relaxed),
             },
         }
     }
@@ -706,6 +745,7 @@ async fn risk_actor(
     position_size_pct: f64,
     journal: Option<Arc<JournalStore>>,
     enforcer: Arc<RiskEnforcer>,
+    stats: Arc<EngineStatsAtomic>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let risk_checker = quant_risk::checks::RiskChecker::new(max_concentration, 0.05, 0.15);
@@ -719,6 +759,7 @@ async fn risk_actor(
     loop {
         tokio::select! {
             Some(ts) = rx.recv() => {
+                let risk_t0 = std::time::Instant::now();
                 let account = match broker.get_account().await {
                     Ok(a) => a,
                     Err(e) => {
@@ -850,6 +891,10 @@ async fn risk_actor(
                 if tx.send(OrderRequest { order }).await.is_err() {
                     return;
                 }
+                let risk_us = risk_t0.elapsed().as_micros() as u64;
+                stats.last_risk_us.store(risk_us, Ordering::Relaxed);
+                stats.total_risk_us.fetch_add(risk_us, Ordering::Relaxed);
+                stats.risk_checks.fetch_add(1, Ordering::Relaxed);
             }
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
@@ -925,6 +970,8 @@ async fn order_actor(
                         stats.total_orders.fetch_add(1, Ordering::Relaxed);
                         stats.total_fills.fetch_add(1, Ordering::Relaxed);
                         stats.last_order_us.store(order_us, Ordering::Relaxed);
+                        stats.total_order_us.fetch_add(order_us, Ordering::Relaxed);
+                        stats.order_count.fetch_add(1, Ordering::Relaxed);
                         if let Ok(mut trades) = stats.recent_trades.lock() {
                             if trades.len() >= 1000 { trades.pop_front(); }
                             trades.push_back(report);
@@ -1065,6 +1112,7 @@ mod tests {
         tokio::spawn(async move {
             risk_actor(signal_rx, order_tx, broker, 0.05, 0.10, None,
                 Arc::new(RiskEnforcer::new(RiskConfig::default(), 100_000.0)),
+                Arc::new(EngineStatsAtomic::default()),
                 shutdown_rx).await;
         });
 

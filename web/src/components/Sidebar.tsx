@@ -16,6 +16,7 @@ import {
   Bell,
   Activity,
   FileBarChart,
+  Timer,
 } from 'lucide-react';
 
 const navItems = [
@@ -34,6 +35,7 @@ const navItems = [
   { to: '/logs', label: '系统日志', icon: ScrollText },
   { to: '/metrics', label: '性能监控', icon: Activity },
   { to: '/reports', label: '统计报表', icon: FileBarChart },
+  { to: '/latency', label: '延迟分析', icon: Timer },
   { to: '/chat', label: 'AI Chat', icon: MessageSquare },
 ];
 

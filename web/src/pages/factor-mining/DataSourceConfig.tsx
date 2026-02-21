@@ -1,6 +1,5 @@
-import { useState } from 'react';
 
-const DEFAULT_SYMBOLS = '600519,000858,300750,600036,601318,002415,000651,600276';
+const DEFAULT_SYMBOLS= '600519,000858,300750,600036,601318,002415,000651,600276';
 
 export default function DataSourceConfig({
   dataSource, setDataSource,

@@ -200,15 +200,19 @@ impl LightGBMModel {
     /// Predict probability for a feature vector.
     /// Returns sigmoid(sum of all tree outputs * shrinkage) for binary classification.
     pub fn predict(&self, features: &[f32]) -> f64 {
+        let infer_t0 = std::time::Instant::now();
         let raw_score: f64 = self.trees.iter()
             .map(|t| t.predict(features) * t.shrinkage)
             .sum();
 
-        if self.sigmoid {
+        let result = if self.sigmoid {
             1.0 / (1.0 + (-raw_score).exp()) // sigmoid
         } else {
             raw_score
-        }
+        };
+        let infer_us = infer_t0.elapsed().as_micros();
+        tracing::debug!(mode="embedded", latency_us=%infer_us, "ML inference");
+        result
     }
 
     /// Number of trees in the model.

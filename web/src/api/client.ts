@@ -189,6 +189,13 @@ export interface PipelineLatency {
   last_risk_check_us: number;
   last_order_submit_us: number;
   total_bars_processed: number;
+  avg_risk_check_us: number;
+  avg_order_submit_us: number;
+  total_risk_checks: number;
+  total_orders_submitted: number;
+  last_data_fetch_us: number;
+  avg_data_fetch_us: number;
+  total_data_fetches: number;
 }
 
 export interface TradeStatus {
@@ -711,4 +718,10 @@ export async function getMetrics(): Promise<any> {
 
 export async function getReports(): Promise<any> {
   return fetchJson('/reports');
+}
+
+// ── Latency ─────────────────────────────────────────────────────────
+
+export async function getLatency(): Promise<any> {
+  return fetchJson('/latency');
 }
