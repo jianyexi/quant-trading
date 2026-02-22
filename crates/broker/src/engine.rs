@@ -474,8 +474,9 @@ impl TradingEngine {
         let strat_shutdown = shutdown_rx.clone();
         let strat_stats = self.stats.clone();
         let strat_journal = self.journal.clone();
+        let strat_notifier = self.notifier.clone();
         let h_strategy = tokio::spawn(async move {
-            strategy_actor(strategy_factory, market_rx, signal_tx, strat_stats, strat_journal, strat_shutdown).await;
+            strategy_actor(strategy_factory, market_rx, signal_tx, strat_stats, strat_journal, strat_notifier, strat_shutdown).await;
         });
 
         // Spawn RiskActor
@@ -486,8 +487,9 @@ impl TradingEngine {
         let risk_journal = self.journal.clone();
         let risk_enforcer = self.risk_enforcer.clone();
         let risk_stats = self.stats.clone();
+        let risk_notifier = self.notifier.clone();
         let h_risk = tokio::spawn(async move {
-            risk_actor(signal_rx, order_tx, risk_broker, risk_max_conc, risk_pos_pct, risk_journal, risk_enforcer, risk_stats, risk_shutdown).await;
+            risk_actor(signal_rx, order_tx, risk_broker, risk_max_conc, risk_pos_pct, risk_journal, risk_enforcer, risk_stats, risk_notifier, risk_shutdown).await;
         });
 
         // Spawn OrderActor
@@ -511,6 +513,17 @@ impl TradingEngine {
         ];
 
         info!("🚀 Trading engine started: {} on {:?}", self.config.strategy_name, self.config.symbols);
+
+        // Notify engine started
+        if let Some(ref n) = self.notifier {
+            let n = n.clone();
+            let strategy = self.config.strategy_name.clone();
+            let symbols = self.config.symbols.clone();
+            tokio::spawn(async move {
+                n.notify_engine_event("engine_started",
+                    &format!("策略: {}\n标的: {:?}", strategy, symbols)).await;
+            });
+        }
     }
 
     /// Stop the engine gracefully.
@@ -531,6 +544,24 @@ impl TradingEngine {
             let _ = tx.send(true);
             self.running.store(false, std::sync::atomic::Ordering::SeqCst);
             info!("🛑 Trading engine stopped");
+
+            // Notify engine stopped
+            if let Some(ref n) = self.notifier {
+                let n = n.clone();
+                let pnl_str = if let Some(ref j) = self.journal {
+                    let account = self.broker.get_account().await.unwrap_or_else(|_| Account {
+                        id: Uuid::new_v4(), name: String::new(),
+                        portfolio: Portfolio { positions: HashMap::new(), cash: 0.0, total_value: 0.0 },
+                        initial_capital: self.config.initial_capital,
+                    });
+                    format!("PnL: ¥{:.2}", account.portfolio.total_value - self.config.initial_capital)
+                } else {
+                    String::new()
+                };
+                tokio::spawn(async move {
+                    n.notify_engine_event("engine_stopped", &pnl_str).await;
+                });
+            }
         }
     }
 
@@ -658,6 +689,7 @@ async fn strategy_actor<F>(
     tx: mpsc::Sender<TradeSignal>,
     stats: Arc<EngineStatsAtomic>,
     journal: Option<Arc<JournalStore>>,
+    notifier: Option<Arc<Notifier>>,
     mut shutdown: watch::Receiver<bool>,
 ) where
     F: Fn() -> Box<dyn Strategy> + Send + 'static,
@@ -720,6 +752,13 @@ async fn strategy_actor<F>(
                                 "unknown panic".to_string()
                             };
                             error!("🔴 Strategy PANIC for {}: {} — skipping bar (actor continues)", sym, msg);
+                            // Notify strategy panic
+                            if let Some(ref n) = notifier {
+                                let n = n.clone();
+                                let s = sym.clone();
+                                let m = msg.clone();
+                                tokio::spawn(async move { n.notify_strategy_panic(&s, &m).await; });
+                            }
                             // Remove corrupted strategy instance; will be recreated on next bar
                             strategies.remove(&sym);
                             None
@@ -784,6 +823,7 @@ async fn risk_actor(
     journal: Option<Arc<JournalStore>>,
     enforcer: Arc<RiskEnforcer>,
     stats: Arc<EngineStatsAtomic>,
+    notifier: Option<Arc<Notifier>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let risk_checker = quant_risk::checks::RiskChecker::new(max_concentration, 0.05, 0.15);
@@ -817,6 +857,13 @@ async fn risk_actor(
                         j.record_risk_rejected(&ts.signal.symbol, OrderSide::Buy, 0.0, 0.0,
                             "Max drawdown limit exceeded — engine halted");
                     }
+                    if let Some(ref n) = notifier {
+                        let n = n.clone();
+                        let peak = enforcer.status().peak_value;
+                        let current = portfolio.total_value;
+                        let dd = if peak > 0.0 { (peak - current) / peak } else { 0.0 };
+                        tokio::spawn(async move { n.notify_drawdown_halted(dd, peak, current).await; });
+                    }
                 }
 
                 // Check stop-losses on current positions
@@ -835,6 +882,15 @@ async fn risk_actor(
                 for sl in &sl_signals {
                     warn!("🛑 Stop-loss triggered: {} loss={:.1}% > threshold={:.1}%",
                         sl.symbol, sl.loss_pct.abs() * 100.0, sl.threshold * 100.0);
+                    // Notify stop-loss
+                    if let Some(ref n) = notifier {
+                        let n = n.clone();
+                        let sym = sl.symbol.clone();
+                        let loss = sl.loss_pct.abs();
+                        let qty = sl.quantity;
+                        let px = sl.current_price;
+                        tokio::spawn(async move { n.notify_stop_loss(&sym, loss, qty, px).await; });
+                    }
                     let sl_order = Order {
                         id: Uuid::new_v4(),
                         symbol: sl.symbol.clone(),
@@ -872,6 +928,15 @@ async fn risk_actor(
                         warn!("🚫 Risk enforcer blocked BUY: {}", reason);
                         if let Some(ref j) = journal {
                             j.record_risk_rejected(&ts.signal.symbol, side, 0.0, price, &reason);
+                        }
+                        // Notify daily loss or drawdown block (only once per event)
+                        if reason.contains("daily") || reason.contains("Daily") {
+                            if let Some(ref n) = notifier {
+                                let n = n.clone();
+                                let daily_pnl = enforcer.status().daily_pnl;
+                                let limit = enforcer.config().max_daily_loss_pct;
+                                tokio::spawn(async move { n.notify_daily_loss_paused(daily_pnl, limit).await; });
+                            }
                         }
                         continue;
                     }
@@ -1170,6 +1235,7 @@ mod tests {
             risk_actor(signal_rx, order_tx, broker, 0.05, 0.10, None,
                 Arc::new(RiskEnforcer::new(RiskConfig::default(), 100_000.0)),
                 Arc::new(EngineStatsAtomic::default()),
+                None,
                 shutdown_rx).await;
         });
 

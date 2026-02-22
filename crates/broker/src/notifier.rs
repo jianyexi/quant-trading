@@ -101,7 +101,27 @@ pub struct EventFilter {
     pub risk_alert: bool,
     pub engine_started: bool,
     pub engine_stopped: bool,
+    /// Stop-loss triggered on a position
+    #[serde(default = "default_true")]
+    pub stop_loss_triggered: bool,
+    /// Max drawdown breached — engine halted
+    #[serde(default = "default_true")]
+    pub drawdown_halted: bool,
+    /// Daily loss limit reached — buys paused
+    #[serde(default = "default_true")]
+    pub daily_loss_paused: bool,
+    /// Actor crashed (strategy/data/risk/order)
+    #[serde(default = "default_true")]
+    pub actor_crashed: bool,
+    /// Persistent data fetch failure
+    #[serde(default = "default_true")]
+    pub data_fetch_failed: bool,
+    /// Strategy panic caught
+    #[serde(default = "default_true")]
+    pub strategy_panic: bool,
 }
+
+fn default_true() -> bool { true }
 
 impl Default for EventFilter {
     fn default() -> Self {
@@ -111,6 +131,12 @@ impl Default for EventFilter {
             risk_alert: true,
             engine_started: false,
             engine_stopped: true,
+            stop_loss_triggered: true,
+            drawdown_halted: true,
+            daily_loss_paused: true,
+            actor_crashed: true,
+            data_fetch_failed: true,
+            strategy_panic: true,
         }
     }
 }
@@ -311,6 +337,84 @@ impl Notifier {
                     else { "🛑 交易引擎停止".to_string() };
         self.dispatch(&cfg, event, &title, details,
             None, None, None, None).await;
+    }
+
+    /// Notify: stop-loss triggered on a position.
+    pub async fn notify_stop_loss(&self, symbol: &str, loss_pct: f64, quantity: f64, price: f64) {
+        let cfg = self.get_config();
+        if !cfg.enabled || !cfg.events.stop_loss_triggered { return; }
+        let title = format!("🛑 止损触发 | {}", symbol);
+        let message = format!(
+            "止损平仓: {} x {:.0} @ ¥{:.2}\n亏损: {:.2}%\n已自动提交卖出订单",
+            symbol, quantity, price, loss_pct * 100.0
+        );
+        self.dispatch(&cfg, "stop_loss_triggered", &title, &message,
+            Some(symbol), Some("SELL"), Some(quantity), Some(price)).await;
+    }
+
+    /// Notify: max drawdown breached — engine halted.
+    pub async fn notify_drawdown_halted(&self, drawdown_pct: f64, peak: f64, current: f64) {
+        let cfg = self.get_config();
+        if !cfg.enabled || !cfg.events.drawdown_halted { return; }
+        let title = "🔴 最大回撤熔断 — 交易已停止".to_string();
+        let message = format!(
+            "回撤已超过阈值，交易引擎已自动停止！\n回撤: {:.2}%\n峰值: ¥{:.2}\n当前: ¥{:.2}\n\n请检查策略和持仓后手动恢复。",
+            drawdown_pct * 100.0, peak, current
+        );
+        self.dispatch(&cfg, "drawdown_halted", &title, &message,
+            None, None, None, None).await;
+    }
+
+    /// Notify: daily loss limit reached — buys paused.
+    pub async fn notify_daily_loss_paused(&self, daily_pnl: f64, limit_pct: f64) {
+        let cfg = self.get_config();
+        if !cfg.enabled || !cfg.events.daily_loss_paused { return; }
+        let title = "🟡 每日亏损限制 — 买入已暂停".to_string();
+        let message = format!(
+            "今日亏损已达限制，新买入交易已暂停。\n今日PnL: ¥{:.2}\n限制: {:.2}%\n\n卖出仍可执行。每日重置后自动恢复。",
+            daily_pnl, limit_pct * 100.0
+        );
+        self.dispatch(&cfg, "daily_loss_paused", &title, &message,
+            None, None, None, None).await;
+    }
+
+    /// Notify: actor crashed (fatal system event).
+    pub async fn notify_actor_crashed(&self, actor_name: &str, error: &str) {
+        let cfg = self.get_config();
+        if !cfg.enabled || !cfg.events.actor_crashed { return; }
+        let title = format!("🔴 Actor崩溃 | {}", actor_name);
+        let message = format!(
+            "交易引擎组件崩溃！\n组件: {}\n错误: {}\n\n该组件已停止工作，请立即检查！",
+            actor_name, error
+        );
+        self.dispatch(&cfg, "actor_crashed", &title, &message,
+            None, None, None, None).await;
+    }
+
+    /// Notify: strategy panic caught.
+    pub async fn notify_strategy_panic(&self, symbol: &str, error: &str) {
+        let cfg = self.get_config();
+        if !cfg.enabled || !cfg.events.strategy_panic { return; }
+        let title = format!("⚠️ 策略异常 | {}", symbol);
+        let message = format!(
+            "策略代码异常（已自动恢复）\n标的: {}\n错误: {}\n\n策略实例已重建，下一根K线将重新运行。",
+            symbol, error
+        );
+        self.dispatch(&cfg, "strategy_panic", &title, &message,
+            Some(symbol), None, None, None).await;
+    }
+
+    /// Notify: persistent data fetch failure.
+    pub async fn notify_data_fetch_failed(&self, symbol: &str, consecutive_errors: u64) {
+        let cfg = self.get_config();
+        if !cfg.enabled || !cfg.events.data_fetch_failed { return; }
+        let title = format!("⚠️ 数据获取失败 | {}", symbol);
+        let message = format!(
+            "行情数据获取持续失败\n标的: {}\n连续失败: {} 次\n\n策略将使用旧数据，请检查网络或数据源状态。",
+            symbol, consecutive_errors
+        );
+        self.dispatch(&cfg, "data_fetch_failed", &title, &message,
+            Some(symbol), None, None, None).await;
     }
 
     /// Send a test notification through all enabled channels.
