@@ -241,9 +241,14 @@ impl RiskEnforcer {
 
     // ── Circuit Breaker ────────────────────────────────────────────
 
-    /// Record a successful order execution. Resets failure counter.
+    /// Record a successful order execution. Resets failure counter and circuit breaker.
     pub fn record_success(&self) {
         self.consecutive_failures.store(0, Ordering::SeqCst);
+        // Auto-recover circuit breaker on success
+        if self.circuit_open.load(Ordering::SeqCst) {
+            self.circuit_open.store(false, Ordering::SeqCst);
+            tracing::info!("🟢 Circuit breaker auto-recovered after successful order");
+        }
     }
 
     /// Record a failed order. Increments counter and may trip circuit breaker.

@@ -335,13 +335,23 @@ async fn data_actor_live(
             _ = tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)) => {
                 for sym in &symbols {
                     let fetch_start = std::time::Instant::now();
-                    let kline = match fetch_realtime_kline(
+                    // Try fetch with one retry on failure
+                    let mut kline_opt = fetch_realtime_kline(
                         &client, sym, &tushare_url, &tushare_token,
                         &akshare_url, &mut prev_prices,
-                    ).await {
+                    ).await;
+                    if kline_opt.is_none() {
+                        // Retry once after 1 second
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        kline_opt = fetch_realtime_kline(
+                            &client, sym, &tushare_url, &tushare_token,
+                            &akshare_url, &mut prev_prices,
+                        ).await;
+                    }
+                    let kline = match kline_opt {
                         Some(k) => k,
                         None => {
-                            debug!(symbol=%sym, "Live fetch: no data");
+                            warn!(symbol=%sym, "Live fetch: no data after retry");
                             if let Some(ref s) = stats {
                                 s.errors.fetch_add(1, Ordering::Relaxed);
                             }

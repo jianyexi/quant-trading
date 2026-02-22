@@ -95,9 +95,14 @@ pub struct QmtBroker {
 
 impl QmtBroker {
     pub fn new(config: QmtConfig) -> Self {
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .connect_timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap_or_else(|_| Client::new());
         Self {
             config,
-            client: Client::new(),
+            client,
             order_map: std::sync::Mutex::new(HashMap::new()),
         }
     }

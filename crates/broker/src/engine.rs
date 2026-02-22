@@ -109,6 +109,8 @@ pub struct EngineStatus {
     pub performance: PerformanceMetrics,
     /// Pipeline latency (microseconds)
     pub latency: PipelineLatency,
+    /// Actor health status (name → alive)
+    pub actor_health: Vec<(String, bool)>,
 }
 
 /// Pipeline latency metrics (microseconds per stage).
@@ -362,6 +364,8 @@ pub struct TradingEngine {
     notifier: Option<Arc<Notifier>>,
     /// Shared data actor fetch latency stats
     data_stats: Arc<DataActorStats>,
+    /// Actor JoinHandles for supervision
+    actor_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)>,
 }
 
 impl TradingEngine {
@@ -392,6 +396,7 @@ impl TradingEngine {
             risk_enforcer,
             notifier,
             data_stats: Arc::new(DataActorStats::default()),
+            actor_handles: Vec::new(),
         }
     }
 
@@ -415,6 +420,7 @@ impl TradingEngine {
             risk_enforcer,
             notifier,
             data_stats: Arc::new(DataActorStats::default()),
+            actor_handles: Vec::new(),
         }
     }
 
@@ -455,7 +461,7 @@ impl TradingEngine {
         let data_mode = self.config.data_mode.clone();
         let data_db_pool = self.config.db_pool.clone();
         let data_stats = Some(self.data_stats.clone());
-        tokio::spawn(async move {
+        let h_data = tokio::spawn(async move {
             crate::data_actors::data_actor(data_symbols, data_interval, data_mode, market_tx, data_shutdown, data_db_pool, data_stats).await;
         });
 
@@ -468,7 +474,7 @@ impl TradingEngine {
         let strat_shutdown = shutdown_rx.clone();
         let strat_stats = self.stats.clone();
         let strat_journal = self.journal.clone();
-        tokio::spawn(async move {
+        let h_strategy = tokio::spawn(async move {
             strategy_actor(strategy_factory, market_rx, signal_tx, strat_stats, strat_journal, strat_shutdown).await;
         });
 
@@ -480,7 +486,7 @@ impl TradingEngine {
         let risk_journal = self.journal.clone();
         let risk_enforcer = self.risk_enforcer.clone();
         let risk_stats = self.stats.clone();
-        tokio::spawn(async move {
+        let h_risk = tokio::spawn(async move {
             risk_actor(signal_rx, order_tx, risk_broker, risk_max_conc, risk_pos_pct, risk_journal, risk_enforcer, risk_stats, risk_shutdown).await;
         });
 
@@ -492,9 +498,17 @@ impl TradingEngine {
         let order_journal = self.journal.clone();
         let order_enforcer = self.risk_enforcer.clone();
         let order_notifier = self.notifier.clone();
-        tokio::spawn(async move {
+        let h_order = tokio::spawn(async move {
             order_actor(order_rx, order_broker, order_stats, order_journal, order_enforcer, order_notifier, order_shutdown, auto_fill).await;
         });
+
+        // Store handles for supervision
+        self.actor_handles = vec![
+            ("DataActor", h_data),
+            ("StrategyActor", h_strategy),
+            ("RiskActor", h_risk),
+            ("OrderActor", h_order),
+        ];
 
         info!("🚀 Trading engine started: {} on {:?}", self.config.strategy_name, self.config.symbols);
     }
@@ -613,6 +627,9 @@ impl TradingEngine {
                 },
                 total_data_fetches: self.data_stats.fetch_count.load(Ordering::Relaxed),
             },
+            actor_health: self.actor_handles.iter().map(|(name, handle)| {
+                (name.to_string(), !handle.is_finished())
+            }).collect(),
         }
     }
 
@@ -683,10 +700,31 @@ async fn strategy_actor<F>(
                 let strategy = strategies.get_mut(&sym).unwrap();
 
                 let t0 = std::time::Instant::now();
-                let signal_opt = match &event {
-                    MarketEvent::Bar(kline) => strategy.on_bar(kline),
-                    MarketEvent::Tick(tick) => strategy.on_tick(tick),
-                    MarketEvent::Depth(depth) => strategy.on_depth(depth),
+                let signal_opt = {
+                    // Catch panics in strategy code to prevent actor death
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        match &event {
+                            MarketEvent::Bar(kline) => strategy.on_bar(kline),
+                            MarketEvent::Tick(tick) => strategy.on_tick(tick),
+                            MarketEvent::Depth(depth) => strategy.on_depth(depth),
+                        }
+                    }));
+                    match result {
+                        Ok(sig) => sig,
+                        Err(panic_info) => {
+                            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                                s.to_string()
+                            } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                                s.clone()
+                            } else {
+                                "unknown panic".to_string()
+                            };
+                            error!("🔴 Strategy PANIC for {}: {} — skipping bar (actor continues)", sym, msg);
+                            // Remove corrupted strategy instance; will be recreated on next bar
+                            strategies.remove(&sym);
+                            None
+                        }
+                    }
                 };
                 let factor_us = t0.elapsed().as_micros() as u64;
                 trace!(symbol=%sym, factor_us=%factor_us, "Factor computed");
@@ -813,7 +851,13 @@ async fn risk_actor(
                         j.record_signal(&sl.symbol, "SELL", sl.loss_pct.abs(),
                             sl.current_price);
                     }
-                    let _ = tx.send(OrderRequest { order: sl_order }).await;
+                    if tx.send(OrderRequest { order: sl_order }).await.is_err() {
+                        error!("🔴 CRITICAL: Stop-loss order for {} DROPPED — order channel closed!", sl.symbol);
+                        if let Some(ref j) = journal {
+                            j.record_risk_rejected(&sl.symbol, OrderSide::Sell, sl.quantity, sl.current_price,
+                                "CRITICAL: stop-loss order dropped (channel closed)");
+                        }
+                    }
                 }
 
                 let (side, price) = if ts.signal.is_buy() {
@@ -929,7 +973,20 @@ async fn order_actor(
 
                 debug!(order_id = %order.id, symbol = %order.symbol, side = %side_str, qty = %format!("{:.0}", order.quantity), price = %format!("{:.2}", order.price), "Submitting order");
                 let t0 = std::time::Instant::now();
-                match broker.submit_order(&order).await {
+
+                // Retry with exponential backoff (3 attempts)
+                let mut submit_result = broker.submit_order(&order).await;
+                let mut attempts = 1u32;
+                while submit_result.is_err() && attempts < 3 {
+                    let delay_ms = 200 * (1 << attempts); // 400ms, 800ms
+                    warn!("⚠️ Order submit attempt {} failed for {}, retrying in {}ms...",
+                        attempts, order.symbol, delay_ms);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms as u64)).await;
+                    submit_result = broker.submit_order(&order).await;
+                    attempts += 1;
+                }
+
+                match submit_result {
                     Ok(submitted) => {
                         let order_us = t0.elapsed().as_micros() as u64;
                         enforcer.record_success();
