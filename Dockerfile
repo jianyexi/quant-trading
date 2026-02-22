@@ -1,6 +1,7 @@
 FROM rust:1.82 AS builder
 
 WORKDIR /app
+# Cache dependencies: copy manifests first
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 RUN cargo build --release
@@ -16,7 +17,7 @@ RUN npm run build
 # Runtime
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y \
-    libssl3 ca-certificates python3 python3-pip \
+    libssl3 ca-certificates curl python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/quant /usr/local/bin/quant
@@ -31,5 +32,8 @@ RUN pip3 install --break-system-packages akshare lightgbm scikit-learn pandas nu
 
 WORKDIR /app
 EXPOSE 8080
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -sf http://localhost:8080/api/health || exit 1
 
 CMD ["quant", "serve", "--config", "config/default.toml"]

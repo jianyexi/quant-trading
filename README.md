@@ -20,13 +20,16 @@ A full-featured quantitative trading system built in **Rust**, targeting the **C
 | 📝 **Paper Trading** | Simulated order execution with commission/stamp tax modeling |
 | 🧠 **DL Model Research** | Curated knowledge base of 11 latest DL factor models + LLM auto-collection |
 | 💬 **LLM Assistant** | OpenAI-compatible AI chat with tool calling for market analysis |
-| 🖥️ **Web UI** | React + TypeScript dashboard: 10 pages for market, backtest, screener, sentiment, DL研究, auto-trade, chat |
+| 🖥️ **Web UI** | React + TypeScript dashboard: 17 pages for market, backtest, screener, sentiment, DL研究, auto-trade, metrics, reports, latency, chat |
 | 🌐 **Web API** | REST + WebSocket API (Axum) with SPA fallback |
 | 💻 **CLI** | Full subcommand CLI with interactive chat REPL |
 | 🛡️ **Risk Management** | T+1, price limits (±10%/±20%), stamp tax, lot sizing, concentration limits |
 | 🔒 **Risk Enforcement** | Stop-loss, daily loss limit, max drawdown protection, circuit breaker, all configurable |
 | 📋 **Trade Journal** | SQLite-backed persistent audit trail for all signals, orders, fills, rejections |
 | 📊 **Performance Metrics** | Real-time portfolio value, return %, drawdown, win rate, profit factor |
+| ⏱ **Latency Profiling** | Per-module pipeline latency (data/strategy/risk/order) with bottleneck detection |
+| 📈 **System Metrics** | Engine throughput, API request stats, DB pool health, real-time monitoring |
+| 📋 **Statistical Reports** | Trading summary, per-symbol PnL, daily P&L, risk events, order analysis |
 
 ## 🏗️ Architecture
 
@@ -287,21 +290,33 @@ QMT (迅投量化) integration enables real order placement through your broker.
 | POST | `/api/research/dl-models/collect` | Auto-collect latest research via LLM |
 | GET | `/api/journal` | Trade journal entries (filter by symbol, type, date) |
 | GET | `/api/journal/snapshots` | Daily performance snapshots |
+| GET | `/api/metrics` | System metrics (throughput, latency, API stats, DB pool) |
+| GET | `/api/reports` | Statistical reports (summary, per-symbol, daily PnL, orders) |
+| GET | `/api/latency` | Per-module latency profiling with bottleneck detection |
+| GET | `/api/notifications` | Notification center |
+| GET | `/api/logs` | System logs |
 
 ## 🖥️ Web UI Pages
 
 | Page | Path | Description |
 |------|------|-------------|
-| 仪表盘 | `/` | Portfolio overview, market summary, equity chart |
+| 仪表盘 | `/` | Portfolio overview, equity curve, positions, journal, auto-refresh |
 | 行情 | `/market` | Real-time quotes, K-line charts |
 | 回测 | `/backtest` | Run backtests, view performance reports |
 | 策略 | `/strategy` | Strategy configuration and management |
-| 持仓 | `/portfolio` | Current positions, P&L tracking |
+| 持仓 | `/portfolio` | Current positions, P&L tracking, closed positions |
 | AI 对话 | `/chat` | LLM-powered market analysis chat |
 | 智能选股 | `/screener` | Multi-factor scan, strategy votes, LLM analysis |
 | 自动交易 | `/autotrade` | Start/stop engine, mode selector (Paper/QMT), real-time stats |
+| 风控管理 | `/risk` | Risk configuration, circuit breaker, drawdown limits |
 | 舆情数据 | `/sentiment` | Sentiment data submission, overview, per-stock analysis |
-| DL模型研究 | `/dl-models` | DL factor model knowledge base, auto-collection, comparison table |
+| DL模型研究 | `/dl-models` | DL factor model knowledge base, auto-collection |
+| 因子挖掘 | `/factor-mining` | Parametric & GP factor mining, factor registry |
+| 通知中心 | `/notifications` | System notifications with unread count |
+| 系统日志 | `/logs` | Real-time log viewer with level filtering |
+| 性能监控 | `/metrics` | Engine throughput, API latency, DB pool, sparklines |
+| 统计报表 | `/reports` | Trading summary, per-symbol PnL, daily charts, order analysis |
+| 延迟分析 | `/latency` | Per-module latency breakdown, bottleneck detection, health score |
 
 ## 📈 Built-in Strategies
 
@@ -436,10 +451,12 @@ python auto_retrain.py --data my_data.csv --algorithms lstm,transformer
 cargo test --release
 
 # Test breakdown:
-# - 37 strategy tests (indicators, screener, multi-factor, sentiment, ml_factor, dl_models, dynamic_weights)
-# - 17 broker tests (paper, qmt, engine, orders, journal)
-# - 25 risk tests (checks, rules, position sizing, enforcement)
-# Total: 79 tests
+# - 50 strategy tests (indicators, screener, multi-factor, sentiment, ml_factor, dl_models, dynamic_weights, factor_mining)
+# - 31 broker tests (paper, qmt, engine, orders, journal, data_actors)
+# - 20 risk tests (checks, rules, position sizing, enforcement)
+# - 7 core tests (models, types, config)
+# - 3 integration tests
+# Total: 111 tests
 ```
 
 ## 💬 LLM Tool Calling
@@ -454,8 +471,25 @@ The AI assistant can invoke system functions during conversation:
 ## 🐳 Docker
 
 ```bash
-docker-compose up -d    # Starts app + PostgreSQL
+# One-click deployment (app + PostgreSQL)
+docker compose up -d
+
+# View logs
+docker compose logs -f quant
+
+# Stop
+docker compose down
+
+# With data persistence (volumes preserved)
+docker compose down    # keeps pgdata volume
+docker compose down -v # removes pgdata volume
 ```
+
+The Docker setup includes:
+- **PostgreSQL 16** with health checks and data persistence
+- **Quant server** with auto-restart, health checks, and all migrations
+- **Web UI** pre-built and served from the container
+- Volumes for config, data, ML models, and scripts
 
 ## License
 

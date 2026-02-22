@@ -1,8 +1,7 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_DB: quant_trading
       POSTGRES_USER: quant
@@ -19,6 +18,7 @@ services:
 
   quant:
     build: .
+    restart: unless-stopped
     ports:
       - "8080:8080"
     depends_on:
@@ -26,6 +26,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://quant:quant_pass@postgres:5432/quant_trading
+      RUST_LOG: "quant=info"
     volumes:
       - ./config:/app/config
       - ./data:/app/data
