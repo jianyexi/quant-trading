@@ -162,9 +162,48 @@ pub async fn get_dashboard(
     State(state): State<AppState>,
 ) -> Json<Value> {
     let engine_guard = state.engine.lock().await;
+
+    // Read daily snapshots for equity curve (available even when engine stopped)
+    let snapshots: Vec<Value> = if let Some(ref pool) = state.db {
+        sqlx::query_as::<_, (String, f64, f64)>(
+            "SELECT date, portfolio_value, daily_pnl FROM daily_snapshots ORDER BY date DESC LIMIT 60"
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .rev()
+        .map(|(date, value, pnl)| json!({ "date": date, "value": value, "pnl": pnl }))
+        .collect()
+    } else {
+        vec![]
+    };
+
+    // Read recent journal entries for activity feed
+    let journal_entries: Vec<Value> = if let Some(ref pool) = state.db {
+        sqlx::query_as::<_, (String, String, String, String, String, f64, f64, String)>(
+            "SELECT timestamp, entry_type, symbol, side, COALESCE(order_id,''), price, quantity, COALESCE(reason,'') \
+             FROM journal_entries ORDER BY id DESC LIMIT 20"
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(ts, etype, sym, side, oid, price, qty, reason)| json!({
+            "time": if ts.len() >= 19 { &ts[11..19] } else { &ts },
+            "type": etype, "symbol": sym, "side": side,
+            "order_id": oid, "price": price, "quantity": qty as i64,
+            "reason": reason,
+        }))
+        .collect()
+    } else {
+        vec![]
+    };
+
     if let Some(ref eng) = *engine_guard {
         let status = eng.status().await;
         let perf = &status.performance;
+        let lat = &status.latency;
         let trades: Vec<Value> = status.recent_trades.iter().map(|t| {
             json!({
                 "time": t.timestamp.format("%H:%M:%S").to_string(),
@@ -175,26 +214,58 @@ pub async fn get_dashboard(
                 "status": t.status,
             })
         }).collect();
+
+        // Get positions for overview
+        let positions: Vec<Value> = eng.broker().get_positions().await
+            .unwrap_or_default()
+            .iter()
+            .map(|p| json!({
+                "symbol": p.symbol,
+                "quantity": p.quantity as i64,
+                "avg_cost": p.avg_cost,
+                "current_price": p.current_price,
+                "unrealized_pnl": p.unrealized_pnl,
+                "pnl_pct": if p.avg_cost > 0.0 { (p.current_price - p.avg_cost) / p.avg_cost * 100.0 } else { 0.0 },
+            }))
+            .collect();
+
         Json(json!({
             "portfolio_value": perf.portfolio_value,
+            "initial_capital": perf.initial_capital,
             "daily_pnl": perf.risk_daily_pnl,
             "daily_pnl_percent": if perf.initial_capital > 0.0 {
                 perf.risk_daily_pnl / perf.initial_capital * 100.0
             } else { 0.0 },
-            "open_positions": eng.broker().get_positions().await.map(|p| p.len()).unwrap_or(0),
+            "open_positions": positions.len(),
             "win_rate": perf.win_rate,
             "total_return_pct": perf.total_return_pct,
             "drawdown_pct": perf.drawdown_pct,
             "max_drawdown_pct": perf.max_drawdown_pct,
             "profit_factor": perf.profit_factor,
+            "avg_trade_pnl": perf.avg_trade_pnl,
+            "wins": perf.wins,
+            "losses": perf.losses,
             "engine_running": status.running,
             "strategy": status.strategy,
+            "symbols": status.symbols,
+            "total_signals": status.total_signals,
+            "total_orders": status.total_orders,
             "total_fills": status.total_fills,
+            "total_rejected": status.total_rejected,
+            "pnl": status.pnl,
+            "risk_daily_paused": perf.risk_daily_paused,
+            "risk_circuit_open": perf.risk_circuit_open,
+            "risk_drawdown_halted": perf.risk_drawdown_halted,
+            "pipeline_latency_us": lat.avg_factor_compute_us + lat.avg_risk_check_us + lat.avg_order_submit_us,
             "recent_trades": trades,
+            "positions": positions,
+            "snapshots": snapshots,
+            "journal": journal_entries,
         }))
     } else {
         Json(json!({
             "portfolio_value": 0.0,
+            "initial_capital": 0.0,
             "daily_pnl": 0.0,
             "daily_pnl_percent": 0.0,
             "open_positions": 0,
@@ -203,10 +274,25 @@ pub async fn get_dashboard(
             "drawdown_pct": 0.0,
             "max_drawdown_pct": 0.0,
             "profit_factor": 0.0,
+            "avg_trade_pnl": 0.0,
+            "wins": 0,
+            "losses": 0,
             "engine_running": false,
             "strategy": "",
+            "symbols": [],
+            "total_signals": 0,
+            "total_orders": 0,
             "total_fills": 0,
+            "total_rejected": 0,
+            "pnl": 0.0,
+            "risk_daily_paused": false,
+            "risk_circuit_open": false,
+            "risk_drawdown_halted": false,
+            "pipeline_latency_us": 0,
             "recent_trades": [],
+            "positions": [],
+            "snapshots": snapshots,
+            "journal": journal_entries,
         }))
     }
 }
