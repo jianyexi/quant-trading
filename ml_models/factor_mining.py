@@ -42,9 +42,9 @@ from data_utils import load_data, add_data_args, fetch_akshare_multi
 
 # ── Factor Templates ─────────────────────────────────────────────────
 
-WINDOWS = [3, 5, 10, 15, 20, 30, 60]
-SHORT_WINDOWS = [3, 5, 10, 15, 20]
-LONG_WINDOWS = [20, 30, 60, 120]
+WINDOWS = [2, 3, 5, 10, 15, 20, 30, 60, 120, 180]
+SHORT_WINDOWS = [2, 3, 5, 10, 15, 20]
+LONG_WINDOWS = [20, 30, 60, 120, 180]
 
 
 def compute_all_candidates(df: pd.DataFrame) -> pd.DataFrame:
@@ -172,9 +172,65 @@ def compute_all_candidates(df: pd.DataFrame) -> pd.DataFrame:
         factors[f"close_to_low_{n}"] = c / l.rolling(n).min() - 1
 
     # ── 17. Amihud illiquidity ───────────────────────────────────────
-    for n in [5, 10, 20]:
+    for n in [5, 10, 20, 60]:
         illiq = (ret.abs() / (v * c).replace(0, np.nan)).rolling(n).mean()
         factors[f"amihud_{n}"] = illiq
+
+    # ── 18. Rolling percentile rank factors ───────────────────────────
+    # Rank-based normalization: where does today's value sit in recent history?
+    for n in [20, 60, 120]:
+        factors[f"rank_momentum_{n}"] = c.pct_change(n).rolling(n).rank(pct=True)
+        factors[f"rank_volume_{n}"] = v.rolling(n).rank(pct=True)
+        factors[f"rank_volatility_{n}"] = ret.rolling(n).std().rolling(n).rank(pct=True)
+        ma = c.rolling(n).mean()
+        factors[f"rank_ma_ratio_{n}"] = (c / ma - 1).rolling(n).rank(pct=True)
+
+    # ── 19. Volume-price interaction ──────────────────────────────────
+    for n in [5, 10, 20]:
+        mom = c.pct_change(n)
+        vol_ratio = v / v.rolling(n).mean().replace(0, np.nan)
+        factors[f"vol_x_mom_{n}"] = vol_ratio * mom
+        factors[f"vol_x_vol_{n}"] = vol_ratio * ret.rolling(n).std()
+        # Price up on high volume vs down on high volume
+        factors[f"signed_vol_{n}"] = np.sign(ret) * vol_ratio
+
+    # ── 20. Detrending & mean-reversion ───────────────────────────────
+    for n in [20, 60, 120]:
+        # Linear detrend residual: how far is price from its trend?
+        x = np.arange(len(c), dtype=float)
+        roll_slope = ret.rolling(n).apply(
+            lambda s: np.polyfit(np.arange(len(s)), s, 1)[0] if len(s) == n else 0,
+            raw=True,
+        )
+        factors[f"trend_slope_{n}"] = roll_slope
+        # Deviation from rolling linear fit
+        factors[f"detrend_dev_{n}"] = (c - c.rolling(n).mean()) / c.rolling(n).std().replace(0, np.nan)
+
+    # ── 21. Autocorrelation (mean-reversion signal) ───────────────────
+    for n in [10, 20, 60]:
+        factors[f"autocorr_{n}"] = ret.rolling(n).apply(
+            lambda s: pd.Series(s).autocorr(lag=1) if len(s) >= 5 else 0,
+            raw=True,
+        )
+
+    # ── 22. RSI extended periods ──────────────────────────────────────
+    for n in [2, 3, 28]:
+        gain = delta.where(delta > 0, 0.0).rolling(n).mean()
+        loss = (-delta.where(delta < 0, 0.0)).rolling(n).mean()
+        rs = gain / loss.replace(0, np.nan)
+        factors[f"rsi_{n}"] = (100 - 100 / (1 + rs)) / 100.0
+
+    # ── 23. Bollinger extreme bands ───────────────────────────────────
+    for n in [20, 30]:
+        ma = c.rolling(n).mean()
+        std = c.rolling(n).std()
+        bw = 2 * 3.0 * std
+        factors[f"boll_pctb_{n}_3.0"] = (c - (ma - 3.0 * std)) / bw.replace(0, np.nan)
+
+    # ── 24. Volume-adjusted Amihud ────────────────────────────────────
+    for n in [10, 30, 60]:
+        vol_std = v.rolling(n).std().replace(0, np.nan)
+        factors[f"amihud_adj_{n}"] = (ret.abs() / (v * c).replace(0, np.nan)).rolling(n).mean() * vol_std
 
     # Replace inf with NaN
     factors.replace([np.inf, -np.inf], np.nan, inplace=True)

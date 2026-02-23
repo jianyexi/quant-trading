@@ -59,6 +59,8 @@ def _log(a): return np.where(a > 1e-10, np.log(a), 0.0)
 def _sqrt(a): return np.where(a > 1e-10, np.sqrt(a), 0.0)
 def _sign(a): return np.sign(a)
 def _inv(a): return np.where(np.abs(a) > 1e-10, 1.0 / a, 0.0)
+def _square(a): return a * a
+def _clip(a): return np.clip(a, -3.0, 3.0)  # bound to ±3 std
 
 # Rolling operators (unary with window)
 def _rolling_mean(a, w):
@@ -85,6 +87,31 @@ def _delta(a, d):
     s = pd.Series(a)
     return s.diff(d).fillna(0).values
 
+def _ts_rank(a, w):
+    """Rolling percentile rank within window."""
+    s = pd.Series(a)
+    return s.rolling(w, min_periods=1).rank(pct=True).values
+
+def _ts_skew(a, w):
+    """Rolling skewness within window."""
+    s = pd.Series(a)
+    return s.rolling(w, min_periods=3).skew().fillna(0).values
+
+def _ema(a, w):
+    """Exponential moving average."""
+    s = pd.Series(a)
+    return s.ewm(span=w, min_periods=1).mean().values
+
+def _decay_linear(a, w):
+    """Linearly decaying weighted mean."""
+    weights = np.arange(1, w + 1, dtype=float)
+    weights /= weights.sum()
+    s = pd.Series(a)
+    return s.rolling(w, min_periods=1).apply(
+        lambda x: np.dot(x[-len(weights):], weights[-len(x):]) if len(x) > 0 else 0,
+        raw=True
+    ).values
+
 def _rank(a):
     s = pd.Series(a)
     return s.rank(pct=True).values
@@ -110,6 +137,8 @@ UNARY_OPS = {
     "sqrt": (_sqrt, "sqrt"),
     "sign": (_sign, "sign"),
     "inv": (_inv, "inv"),
+    "square": (_square, "square"),
+    "clip": (_clip, "clip"),
 }
 
 ROLLING_OPS = {
@@ -119,13 +148,18 @@ ROLLING_OPS = {
     "ts_min": (_rolling_min, "ts_min"),
     "delay": (_delay, "delay"),
     "delta": (_delta, "delta"),
+    "ts_rank": (_ts_rank, "ts_rank"),
+    "ts_skew": (_ts_skew, "ts_skew"),
+    "ema": (_ema, "ema"),
+    "decay_linear": (_decay_linear, "decay_linear"),
 }
 
 # Raw price terminals are excluded by default to prevent price-level bias.
 # GP should discover factors from normalized data (returns, ratios, ranges).
 TERMINALS = ["returns", "volume", "vwap", "tr",
-             "hl_ratio", "co_ratio", "cl_ratio", "vol_chg"]
-WINDOWS = [3, 5, 10, 20, 30, 60]
+             "hl_ratio", "co_ratio", "cl_ratio", "vol_chg",
+             "mom_5", "mom_20", "vol_x_ret"]  # composite terminals
+WINDOWS = [2, 3, 5, 10, 20, 30, 60, 120]
 
 
 # ── Expression Tree ──────────────────────────────────────────────────
@@ -355,6 +389,16 @@ def prepare_data(df: pd.DataFrame) -> Dict[str, np.ndarray]:
         "hl_ratio": hl_ratio, "co_ratio": co_ratio,
         "cl_ratio": cl_ratio, "vol_chg": vol_chg,
     }
+
+    # Composite terminals — pre-computed interactions for GP to combine
+    mom_5 = pd.Series(c).pct_change(5).fillna(0).values
+    mom_20 = pd.Series(c).pct_change(20).fillna(0).values
+    vol_ma = pd.Series(v).rolling(20, min_periods=1).mean().values
+    vol_ratio = v / np.maximum(vol_ma, 1e-10)
+    result["mom_5"] = mom_5
+    result["mom_20"] = mom_20
+    result["vol_x_ret"] = vol_ratio * ret  # volume-weighted return
+
     # Legacy aliases for backward compatibility with existing registry expressions
     result["close"] = c
     result["open"] = o
@@ -416,9 +460,9 @@ def tournament_select(population: List[Tuple[Node, float]], k: int = 3) -> Node:
 
 def evolve(
     df: pd.DataFrame,
-    pop_size: int = 300,
-    generations: int = 50,
-    max_depth: int = 6,
+    pop_size: int = 500,
+    generations: int = 100,
+    max_depth: int = 8,
     tournament_size: int = 5,
     crossover_rate: float = 0.7,
     mutation_rate: float = 0.2,
@@ -621,7 +665,9 @@ def _factor_id_from_expr(expr: str) -> str:
     import hashlib
     h = hashlib.md5(expr.encode()).hexdigest()[:8]
     # Create a short readable prefix
-    for prefix in ["ts_mean", "ts_std", "div", "mul", "sub", "add", "log", "delta", "delay"]:
+    for prefix in ["ts_rank", "ts_skew", "ema", "decay_linear",
+                   "ts_mean", "ts_std", "div", "mul", "sub", "add",
+                   "log", "delta", "delay", "square", "clip"]:
         if prefix in expr:
             return f"gp_{prefix}_{h}"
     return f"gp_{h}"
