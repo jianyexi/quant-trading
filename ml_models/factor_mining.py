@@ -186,7 +186,7 @@ def compute_all_candidates(df: pd.DataFrame) -> pd.DataFrame:
 
 def evaluate_factor(factor: pd.Series, forward_ret: pd.Series) -> Dict[str, float]:
     """
-    Evaluate a single factor's predictive power.
+    Evaluate a single factor's predictive power using Rank IC (Spearman).
 
     Returns: {ic_mean, ic_std, ir, ic_positive_rate, turnover, decay_ratio}
     """
@@ -198,12 +198,17 @@ def evaluate_factor(factor: pd.Series, forward_ret: pd.Series) -> Dict[str, floa
     f = aligned["factor"]
     r = aligned["fwd_ret"]
 
-    # Monthly IC (rolling 20-bar windows)
+    # Use Rank IC (Spearman) — measures rank predictive power, immune to
+    # price-level bias and outliers.  Standard quant factor evaluation metric.
+    f_rank = f.rank(pct=True)
+    r_rank = r.rank(pct=True)
+
+    # Monthly Rank IC (rolling 20-bar windows)
     window = 20
     ics = []
     for i in range(0, len(aligned) - window, window):
-        chunk_f = f.iloc[i:i+window]
-        chunk_r = r.iloc[i:i+window]
+        chunk_f = f_rank.iloc[i:i+window]
+        chunk_r = r_rank.iloc[i:i+window]
         if chunk_f.std() > 1e-10 and chunk_r.std() > 1e-10:
             ic = chunk_f.corr(chunk_r)
             if not np.isnan(ic):
@@ -220,14 +225,12 @@ def evaluate_factor(factor: pd.Series, forward_ret: pd.Series) -> Dict[str, floa
     ic_pos_rate = np.mean([1 if ic > 0 else 0 for ic in ics])
 
     # Turnover: how much the factor ranking changes period-to-period
-    rank = f.rank(pct=True)
-    rank_diff = rank.diff().abs()
+    rank_diff = f_rank.diff().abs()
     turnover = rank_diff.mean()
 
-    # Decay: compare IC of immediate vs lagged factor
-    # High IC at lag=0, low IC at lag=5 → factor has fast decay (good for short-term)
-    lag5_ic = f.shift(5).corr(r) if len(aligned) > 60 else 0
-    decay = abs(ic_mean) / (abs(lag5_ic) + 1e-10) if abs(lag5_ic) > 1e-10 else 1.0
+    # Decay: compare Rank IC of immediate vs lagged factor
+    lag5_rank_ic = f_rank.shift(5).corr(r_rank) if len(aligned) > 60 else 0
+    decay = abs(ic_mean) / (abs(lag5_rank_ic) + 1e-10) if abs(lag5_rank_ic) > 1e-10 else 1.0
 
     return {
         "ic_mean": ic_mean,
@@ -248,6 +251,7 @@ def mine_factors(
     max_corr: float = 0.7,
     top_n: int = 30,
     bonferroni: bool = True,
+    min_turnover: float = 0.02,
 ) -> pd.DataFrame:
     """
     Full factor mining pipeline:
@@ -293,6 +297,13 @@ def mine_factors(
     # 4. Filter by thresholds
     abs_ic = results_df["ic_mean"].abs()
     mask = (abs_ic >= ic_threshold) & (results_df["ir"].abs() >= ir_threshold) & (results_df["ic_pos_rate"] >= 0.5)
+
+    # Turnover floor: factors with very low turnover may just track price levels
+    low_turnover = results_df["turnover"] < min_turnover
+    n_low_turnover = (mask & low_turnover).sum()
+    if n_low_turnover > 0:
+        print(f"  ⚠️  {n_low_turnover} factor(s) have turnover < {min_turnover} (potential price-level trackers)")
+    mask = mask & (~low_turnover)
 
     # Bonferroni correction: require higher IC if testing many factors
     if bonferroni and n_candidates > 10:

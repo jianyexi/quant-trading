@@ -53,6 +53,10 @@ pub async fn run_backtest(
         commission_rate: 0.001,
         stamp_tax_rate: 0.001,
         slippage_ticks: 1,
+        position_size_pct: 0.3,
+        max_concentration: 1.0,
+        stop_loss_pct: 0.05,
+        max_holding_days: 30,
     };
 
     let engine = BacktestEngine::new(bt_config);

@@ -121,7 +121,10 @@ ROLLING_OPS = {
     "delta": (_delta, "delta"),
 }
 
-TERMINALS = ["close", "open", "high", "low", "volume", "returns", "vwap", "tr"]
+# Raw price terminals are excluded by default to prevent price-level bias.
+# GP should discover factors from normalized data (returns, ratios, ranges).
+TERMINALS = ["returns", "volume", "vwap", "tr",
+             "hl_ratio", "co_ratio", "cl_ratio", "vol_chg"]
 WINDOWS = [3, 5, 10, 20, 30, 60]
 
 
@@ -323,7 +326,11 @@ def mutate(node: Node, max_depth: int = 6) -> Node:
 # ── Fitness Evaluation ───────────────────────────────────────────────
 
 def prepare_data(df: pd.DataFrame) -> Dict[str, np.ndarray]:
-    """Prepare terminal data arrays from OHLCV DataFrame."""
+    """Prepare terminal data arrays from OHLCV DataFrame.
+
+    All terminals are normalized (ratios, returns, ranges) to prevent
+    price-level bias.  Raw close/open/high/low are NOT exposed.
+    """
     c = df["close"].values.astype(np.float64)
     o = df["open"].values.astype(np.float64)
     h = df["high"].values.astype(np.float64)
@@ -333,10 +340,27 @@ def prepare_data(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     vwap = np.where(v > 0, (h + l + c) / 3.0, c)  # simplified VWAP
     tr = np.maximum(h - l, np.maximum(np.abs(h - np.roll(c, 1)), np.abs(l - np.roll(c, 1))))
 
-    return {
-        "close": c, "open": o, "high": h, "low": l,
-        "volume": v, "returns": ret, "vwap": vwap, "tr": tr,
+    # Normalized terminals — immune to absolute price level
+    hl_ratio = (h - l) / np.maximum(c, 1e-10)          # intraday range / close
+    co_ratio = (c - o) / np.maximum(np.abs(o), 1e-10)  # close-to-open return
+    cl_ratio = c / np.maximum(np.roll(c, 1), 1e-10)    # close / prev_close
+    vol_chg = np.diff(v, prepend=v[0]) / np.maximum(np.abs(v), 1e-10)  # volume change rate
+
+    # Normalize vwap and tr to ratios so they are scale-free
+    vwap_ratio = c / np.maximum(vwap, 1e-10)           # close / vwap
+    tr_norm = tr / np.maximum(c, 1e-10)                # true range / close
+
+    result = {
+        "returns": ret, "volume": v, "vwap": vwap_ratio, "tr": tr_norm,
+        "hl_ratio": hl_ratio, "co_ratio": co_ratio,
+        "cl_ratio": cl_ratio, "vol_chg": vol_chg,
     }
+    # Legacy aliases for backward compatibility with existing registry expressions
+    result["close"] = c
+    result["open"] = o
+    result["high"] = h
+    result["low"] = l
+    return result
 
 
 def evaluate_tree_fitness(
@@ -344,9 +368,10 @@ def evaluate_tree_fitness(
     data: Dict[str, np.ndarray],
     fwd_ret: pd.Series,
     parsimony_coeff: float = 0.001,
+    close_prices: Optional[np.ndarray] = None,
 ) -> float:
     """
-    Fitness = |IC| - parsimony_coeff * tree_size
+    Fitness = |IC| - parsimony_coeff * tree_size - price_level_penalty
     Returns negative fitness for invalid trees.
     """
     try:
@@ -364,6 +389,16 @@ def evaluate_tree_fitness(
 
         # Parsimony pressure: penalize large trees
         fitness = ic - parsimony_coeff * tree.size()
+
+        # Price-level penalty: if factor rank-correlates >0.8 with raw close,
+        # it's likely tracking price levels rather than signals.
+        if close_prices is not None:
+            from scipy.stats import spearmanr
+            mask = np.isfinite(values) & np.isfinite(close_prices)
+            if mask.sum() > 60:
+                corr, _ = spearmanr(values[mask], close_prices[mask])
+                if abs(corr) > 0.8:
+                    fitness *= 0.1  # heavy penalty
         return fitness
 
     except Exception:
@@ -400,6 +435,7 @@ def evolve(
     """
     data = prepare_data(df)
     fwd_ret = df["close"].pct_change(horizon).shift(-horizon)
+    close_prices = df["close"].values.astype(np.float64)
 
     if verbose:
         print(f"\n{'='*60}")
@@ -412,7 +448,7 @@ def evolve(
     population = []
     for _ in range(pop_size):
         tree = random_tree(max_depth=max_depth)
-        fitness = evaluate_tree_fitness(tree, data, fwd_ret, parsimony_coeff)
+        fitness = evaluate_tree_fitness(tree, data, fwd_ret, parsimony_coeff, close_prices)
         population.append((tree, fitness))
 
     # Track unique discovered factors
@@ -471,7 +507,7 @@ def evolve(
                 # Reproduction
                 child = tournament_select(population, tournament_size).copy()
 
-            fitness = evaluate_tree_fitness(child, data, fwd_ret, parsimony_coeff)
+            fitness = evaluate_tree_fitness(child, data, fwd_ret, parsimony_coeff, close_prices)
             next_pop.append((child, fitness))
 
         population = next_pop
@@ -564,6 +600,7 @@ def register_factor(
         "ic_pos_rate": evaluation.get("ic_pos_rate", 0),
         "turnover": evaluation.get("turnover", 0),
         "decay": evaluation.get("decay", 0),
+        "low_turnover_warning": evaluation.get("turnover", 1) < 0.02,
         "ic_history": [{
             "timestamp": datetime.now().isoformat(),
             "ic": evaluation.get("ic_mean", 0),
@@ -597,26 +634,37 @@ def manage_lifecycle(
     df: pd.DataFrame,
     horizon: int = 5,
     verbose: bool = True,
+    oos_ratio: float = 0.3,
 ) -> Dict[str, int]:
     """
     Run lifecycle management on all registered factors:
-      1. Re-evaluate each factor's IC on current data
-      2. Auto-promote: candidate/validated → promoted if IC stable
-      3. Auto-demote: promoted → retired if IC decayed
-      4. Prune: remove highly correlated promoted factors
+      1. Split data temporally: first (1-oos_ratio) for training, last oos_ratio for validation
+      2. Re-evaluate each factor's IC on OOS data only
+      3. Auto-promote: candidate/validated → promoted if OOS IC stable
+      4. Auto-demote: promoted → retired if OOS IC decayed
+      5. Prune: remove highly correlated promoted factors
 
     Returns: counts of promotions, demotions, retirements
     """
-    data = prepare_data(df)
-    fwd_ret = df["close"].pct_change(horizon).shift(-horizon)
+    # Temporal split: decisions based on OOS portion only
+    n = len(df)
+    split_idx = int(n * (1 - oos_ratio))
+    df_oos = df.iloc[split_idx:].copy()
+
+    data_oos = prepare_data(df_oos)
+    fwd_ret_oos = df_oos["close"].pct_change(horizon).shift(-horizon)
+
+    # Also keep full data for pruning correlation check
+    data_full = prepare_data(df)
     now = datetime.now().isoformat()
 
     counts = {"promoted": 0, "retired": 0, "validated": 0, "pruned": 0}
 
     if verbose:
         print(f"\n{'='*60}")
-        print(f"  FACTOR LIFECYCLE MANAGEMENT")
+        print(f"  FACTOR LIFECYCLE MANAGEMENT (OOS split={oos_ratio:.0%})")
         print(f"  Registered: {len(registry['factors'])} factors")
+        print(f"  Total bars: {n}, OOS bars: {n - split_idx}")
         print(f"{'='*60}\n")
 
     for fid, entry in list(registry["factors"].items()):
@@ -625,23 +673,35 @@ def manage_lifecycle(
 
         expr = entry["expression"]
 
-        # Parse and re-evaluate
+        # Parse and evaluate on OOS data
         try:
             tree = parse_expression(expr)
             if tree is None:
                 continue
-            values = tree.evaluate(data)
+            values = tree.evaluate(data_oos)
             values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
             if np.std(values) < 1e-10:
                 entry["fail_count"] += 1
                 continue
 
-            factor = pd.Series(values, index=fwd_ret.index)
-            ev = evaluate_factor(factor, fwd_ret)
+            factor = pd.Series(values, index=fwd_ret_oos.index)
+            ev = evaluate_factor(factor, fwd_ret_oos)
             current_ic = abs(ev["ic_mean"])
+
+            # Also compute in-sample IC for diagnostics
+            data_is = prepare_data(df.iloc[:split_idx])
+            fwd_is = df.iloc[:split_idx]["close"].pct_change(horizon).shift(-horizon)
+            vals_is = tree.evaluate(data_is)
+            vals_is = np.nan_to_num(vals_is, nan=0.0, posinf=0.0, neginf=0.0)
+            ev_is = evaluate_factor(pd.Series(vals_is, index=fwd_is.index), fwd_is)
 
             entry["ic_history"].append({
                 "timestamp": now,
+                "ic_oos": ev["ic_mean"],
+                "ir_oos": ev["ir"],
+                "ic_is": ev_is["ic_mean"],
+                "ir_is": ev_is["ir"],
+                # Legacy fields for backward compat
                 "ic": ev["ic_mean"],
                 "ir": ev["ir"],
             })
@@ -653,7 +713,7 @@ def manage_lifecycle(
                 print(f"  ⚠️  {fid}: evaluation failed ({e})")
             continue
 
-        # State transitions
+        # State transitions — based on OOS IC only
         if entry["state"] in (STATE_CANDIDATE, STATE_VALIDATED):
             if current_ic >= PROMOTE_MIN_IC:
                 entry["validation_count"] += 1
@@ -662,7 +722,7 @@ def manage_lifecycle(
                     entry["state"] = STATE_VALIDATED
                     counts["validated"] += 1
                     if verbose:
-                        print(f"  ✓ {fid}: candidate → validated (IC={current_ic:.4f})")
+                        print(f"  ✓ {fid}: candidate → validated (OOS IC={current_ic:.4f})")
 
                 if entry["validation_count"] >= PROMOTE_MIN_VALIDATIONS:
                     entry["state"] = STATE_PROMOTED
@@ -670,12 +730,12 @@ def manage_lifecycle(
                     registry["stats"]["total_promoted"] += 1
                     counts["promoted"] += 1
                     if verbose:
-                        print(f"  ⬆ {fid}: validated → PROMOTED (IC={current_ic:.4f}, "
+                        print(f"  ⬆ {fid}: validated → PROMOTED (OOS IC={current_ic:.4f}, "
                               f"validations={entry['validation_count']})")
             else:
                 entry["fail_count"] += 1
                 if verbose:
-                    print(f"  ✗ {fid}: IC={current_ic:.4f} below threshold")
+                    print(f"  ✗ {fid}: OOS IC={current_ic:.4f} below threshold")
 
         elif entry["state"] == STATE_PROMOTED:
             if current_ic < RETIRE_IC_THRESHOLD:
@@ -686,7 +746,7 @@ def manage_lifecycle(
                     registry["stats"]["total_retired"] += 1
                     counts["retired"] += 1
                     if verbose:
-                        print(f"  ⬇ {fid}: promoted → RETIRED (IC={current_ic:.4f}, "
+                        print(f"  ⬇ {fid}: promoted → RETIRED (OOS IC={current_ic:.4f}, "
                               f"fails={entry['fail_count']})")
                 elif verbose:
                     print(f"  ⚠ {fid}: IC declining ({current_ic:.4f}), "
@@ -695,7 +755,7 @@ def manage_lifecycle(
                 entry["fail_count"] = 0
                 entry["validation_count"] += 1
 
-    # Prune correlated promoted factors
+    # Prune correlated promoted factors (using full data for stable estimates)
     promoted = {fid: e for fid, e in registry["factors"].items()
                 if e["state"] == STATE_PROMOTED}
 
@@ -710,7 +770,7 @@ def manage_lifecycle(
                 tree = parse_expression(entry["expression"])
                 if tree is None:
                     continue
-                vals = tree.evaluate(data)
+                vals = tree.evaluate(data_full)
                 vals = np.nan_to_num(vals, nan=0.0, posinf=0.0, neginf=0.0)
                 s = pd.Series(vals)
 
@@ -752,7 +812,9 @@ def parse_expression(expr: str) -> Optional[Node]:
         return None
 
     # Terminal
-    if expr in TERMINALS:
+    # Also accept legacy terminal names (close, open, high, low) for backward compat
+    LEGACY_TERMINALS = TERMINALS + ["close", "open", "high", "low"]
+    if expr in LEGACY_TERMINALS:
         return Node("terminal", terminal=expr)
 
     # Parenthesized binary: (expr op expr)
