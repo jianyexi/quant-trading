@@ -110,6 +110,7 @@ pub async fn trade_start(
             max_holding_days: 30,
             timeout_min_profit_pct: 0.02,
             rebalance_threshold: 0.05,
+            ..Default::default()
         },
         db_pool: state.db.clone(),
     };

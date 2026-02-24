@@ -1113,6 +1113,7 @@ async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, positi
             max_holding_days: 30,
             timeout_min_profit_pct: 0.02,
             rebalance_threshold: 0.05,
+            ..Default::default()
         },
         db_pool: None,
     };
@@ -1275,6 +1276,7 @@ async fn cmd_trade_qmt(strategy: &str, symbols_str: &str, interval: u64, positio
             max_holding_days: 30,
             timeout_min_profit_pct: 0.02,
             rebalance_threshold: 0.05,
+            ..Default::default()
         },
         db_pool: None,
     };

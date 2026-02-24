@@ -31,10 +31,32 @@ pub struct RiskConfig {
     /// Rebalance threshold: trigger when weight drifts this much from target (e.g. 0.05 = 5%)
     #[serde(default = "default_rebalance_threshold")]
     pub rebalance_threshold: f64,
+    /// Volatility spike ratio: if short-term vol / long-term vol exceeds this,
+    /// trigger deleverage (e.g. 2.0 = short vol is 2x long vol).
+    #[serde(default = "default_vol_spike_ratio")]
+    pub vol_spike_ratio: f64,
+    /// Position scale-down factor during volatility spike (e.g. 0.5 = halve all positions).
+    #[serde(default = "default_vol_deleverage_factor")]
+    pub vol_deleverage_factor: f64,
+    /// Maximum total exposure to correlated positions (correlation > 0.7).
+    /// Expressed as fraction of portfolio (e.g. 0.4 = 40%).
+    #[serde(default = "default_max_correlated_exposure")]
+    pub max_correlated_exposure: f64,
+    /// VaR confidence level (e.g. 0.95 = 95% VaR)
+    #[serde(default = "default_var_confidence")]
+    pub var_confidence: f64,
+    /// Maximum acceptable VaR as fraction of portfolio (e.g. 0.05 = 5%)
+    #[serde(default = "default_max_var_pct")]
+    pub max_var_pct: f64,
 }
 
 fn default_timeout_min_profit() -> f64 { 0.02 }
 fn default_rebalance_threshold() -> f64 { 0.05 }
+fn default_vol_spike_ratio() -> f64 { 2.0 }
+fn default_vol_deleverage_factor() -> f64 { 0.5 }
+fn default_max_correlated_exposure() -> f64 { 0.4 }
+fn default_var_confidence() -> f64 { 0.95 }
+fn default_max_var_pct() -> f64 { 0.05 }
 
 impl Default for RiskConfig {
     fn default() -> Self {
@@ -47,6 +69,11 @@ impl Default for RiskConfig {
             max_holding_days: 30,
             timeout_min_profit_pct: 0.02,
             rebalance_threshold: 0.05,
+            vol_spike_ratio: 2.0,
+            vol_deleverage_factor: 0.5,
+            max_correlated_exposure: 0.4,
+            var_confidence: 0.95,
+            max_var_pct: 0.05,
         }
     }
 }
@@ -109,6 +136,48 @@ pub struct RebalanceSignal {
     pub adjustment_shares: f64,
 }
 
+// ── Volatility Spike Signal ────────────────────────────────────────
+
+/// Signal to deleverage when short-term volatility spikes above long-term.
+#[derive(Debug, Clone, Serialize)]
+pub struct VolatilitySpikeSignal {
+    pub short_vol: f64,
+    pub long_vol: f64,
+    pub spike_ratio: f64,
+    pub deleverage_factor: f64,
+    /// Recommended position reductions: (symbol, reduce_by_shares)
+    pub reductions: Vec<(String, f64)>,
+}
+
+// ── Correlation Warning Signal ────────────────────────────────────
+
+/// Warning when correlated positions exceed concentration limit.
+#[derive(Debug, Clone, Serialize)]
+pub struct CorrelationWarning {
+    /// Groups of correlated symbols and their combined exposure.
+    pub groups: Vec<CorrelatedGroup>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CorrelatedGroup {
+    pub symbols: Vec<String>,
+    pub total_exposure: f64,
+    pub max_allowed: f64,
+    pub excess: f64,
+}
+
+// ── Tail Risk (VaR) Signal ────────────────────────────────────────
+
+/// Value-at-Risk estimate from historical simulation.
+#[derive(Debug, Clone, Serialize)]
+pub struct TailRiskSignal {
+    pub var_pct: f64,      // VaR as % of portfolio (positive = loss)
+    pub cvar_pct: f64,     // CVaR (expected shortfall)
+    pub confidence: f64,
+    pub max_allowed: f64,
+    pub breach: bool,
+}
+
 // ── Stop-Loss Signal ───────────────────────────────────────────────
 
 /// A stop-loss signal generated when a position breaches the threshold.
@@ -141,6 +210,13 @@ pub struct RiskEnforcer {
     // Circuit breaker
     consecutive_failures: AtomicU32,
     circuit_open: AtomicBool,
+
+    // Volatility tracking: ring buffer of recent portfolio returns
+    return_history: Mutex<Vec<f64>>,
+    prev_portfolio_value: Mutex<f64>,
+
+    // Volatility spike state
+    vol_spike_active: AtomicBool,
 }
 
 impl RiskEnforcer {
@@ -154,6 +230,9 @@ impl RiskEnforcer {
             drawdown_halted: AtomicBool::new(false),
             consecutive_failures: AtomicU32::new(0),
             circuit_open: AtomicBool::new(false),
+            return_history: Mutex::new(Vec::with_capacity(256)),
+            prev_portfolio_value: Mutex::new(initial_capital),
+            vol_spike_active: AtomicBool::new(false),
         }
     }
 
@@ -337,6 +416,210 @@ impl RiskEnforcer {
         signals
     }
 
+    // ── Volatility Spike Detection ─────────────────────────────────
+
+    /// Record a portfolio return observation and check for volatility spike.
+    /// Call once per bar/day with current portfolio value.
+    /// Returns Some(signal) if short-term vol exceeds long-term vol by threshold.
+    pub fn check_volatility_spike(
+        &self,
+        current_value: f64,
+        positions: &[PositionInfo],
+    ) -> Option<VolatilitySpikeSignal> {
+        // Record portfolio return
+        let mut prev = self.prev_portfolio_value.lock().unwrap();
+        let ret = if *prev > 0.0 { (current_value - *prev) / *prev } else { 0.0 };
+        *prev = current_value;
+
+        let mut history = self.return_history.lock().unwrap();
+        history.push(ret);
+        // Keep at most 252 trading days (1 year)
+        if history.len() > 252 {
+            let excess = history.len() - 252;
+            history.drain(0..excess);
+        }
+
+        // Need at least 60 days to compare short vs long vol
+        if history.len() < 60 {
+            return None;
+        }
+
+        // Short-term vol (5-day) vs long-term vol (60-day)
+        let n = history.len();
+        let short_window = 5.min(n);
+        let long_window = 60.min(n);
+
+        let short_slice = &history[n - short_window..];
+        let long_slice = &history[n - long_window..];
+
+        let short_vol = std_dev(short_slice);
+        let long_vol = std_dev(long_slice);
+
+        if long_vol < 1e-10 {
+            return None;
+        }
+
+        let spike_ratio = short_vol / long_vol;
+
+        if spike_ratio > self.config.vol_spike_ratio {
+            self.vol_spike_active.store(true, Ordering::SeqCst);
+
+            // Calculate position reductions
+            let factor = self.config.vol_deleverage_factor;
+            let reductions: Vec<(String, f64)> = positions
+                .iter()
+                .filter(|p| p.quantity > 0.0)
+                .map(|p| {
+                    let reduce = (p.quantity * (1.0 - factor)).round();
+                    (p.symbol.clone(), reduce)
+                })
+                .filter(|(_, q)| *q > 0.0)
+                .collect();
+
+            return Some(VolatilitySpikeSignal {
+                short_vol,
+                long_vol,
+                spike_ratio,
+                deleverage_factor: factor,
+                reductions,
+            });
+        } else {
+            self.vol_spike_active.store(false, Ordering::SeqCst);
+        }
+
+        None
+    }
+
+    /// Check if volatility spike deleverage is active.
+    pub fn is_vol_spike_active(&self) -> bool {
+        self.vol_spike_active.load(Ordering::SeqCst)
+    }
+
+    // ── Correlation Monitoring ─────────────────────────────────────
+
+    /// Check if groups of correlated positions exceed the max exposure limit.
+    /// `return_series` maps symbol → recent daily returns (at least 20 days).
+    pub fn check_correlated_exposure(
+        &self,
+        positions: &[PositionInfo],
+        portfolio_value: f64,
+        return_series: &std::collections::HashMap<String, Vec<f64>>,
+    ) -> Option<CorrelationWarning> {
+        if positions.len() < 2 || portfolio_value <= 0.0 {
+            return None;
+        }
+
+        let corr_threshold = 0.7;
+        let max_exposure = self.config.max_correlated_exposure;
+
+        // Build adjacency: which positions are highly correlated
+        let syms: Vec<&str> = positions.iter().map(|p| p.symbol.as_str()).collect();
+        let n = syms.len();
+        let mut adj = vec![vec![false; n]; n];
+
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if let (Some(ri), Some(rj)) = (return_series.get(syms[i]), return_series.get(syms[j])) {
+                    let min_len = ri.len().min(rj.len());
+                    if min_len >= 20 {
+                        let corr = pearson_corr(
+                            &ri[ri.len() - min_len..],
+                            &rj[rj.len() - min_len..],
+                        );
+                        if corr > corr_threshold {
+                            adj[i][j] = true;
+                            adj[j][i] = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Group correlated positions via simple union-find
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn find(p: &mut Vec<usize>, x: usize) -> usize {
+            if p[x] != x { p[x] = find(p, p[x]); }
+            p[x]
+        }
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if adj[i][j] {
+                    let (pi, pj) = (find(&mut parent, i), find(&mut parent, j));
+                    if pi != pj { parent[pi] = pj; }
+                }
+            }
+        }
+
+        // Aggregate exposure per group
+        let mut groups_map: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+        for i in 0..n {
+            let root = find(&mut parent, i);
+            groups_map.entry(root).or_default().push(i);
+        }
+
+        let mut warning_groups = Vec::new();
+        for (_root, members) in &groups_map {
+            if members.len() < 2 { continue; }
+            let total_exposure: f64 = members.iter()
+                .map(|&i| positions[i].market_value() / portfolio_value)
+                .sum();
+            if total_exposure > max_exposure {
+                warning_groups.push(CorrelatedGroup {
+                    symbols: members.iter().map(|&i| positions[i].symbol.clone()).collect(),
+                    total_exposure,
+                    max_allowed: max_exposure,
+                    excess: total_exposure - max_exposure,
+                });
+            }
+        }
+
+        if warning_groups.is_empty() {
+            None
+        } else {
+            Some(CorrelationWarning { groups: warning_groups })
+        }
+    }
+
+    // ── Tail Risk (VaR/CVaR) ──────────────────────────────────────
+
+    /// Estimate portfolio VaR and CVaR using historical simulation.
+    /// Returns a signal if estimated VaR exceeds the configured threshold.
+    pub fn estimate_tail_risk(&self) -> Option<TailRiskSignal> {
+        let history = self.return_history.lock().unwrap();
+        if history.len() < 30 {
+            return None;
+        }
+
+        let confidence = self.config.var_confidence;
+        let max_var = self.config.max_var_pct;
+
+        // Sort returns ascending (worst first)
+        let mut sorted: Vec<f64> = history.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        // VaR at confidence level: the (1-confidence) percentile of returns
+        let var_idx = ((1.0 - confidence) * sorted.len() as f64).floor() as usize;
+        let var_idx = var_idx.min(sorted.len() - 1);
+        let var_pct = -sorted[var_idx]; // positive = loss
+
+        // CVaR (Expected Shortfall): average of returns worse than VaR
+        let cvar_pct = if var_idx > 0 {
+            -sorted[..=var_idx].iter().sum::<f64>() / (var_idx + 1) as f64
+        } else {
+            var_pct
+        };
+
+        let breach = var_pct > max_var;
+
+        Some(TailRiskSignal {
+            var_pct,
+            cvar_pct,
+            confidence,
+            max_allowed: max_var,
+            breach,
+        })
+    }
+
     // ── Combined Check ─────────────────────────────────────────────
 
     /// Check if a new BUY order should be blocked. Returns reason string or Ok.
@@ -356,6 +639,9 @@ impl RiskEnforcer {
                 self.config.max_daily_loss_pct * 100.0
             ));
         }
+        if self.is_vol_spike_active() {
+            return Err("Volatility spike active: new buys blocked until vol normalizes".into());
+        }
         Ok(())
     }
 
@@ -368,6 +654,7 @@ impl RiskEnforcer {
             drawdown_halted: self.is_drawdown_halted(),
             consecutive_failures: self.consecutive_failures.load(Ordering::SeqCst),
             circuit_open: self.is_circuit_open(),
+            vol_spike_active: self.is_vol_spike_active(),
             config: self.config.clone(),
         }
     }
@@ -376,6 +663,35 @@ impl RiskEnforcer {
     pub fn config(&self) -> &RiskConfig {
         &self.config
     }
+}
+
+// ── Helper Functions ──────────────────────────────────────────────
+
+fn std_dev(values: &[f64]) -> f64 {
+    if values.len() < 2 { return 0.0; }
+    let n = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / n;
+    let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0);
+    var.sqrt()
+}
+
+fn pearson_corr(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len().min(b.len());
+    if n < 3 { return 0.0; }
+    let mean_a = a[..n].iter().sum::<f64>() / n as f64;
+    let mean_b = b[..n].iter().sum::<f64>() / n as f64;
+    let mut cov = 0.0;
+    let mut var_a = 0.0;
+    let mut var_b = 0.0;
+    for i in 0..n {
+        let da = a[i] - mean_a;
+        let db = b[i] - mean_b;
+        cov += da * db;
+        var_a += da * da;
+        var_b += db * db;
+    }
+    let denom = (var_a * var_b).sqrt();
+    if denom < 1e-10 { 0.0 } else { cov / denom }
 }
 
 /// Risk enforcer status snapshot.
@@ -387,6 +703,7 @@ pub struct RiskStatus {
     pub drawdown_halted: bool,
     pub consecutive_failures: u32,
     pub circuit_open: bool,
+    pub vol_spike_active: bool,
     pub config: RiskConfig,
 }
 
@@ -533,5 +850,91 @@ mod tests {
         assert!(!status.daily_paused);
         assert!(!status.circuit_open);
         assert!(!status.drawdown_halted);
+        assert!(!status.vol_spike_active);
+    }
+
+    #[test]
+    fn test_volatility_spike_detection() {
+        let enforcer = default_enforcer();
+        let now = chrono::Utc::now().naive_utc();
+        let positions = vec![PositionInfo {
+            symbol: "600519.SH".into(),
+            quantity: 1000.0,
+            avg_cost: 100.0,
+            current_price: 100.0,
+            entry_time: now,
+            target_weight: 0.0,
+        }];
+
+        // Feed 60 days of calm returns (gentle random walk ±0.3%)
+        let mut val = 1_000_000.0;
+        for i in 0..60 {
+            // Small daily moves: +0.3% or -0.2% alternating
+            val *= if i % 2 == 0 { 1.003 } else { 0.998 };
+            assert!(enforcer.check_volatility_spike(val, &positions).is_none());
+        }
+        assert!(!enforcer.is_vol_spike_active());
+
+        // Crash: alternating -5%/+1% days (high dispersion = high vol)
+        let mut triggered = false;
+        for i in 0..5 {
+            val *= if i % 2 == 0 { 0.95 } else { 1.01 };
+            if enforcer.check_volatility_spike(val, &positions).is_some() {
+                triggered = true;
+            }
+        }
+        assert!(triggered, "Volatility spike should have triggered");
+        assert!(enforcer.is_vol_spike_active());
+        assert!(enforcer.can_buy().is_err());
+    }
+
+    #[test]
+    fn test_tail_risk_var() {
+        let enforcer = default_enforcer();
+        // Feed 60 returns including some bad days
+        for i in 0..55 {
+            let ret = if i % 10 == 0 { 0.97 } else { 1.001 }; // occasional -3% day
+            let val = 1_000_000.0 * ret;
+            enforcer.check_volatility_spike(val, &[]);
+        }
+        // Add a few crash days
+        for _ in 0..5 {
+            enforcer.check_volatility_spike(950_000.0, &[]);
+        }
+
+        let signal = enforcer.estimate_tail_risk();
+        assert!(signal.is_some());
+        let s = signal.unwrap();
+        assert!(s.var_pct > 0.0, "VaR should be positive (representing loss)");
+        assert!(s.cvar_pct >= s.var_pct, "CVaR should be >= VaR");
+    }
+
+    #[test]
+    fn test_correlation_monitoring() {
+        let enforcer = default_enforcer();
+        let now = chrono::Utc::now().naive_utc();
+        let positions = vec![
+            PositionInfo {
+                symbol: "A".into(), quantity: 1000.0, avg_cost: 100.0,
+                current_price: 100.0, entry_time: now, target_weight: 0.0,
+            },
+            PositionInfo {
+                symbol: "B".into(), quantity: 1000.0, avg_cost: 50.0,
+                current_price: 50.0, entry_time: now, target_weight: 0.0,
+            },
+        ];
+        let portfolio_value = 150_000.0;
+
+        // Create highly correlated return series
+        let base: Vec<f64> = (0..30).map(|i| 0.01 * (i as f64).sin()).collect();
+        let mut returns = std::collections::HashMap::new();
+        returns.insert("A".to_string(), base.clone());
+        returns.insert("B".to_string(), base.iter().map(|r| r * 1.1 + 0.001).collect());
+
+        let warning = enforcer.check_correlated_exposure(&positions, portfolio_value, &returns);
+        assert!(warning.is_some(), "Should detect correlated exposure");
+        let w = warning.unwrap();
+        assert!(!w.groups.is_empty());
+        assert_eq!(w.groups[0].symbols.len(), 2);
     }
 }
