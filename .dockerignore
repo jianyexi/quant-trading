@@ -1,0 +1,11 @@
+target/
+.git/
+node_modules/
+web/node_modules/
+web/dist/
+data/
+*.db
+retrain_stdout.txt
+retrain_stderr.txt
+__pycache__/
+*.pyc
