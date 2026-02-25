@@ -253,6 +253,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[derive(Debug)]
 struct AtomicF64(AtomicU64);
 
+#[allow(dead_code)]
 impl AtomicF64 {
     fn new(val: f64) -> Self { Self(AtomicU64::new(val.to_bits())) }
     fn load(&self) -> f64 { f64::from_bits(self.0.load(Ordering::Relaxed)) }
@@ -548,7 +549,7 @@ impl TradingEngine {
             // Notify engine stopped
             if let Some(ref n) = self.notifier {
                 let n = n.clone();
-                let pnl_str = if let Some(ref j) = self.journal {
+                let pnl_str = if let Some(ref _j) = self.journal {
                     let account = self.broker.get_account().await.unwrap_or_else(|_| Account {
                         id: Uuid::new_v4(), name: String::new(),
                         portfolio: Portfolio { positions: HashMap::new(), cash: 0.0, total_value: 0.0 },

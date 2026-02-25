@@ -3,6 +3,9 @@ name = "quant-broker"
 version.workspace = true
 edition.workspace = true
 
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("email"))'] }
+
 [dependencies]
 quant-core = { workspace = true }
 quant-risk = { workspace = true }

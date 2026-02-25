@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use uuid::Uuid;
 
-use tracing::{debug, trace};
+use tracing::debug;
 
 use quant_core::error::{QuantError, Result};
 use quant_core::models::*;

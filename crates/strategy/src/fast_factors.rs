@@ -39,8 +39,11 @@ impl RingSum {
         if self.buf.is_empty() { 0.0 } else { self.sum / self.buf.len() as f64 }
     }
 
+    #[allow(dead_code)]
     fn len(&self) -> usize { self.buf.len() }
+    #[allow(dead_code)]
     fn is_full(&self) -> bool { self.buf.len() == self.cap }
+    #[allow(dead_code)]
     fn as_slice(&self) -> &VecDeque<f64> { &self.buf }
 }
 
@@ -80,10 +83,11 @@ impl RingStdDev {
         if self.buf.is_empty() { 0.0 } else { self.sum / self.buf.len() as f64 }
     }
 
+    #[allow(dead_code)]
     fn is_full(&self) -> bool { self.buf.len() == self.cap }
 }
 
-/// Incremental EMA (O(1) per update).
+/// Incremental EMA(O(1) per update).
 struct IncrEMA {
     period: usize,
     k: f64,
@@ -198,10 +202,12 @@ impl ReturnTracker {
         if prev.abs() < f64::EPSILON { 0.0 } else { (cur - prev) / prev }
     }
 
+    #[allow(dead_code)]
     fn last(&self) -> f64 {
         self.closes.back().copied().unwrap_or(0.0)
     }
 
+    #[allow(dead_code)]
     fn prev(&self) -> f64 {
         let n = self.closes.len();
         if n >= 2 { self.closes[n - 2] } else { 0.0 }
@@ -239,6 +245,7 @@ impl RingMinMax {
 
     fn max(&self) -> f64 { self.maxs.front().map_or(0.0, |&(_, v)| v) }
     fn min(&self) -> f64 { self.mins.front().map_or(0.0, |&(_, v)| v) }
+    #[allow(dead_code)]
     fn ready(&self) -> bool { self.idx >= self.cap }
 }
 
@@ -611,13 +618,13 @@ impl LatencyStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveDateTime;
+    use chrono::DateTime;
 
     fn make_kline(sym: &str, close: f64, volume: f64, i: i64) -> Kline {
         let open = close * 0.998;
         Kline {
             symbol: sym.to_string(),
-            datetime: NaiveDateTime::from_timestamp_opt(1700000000 + i * 86400, 0).unwrap(),
+            datetime: DateTime::from_timestamp(1700000000 + i * 86400, 0).unwrap().naive_utc(),
             open,
             high: close * 1.005,
             low: close * 0.995,

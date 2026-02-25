@@ -53,6 +53,7 @@ impl Tree {
 #[derive(Debug, Clone)]
 pub struct LightGBMModel {
     trees: Vec<Tree>,
+    #[allow(dead_code)]
     num_class: usize,
     /// Sigmoid objective (binary classification)
     sigmoid: bool,

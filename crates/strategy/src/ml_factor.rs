@@ -52,7 +52,7 @@ pub fn compute_features(bars: &[Kline]) -> Option<[f32; NUM_FEATURES]> {
     let closes: Vec<f64> = bars.iter().map(|k| k.close).collect();
     let highs: Vec<f64> = bars.iter().map(|k| k.high).collect();
     let lows: Vec<f64> = bars.iter().map(|k| k.low).collect();
-    let opens: Vec<f64> = bars.iter().map(|k| k.open).collect();
+    let _opens: Vec<f64> = bars.iter().map(|k| k.open).collect();
     let volumes: Vec<f64> = bars.iter().map(|k| k.volume).collect();
 
     let c = cur.close;
@@ -515,6 +515,7 @@ impl TcpMqInferenceClient {
 // ── Fallback Rule-Based Scoring ─────────────────────────────────────
 
 /// When no ONNX model is available, use a rule-based scoring of the features.
+#[allow(dead_code)]
 fn fallback_score(features: &[f32; NUM_FEATURES]) -> f64 {
     let mut score = 0.5; // neutral baseline
 

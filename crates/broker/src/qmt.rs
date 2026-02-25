@@ -149,6 +149,7 @@ impl QmtBroker {
             match self.client.get(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     #[derive(Deserialize)]
+                    #[allow(dead_code)]
                     struct OrderResult {
                         order_status: Option<i32>,
                         traded_volume: Option<f64>,
