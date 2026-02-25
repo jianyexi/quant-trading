@@ -76,12 +76,12 @@ export default function FactorMining() {
         ))}
       </div>
 
-      {/* Tab content */}
-      {activeTab === 'overview' && <OverviewTab registry={registry} results={results} />}
-      {activeTab === 'parametric' && <ParametricTab />}
-      {activeTab === 'gp' && <GPTab />}
-      {activeTab === 'registry' && <RegistryTab registry={registry} onRefresh={loadData} />}
-      {activeTab === 'export' && <ExportTab results={results} />}
+      {/* Tab content — all tabs stay mounted to preserve state */}
+      <div className={activeTab === 'overview' ? '' : 'hidden'}><OverviewTab registry={registry} results={results} /></div>
+      <div className={activeTab === 'parametric' ? '' : 'hidden'}><ParametricTab /></div>
+      <div className={activeTab === 'gp' ? '' : 'hidden'}><GPTab /></div>
+      <div className={activeTab === 'registry' ? '' : 'hidden'}><RegistryTab registry={registry} onRefresh={loadData} /></div>
+      <div className={activeTab === 'export' ? '' : 'hidden'}><ExportTab results={results} /></div>
     </div>
   );
 }
