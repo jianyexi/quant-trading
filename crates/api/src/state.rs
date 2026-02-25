@@ -7,6 +7,7 @@ use quant_config::AppConfig;
 use quant_strategy::sentiment::SentimentStore;
 use quant_strategy::collector::SentimentCollector;
 use crate::log_store::LogStore;
+use crate::task_store::TaskStore;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -18,4 +19,5 @@ pub struct AppState {
     pub log_store: Arc<LogStore>,
     pub notifier: Arc<Notifier>,
     pub db: Option<sqlx::PgPool>,
+    pub task_store: Arc<TaskStore>,
 }

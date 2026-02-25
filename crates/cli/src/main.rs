@@ -1644,6 +1644,12 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
         (journal, notifier)
     };
 
+    let task_store = quant_api::TaskStore::open("data/tasks.db")
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to open tasks.db, using in-memory: {e}");
+            quant_api::TaskStore::open(":memory:").expect("in-memory TaskStore")
+        });
+
     let state = AppState {
         config: std::sync::Arc::new(config.clone()),
         engine: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
@@ -1655,6 +1661,7 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
         log_store: std::sync::Arc::new(quant_api::LogStore::new()),
         notifier: std::sync::Arc::new(notifier),
         db: db_pool,
+        task_store: std::sync::Arc::new(task_store),
     };
 
     // Resolve web/dist path — try CWD first, then relative to the executable

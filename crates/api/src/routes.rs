@@ -101,6 +101,13 @@ fn factor_routes() -> Router<AppState> {
         .route("/results", get(handlers::factor_results))
 }
 
+fn task_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(handlers::list_tasks))
+        .route("/running", get(handlers::list_running_tasks))
+        .route("/:id", get(handlers::get_task))
+}
+
 fn journal_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(handlers::get_journal))
@@ -171,6 +178,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/sentiment", sentiment_routes())
         .nest("/api/research", research_routes())
         .nest("/api/factor", factor_routes())
+        .nest("/api/tasks", task_routes())
         .nest("/api/journal", journal_routes())
         .nest("/api/notifications", notification_routes())
         .nest("/api/logs", log_routes())

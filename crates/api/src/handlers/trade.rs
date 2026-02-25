@@ -345,7 +345,7 @@ pub async fn qmt_bridge_status(
 // ── ML Model Retrain ────────────────────────────────────────────────
 
 pub async fn ml_retrain(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     body: Option<Json<Value>>,
 ) -> (StatusCode, Json<Value>) {
     let body_val = body.map(|b| b.0).unwrap_or(json!({}));
@@ -364,13 +364,24 @@ pub async fn ml_retrain(
     let threshold = body_val.get("threshold").and_then(|a| a.as_f64())
         .unwrap_or(0.01).to_string();
 
-    let result = tokio::task::spawn_blocking(move || {
+    let ts = state.task_store.clone();
+    let task_id = ts.create("ml_retrain");
+    let tid = task_id.clone();
+
+    tokio::task::spawn_blocking(move || {
         let retrain_script = std::path::Path::new("ml_models/auto_retrain.py");
         if !retrain_script.exists() {
-            return Err(format!("auto_retrain.py not found (cwd={:?})", std::env::current_dir()));
+            ts.fail(&tid, &format!("auto_retrain.py not found (cwd={:?})", std::env::current_dir()));
+            return;
         }
 
-        let python = find_python().ok_or("Python not found. Install Python 3.12+ or set PYTHON_PATH env var.")?;
+        let python = match find_python() {
+            Some(p) => p,
+            None => {
+                ts.fail(&tid, "Python not found. Install Python 3.12+ or set PYTHON_PATH env var.");
+                return;
+            }
+        };
 
         let mut args = vec![
             "ml_models/auto_retrain.py".to_string(),
@@ -393,33 +404,37 @@ pub async fn ml_retrain(
             args.push(end_date);
         }
 
+        ts.set_progress(&tid, "Training started...");
+
         let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         let output = std::process::Command::new(&python)
             .args(&str_args)
             .env("PYTHONIOENCODING", "utf-8")
-            .output()
-            .map_err(|e| format!("Failed to start python '{}': {}", python, e))?;
+            .output();
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        if output.status.success() {
-            Ok(serde_json::json!({
-                "status": "completed",
-                "stdout": stdout,
-                "stderr": stderr,
-            }))
-        } else {
-            let detail = if stderr.is_empty() { &stdout } else { &stderr };
-            Err(format!("Retrain exit {}: {}", output.status, detail))
+        match output {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                if output.status.success() {
+                    let result = serde_json::json!({
+                        "status": "completed",
+                        "stdout": stdout,
+                        "stderr": stderr,
+                    });
+                    ts.complete(&tid, &result.to_string());
+                } else {
+                    let detail = if stderr.is_empty() { &stdout } else { &stderr };
+                    ts.fail(&tid, &format!("Retrain exit {}: {}", output.status, detail));
+                }
+            }
+            Err(e) => {
+                ts.fail(&tid, &format!("Failed to start python '{}': {}", python, e));
+            }
         }
-    }).await;
+    });
 
-    match result {
-        Ok(Ok(report)) => (StatusCode::OK, Json(report)),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Task error: {}", e)}))),
-    }
+    (StatusCode::ACCEPTED, Json(json!({ "task_id": task_id, "status": "running" })))
 }
 
 pub async fn ml_model_info() -> Json<Value> {

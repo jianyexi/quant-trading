@@ -1,24 +1,48 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { factorExportPromoted, type FactorResults } from '../../api/client';
+import { useTaskPoller } from '../../hooks/useTaskPoller';
+
+const STORAGE_KEY = 'task_export';
 
 export default function ExportTab({ results }: { results: FactorResults | null }) {
-  const [exporting, setExporting] = useState(false);
   const [exportRetrain, setExportRetrain] = useState(true);
   const [output, setOutput] = useState('');
   const [error, setError] = useState('');
   const [showRust, setShowRust] = useState<'p1' | 'gp' | null>(null);
 
+  const { task, startPolling, reset } = useTaskPoller();
+  const exporting = task?.status === 'Running';
+
+  useEffect(() => {
+    const savedId = sessionStorage.getItem(STORAGE_KEY);
+    if (savedId) startPolling(savedId);
+  }, [startPolling]);
+
+  useEffect(() => {
+    if (!task) return;
+    if (task.status === 'Completed') {
+      sessionStorage.removeItem(STORAGE_KEY);
+      try {
+        const parsed = task.result ? JSON.parse(task.result) : null;
+        setOutput(parsed?.stdout || task.result || '完成');
+      } catch {
+        setOutput(task.result || '完成');
+      }
+    } else if (task.status === 'Failed') {
+      sessionStorage.removeItem(STORAGE_KEY);
+      setError(task.error || '导出失败');
+    }
+  }, [task?.status]);
+
   const handleExport = async () => {
-    setExporting(true);
     setError('');
     setOutput('');
     try {
       const result = await factorExportPromoted({ retrain: exportRetrain });
-      setOutput(result.stdout || '完成');
+      sessionStorage.setItem(STORAGE_KEY, result.task_id);
+      startPolling(result.task_id);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '导出失败');
-    } finally {
-      setExporting(false);
     }
   };
 

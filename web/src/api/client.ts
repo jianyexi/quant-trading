@@ -478,7 +478,7 @@ export interface RetrainOptions {
   threshold?: number;
 }
 
-export async function mlRetrain(opts?: RetrainOptions): Promise<{ status: string; stdout: string; stderr: string }> {
+export async function mlRetrain(opts?: RetrainOptions): Promise<TaskSubmitResult> {
   return fetchJson('/trade/retrain', {
     method: 'POST',
     body: JSON.stringify(opts ?? {}),
@@ -630,7 +630,7 @@ export async function factorMineParametric(params?: {
   symbols?: string;
   start_date?: string;
   end_date?: string;
-}): Promise<FactorMiningResult> {
+}): Promise<TaskSubmitResult> {
   return fetchJson('/factor/mine/parametric', {
     method: 'POST',
     body: JSON.stringify(params ?? {}),
@@ -648,7 +648,7 @@ export async function factorMineGP(params?: {
   symbols?: string;
   start_date?: string;
   end_date?: string;
-}): Promise<FactorMiningResult> {
+}): Promise<TaskSubmitResult> {
   return fetchJson('/factor/mine/gp', {
     method: 'POST',
     body: JSON.stringify(params ?? {}),
@@ -662,7 +662,7 @@ export async function factorRegistryGet(): Promise<FactorRegistry> {
 export async function factorRegistryManage(params?: {
   n_bars?: number;
   data?: string;
-}): Promise<FactorMiningResult> {
+}): Promise<TaskSubmitResult> {
   return fetchJson('/factor/manage', {
     method: 'POST',
     body: JSON.stringify(params ?? {}),
@@ -672,7 +672,7 @@ export async function factorRegistryManage(params?: {
 export async function factorExportPromoted(params?: {
   retrain?: boolean;
   data?: string;
-}): Promise<FactorMiningResult> {
+}): Promise<TaskSubmitResult> {
   return fetchJson('/factor/export', {
     method: 'POST',
     body: JSON.stringify(params ?? {}),
@@ -781,4 +781,34 @@ export async function getReports(): Promise<any> {
 
 export async function getLatency(): Promise<any> {
   return fetchJson('/latency');
+}
+
+// ── Background Tasks ────────────────────────────────────────────────
+
+export interface TaskSubmitResult {
+  task_id: string;
+  status: string;
+}
+
+export interface TaskRecord {
+  id: string;
+  task_type: string;
+  status: 'Pending' | 'Running' | 'Completed' | 'Failed';
+  created_at: string;
+  updated_at: string;
+  progress: string | null;
+  result: string | null;
+  error: string | null;
+}
+
+export async function getTask(taskId: string): Promise<TaskRecord> {
+  return fetchJson(`/tasks/${taskId}`);
+}
+
+export async function listTasks(): Promise<{ tasks: TaskRecord[] }> {
+  return fetchJson('/tasks');
+}
+
+export async function listRunningTasks(): Promise<{ tasks: TaskRecord[] }> {
+  return fetchJson('/tasks/running');
 }

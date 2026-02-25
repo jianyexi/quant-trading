@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { StrategyConfig, StrategyParam } from '../types';
-import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, type ModelInfo, type RetrainOptions } from '../api/client';
+import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, getTask, type ModelInfo, type RetrainOptions, type TaskRecord } from '../api/client';
 import { Save, Upload, Play, RotateCcw, Brain, Loader2, CheckCircle, AlertCircle, Zap, Database } from 'lucide-react';
 
 const STRATEGIES: StrategyConfig[] = [
@@ -120,13 +120,48 @@ export default function StrategyConfigPage() {
   const [trainEndDate, setTrainEndDate] = useState('2024-12-31');
   const [trainHorizon, setTrainHorizon] = useState(5);
   const [trainThreshold, setTrainThreshold] = useState(0.01);
+  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const activeStrategy = STRATEGIES.find((s) => s.name === selectedStrategy)!;
 
-  // Load config from server on mount
+  const stopPolling = useCallback(() => {
+    if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
+  }, []);
+
+  const pollTask = useCallback(async (taskId: string) => {
+    try {
+      const t = await getTask(taskId);
+      if (t.status === 'Completed') {
+        sessionStorage.removeItem('task_retrain');
+        setRetraining(false);
+        stopPolling();
+        showStatus('模型训练完成！', 'success');
+        fetchModelInfo();
+      } else if (t.status === 'Failed') {
+        sessionStorage.removeItem('task_retrain');
+        setRetraining(false);
+        stopPolling();
+        showStatus(t.error || '训练失败，请检查日志', 'error');
+      } else if (t.progress) {
+        showStatus(t.progress, 'info');
+      }
+    } catch { /* transient error, keep polling */ }
+  }, []);
+
+  const startTaskPolling = useCallback((taskId: string) => {
+    setRetraining(true);
+    stopPolling();
+    pollTask(taskId);
+    pollTimer.current = setInterval(() => pollTask(taskId), 2000);
+  }, [pollTask, stopPolling]);
+
+  // Load config from server on mount + restore active task
   useEffect(() => {
     loadFromServer();
     fetchModelInfo();
+    const savedTaskId = sessionStorage.getItem('task_retrain');
+    if (savedTaskId) startTaskPolling(savedTaskId);
+    return stopPolling;
   }, []);
 
   const showStatus = (text: string, type: 'info' | 'success' | 'error' = 'info') => {
@@ -245,15 +280,10 @@ export default function StrategyConfigPage() {
         opts.end_date = trainEndDate;
       }
       const result = await mlRetrain(opts);
-      if (result.status === 'completed') {
-        showStatus('模型训练完成！', 'success');
-        fetchModelInfo();
-      } else {
-        showStatus('训练失败，请检查日志', 'error');
-      }
+      sessionStorage.setItem('task_retrain', result.task_id);
+      startTaskPolling(result.task_id);
     } catch {
       showStatus('训练请求失败', 'error');
-    } finally {
       setRetraining(false);
     }
   };

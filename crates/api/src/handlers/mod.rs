@@ -6,6 +6,7 @@ mod notification;
 mod metrics;
 mod reports;
 mod latency;
+mod tasks;
 
 pub use market::*;
 pub use backtest::*;
@@ -15,6 +16,7 @@ pub use notification::*;
 pub use metrics::*;
 pub use reports::*;
 pub use latency::*;
+pub use tasks::*;
 
 use axum::{
     extract::{Path, Query, State},
@@ -1027,6 +1029,7 @@ pub(crate) fn run_python_script(python: &str, args: &[String]) -> Result<Value, 
     quant_core::utils::run_python_script(python, args)
 }
 
+#[allow(dead_code)]
 pub(crate) fn flatten_spawn_result(
     result: Result<Result<Value, String>, tokio::task::JoinError>,
 ) -> (StatusCode, Json<Value>) {

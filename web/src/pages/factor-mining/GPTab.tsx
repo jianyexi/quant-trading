@@ -1,6 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { factorMineGP } from '../../api/client';
+import { useTaskPoller } from '../../hooks/useTaskPoller';
 import DataSourceConfig from './DataSourceConfig';
+
+const STORAGE_KEY = 'task_gp';
 
 export default function GPTab() {
   const [nBars, setNBars] = useState(3000);
@@ -13,12 +16,35 @@ export default function GPTab() {
   const [symbols, setSymbols] = useState('');
   const [startDate, setStartDate] = useState('2023-01-01');
   const [endDate, setEndDate] = useState('2024-12-31');
-  const [running, setRunning] = useState(false);
   const [output, setOutput] = useState('');
   const [error, setError] = useState('');
 
+  const { task, startPolling, reset } = useTaskPoller();
+  const running = task?.status === 'Running';
+
+  useEffect(() => {
+    const savedId = sessionStorage.getItem(STORAGE_KEY);
+    if (savedId) startPolling(savedId);
+  }, [startPolling]);
+
+  useEffect(() => {
+    if (!task) return;
+    if (task.status === 'Completed') {
+      sessionStorage.removeItem(STORAGE_KEY);
+      try {
+        const parsed = task.result ? JSON.parse(task.result) : null;
+        setOutput(parsed?.stdout || task.result || '完成');
+        if (parsed?.stderr) setOutput(prev => prev + '\n\n--- stderr ---\n' + parsed.stderr);
+      } catch {
+        setOutput(task.result || '完成');
+      }
+    } else if (task.status === 'Failed') {
+      sessionStorage.removeItem(STORAGE_KEY);
+      setError(task.error || '任务失败');
+    }
+  }, [task?.status]);
+
   const handleRun = async () => {
-    setRunning(true);
     setError('');
     setOutput('');
     try {
@@ -34,12 +60,10 @@ export default function GPTab() {
         start_date: startDate,
         end_date: endDate,
       });
-      setOutput(result.stdout || '完成');
-      if (result.stderr) setOutput((prev) => prev + '\n\n--- stderr ---\n' + result.stderr);
+      sessionStorage.setItem(STORAGE_KEY, result.task_id);
+      startPolling(result.task_id);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '请求失败');
-    } finally {
-      setRunning(false);
     }
   };
 
