@@ -495,6 +495,63 @@ export async function getRiskStatus() {
   return fetchJson('/trade/risk');
 }
 
+export async function getRiskSignals(): Promise<RiskSignalsSnapshot> {
+  return fetchJson('/trade/risk/signals');
+}
+
+export interface RiskSignalsSnapshot {
+  status: RiskStatusData;
+  vol_spike_active: boolean;
+  tail_risk: TailRiskData | null;
+  return_history_len: number;
+  recent_events: RiskEvent[];
+}
+
+export interface RiskStatusData {
+  daily_pnl: number;
+  daily_paused: boolean;
+  peak_value: number;
+  drawdown_halted: boolean;
+  consecutive_failures: number;
+  circuit_open: boolean;
+  vol_spike_active: boolean;
+  config: RiskConfigData;
+}
+
+export interface RiskConfigData {
+  stop_loss_pct: number;
+  max_daily_loss_pct: number;
+  max_drawdown_pct: number;
+  circuit_breaker_failures: number;
+  halt_on_drawdown: boolean;
+  vol_spike_ratio: number;
+  vol_deleverage_factor: number;
+  max_correlated_exposure: number;
+  var_confidence: number;
+  max_var_pct: number;
+}
+
+export interface TailRiskData {
+  var_pct: number;
+  cvar_pct: number;
+  confidence: number;
+  max_allowed: number;
+  breach: boolean;
+}
+
+export interface RiskEvent {
+  timestamp: string;
+  severity: 'Info' | 'Warning' | 'Critical';
+  event_type: string;
+  message: string;
+  detail?: Record<string, unknown>;
+}
+
+export function createMonitorWebSocket(): WebSocket {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return new WebSocket(`${protocol}//${window.location.host}/api/monitor/ws`);
+}
+
 export async function resetCircuitBreaker() {
   return fetchJson('/trade/risk/reset-circuit', { method: 'POST' });
 }

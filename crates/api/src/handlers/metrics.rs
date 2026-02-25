@@ -10,6 +10,8 @@ pub async fn get_metrics(State(state): State<AppState>) -> Json<Value> {
     let engine_metrics = if let Some(ref engine) = *engine_guard {
         let status = engine.status().await;
         let risk = engine.risk_enforcer().status();
+        let vol_spike = risk.vol_spike_active;
+        let tail_risk = engine.risk_enforcer().estimate_tail_risk();
         json!({
             "running": status.running,
             "strategy": status.strategy,
@@ -53,6 +55,8 @@ pub async fn get_metrics(State(state): State<AppState>) -> Json<Value> {
                 "drawdown_halted": risk.drawdown_halted,
                 "peak_value": risk.peak_value,
                 "consecutive_failures": risk.consecutive_failures,
+                "vol_spike_active": vol_spike,
+                "tail_risk": tail_risk,
             },
         })
     } else {

@@ -3,6 +3,7 @@
 /// These are stateful runtime checks that the engine evaluates continuously,
 /// as opposed to the pre-trade checks in `checks.rs`.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -178,6 +179,27 @@ pub struct TailRiskSignal {
     pub breach: bool,
 }
 
+// ── Risk Event Log ─────────────────────────────────────────────────
+
+/// A timestamped risk event for the monitoring timeline.
+#[derive(Debug, Clone, Serialize)]
+pub struct RiskEvent {
+    pub timestamp: DateTime<Utc>,
+    pub severity: RiskSeverity,
+    pub event_type: String,
+    pub message: String,
+    /// Optional structured payload (serialized signal)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub enum RiskSeverity {
+    Info,
+    Warning,
+    Critical,
+}
+
 // ── Stop-Loss Signal ───────────────────────────────────────────────
 
 /// A stop-loss signal generated when a position breaches the threshold.
@@ -217,6 +239,9 @@ pub struct RiskEnforcer {
 
     // Volatility spike state
     vol_spike_active: AtomicBool,
+
+    // Risk event log (ring buffer, max 200 entries)
+    event_log: Mutex<Vec<RiskEvent>>,
 }
 
 impl RiskEnforcer {
@@ -233,6 +258,7 @@ impl RiskEnforcer {
             return_history: Mutex::new(Vec::with_capacity(256)),
             prev_portfolio_value: Mutex::new(initial_capital),
             vol_spike_active: AtomicBool::new(false),
+            event_log: Mutex::new(Vec::with_capacity(200)),
         }
     }
 
@@ -265,7 +291,14 @@ impl RiskEnforcer {
         *daily += pnl;
         let threshold = self.initial_capital * self.config.max_daily_loss_pct;
         if *daily < -threshold {
-            self.daily_paused.store(true, Ordering::SeqCst);
+            if !self.daily_paused.swap(true, Ordering::SeqCst) {
+                self.push_event(
+                    RiskSeverity::Critical,
+                    "daily_loss_limit",
+                    &format!("日内亏损触发暂停: ¥{:.0}, 限额: ¥{:.0}", *daily, -threshold),
+                    None,
+                );
+            }
         }
     }
 
@@ -295,7 +328,14 @@ impl RiskEnforcer {
         }
         let drawdown = (*peak - current_value) / *peak;
         if drawdown > self.config.max_drawdown_pct && self.config.halt_on_drawdown {
-            self.drawdown_halted.store(true, Ordering::SeqCst);
+            if !self.drawdown_halted.swap(true, Ordering::SeqCst) {
+                self.push_event(
+                    RiskSeverity::Critical,
+                    "max_drawdown",
+                    &format!("最大回撤触发停止: {:.1}% > {:.1}%", drawdown * 100.0, self.config.max_drawdown_pct * 100.0),
+                    None,
+                );
+            }
             return true;
         }
         false
@@ -334,7 +374,14 @@ impl RiskEnforcer {
     pub fn record_failure(&self) -> bool {
         let n = self.consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
         if n >= self.config.circuit_breaker_failures {
-            self.circuit_open.store(true, Ordering::SeqCst);
+            if !self.circuit_open.swap(true, Ordering::SeqCst) {
+                self.push_event(
+                    RiskSeverity::Critical,
+                    "circuit_breaker",
+                    &format!("熔断器触发: 连续失败{}次", n),
+                    None,
+                );
+            }
             return true; // circuit breaker tripped
         }
         false
@@ -462,7 +509,16 @@ impl RiskEnforcer {
         let spike_ratio = short_vol / long_vol;
 
         if spike_ratio > self.config.vol_spike_ratio {
-            self.vol_spike_active.store(true, Ordering::SeqCst);
+            if !self.vol_spike_active.swap(true, Ordering::SeqCst) {
+                self.push_event(
+                    RiskSeverity::Warning,
+                    "vol_spike",
+                    &format!("波动率突变: 短期{:.4} / 长期{:.4} = {:.1}x", short_vol, long_vol, spike_ratio),
+                    serde_json::to_value(&serde_json::json!({
+                        "short_vol": short_vol, "long_vol": long_vol, "spike_ratio": spike_ratio
+                    })).ok(),
+                );
+            }
 
             // Calculate position reductions
             let factor = self.config.vol_deleverage_factor;
@@ -659,6 +715,46 @@ impl RiskEnforcer {
         }
     }
 
+    // ── Event Log ──────────────────────────────────────────────────
+
+    /// Push a risk event into the ring buffer (max 200 entries).
+    pub fn push_event(&self, severity: RiskSeverity, event_type: &str, message: &str, detail: Option<serde_json::Value>) {
+        let event = RiskEvent {
+            timestamp: Utc::now(),
+            severity,
+            event_type: event_type.to_string(),
+            message: message.to_string(),
+            detail,
+        };
+        let mut log = self.event_log.lock().unwrap();
+        if log.len() >= 200 {
+            log.remove(0);
+        }
+        log.push(event);
+    }
+
+    /// Get recent risk events (newest last).
+    pub fn recent_events(&self, limit: usize) -> Vec<RiskEvent> {
+        let log = self.event_log.lock().unwrap();
+        let n = log.len();
+        let skip = n.saturating_sub(limit);
+        log[skip..].to_vec()
+    }
+
+    /// Get a comprehensive risk signals snapshot (for monitoring dashboard).
+    pub fn risk_signals_snapshot(&self) -> RiskSignalsSnapshot {
+        let tail_risk = self.estimate_tail_risk();
+        let return_count = self.return_history.lock().unwrap().len();
+
+        RiskSignalsSnapshot {
+            status: self.status(),
+            vol_spike_active: self.is_vol_spike_active(),
+            tail_risk,
+            return_history_len: return_count,
+            recent_events: self.recent_events(50),
+        }
+    }
+
     /// Get config reference.
     pub fn config(&self) -> &RiskConfig {
         &self.config
@@ -705,6 +801,16 @@ pub struct RiskStatus {
     pub circuit_open: bool,
     pub vol_spike_active: bool,
     pub config: RiskConfig,
+}
+
+/// Comprehensive risk signals snapshot for monitoring dashboard.
+#[derive(Debug, Clone, Serialize)]
+pub struct RiskSignalsSnapshot {
+    pub status: RiskStatus,
+    pub vol_spike_active: bool,
+    pub tail_risk: Option<TailRiskSignal>,
+    pub return_history_len: usize,
+    pub recent_events: Vec<RiskEvent>,
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -936,5 +1042,41 @@ mod tests {
         let w = warning.unwrap();
         assert!(!w.groups.is_empty());
         assert_eq!(w.groups[0].symbols.len(), 2);
+    }
+
+    #[test]
+    fn test_event_log_and_snapshot() {
+        let enforcer = default_enforcer();
+        // Trigger daily loss → event logged
+        enforcer.record_realized_pnl(-50_000.0);
+        let events = enforcer.recent_events(10);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, RiskSeverity::Critical);
+        assert_eq!(events[0].event_type, "daily_loss_limit");
+
+        // Trigger circuit breaker → event logged
+        for _ in 0..5 {
+            enforcer.record_failure();
+        }
+        let events = enforcer.recent_events(10);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].event_type, "circuit_breaker");
+
+        // Snapshot includes status + events
+        let snap = enforcer.risk_signals_snapshot();
+        assert!(snap.status.daily_paused);
+        assert!(snap.status.circuit_open);
+        assert_eq!(snap.recent_events.len(), 2);
+    }
+
+    #[test]
+    fn test_event_log_ring_buffer() {
+        let enforcer = default_enforcer();
+        for i in 0..210 {
+            enforcer.push_event(RiskSeverity::Info, "test", &format!("event {}", i), None);
+        }
+        let events = enforcer.recent_events(300);
+        assert_eq!(events.len(), 200); // capped at 200
+        assert!(events[0].message.contains("10")); // oldest should be event 10
     }
 }

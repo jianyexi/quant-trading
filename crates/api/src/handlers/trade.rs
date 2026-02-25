@@ -286,6 +286,29 @@ pub async fn risk_reset_daily(
     }
 }
 
+/// GET /api/trade/risk/signals — comprehensive risk signals snapshot
+pub async fn risk_signals(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let engine_guard = state.engine.lock().await;
+    if let Some(ref eng) = *engine_guard {
+        let snapshot = eng.risk_enforcer().risk_signals_snapshot();
+        Json(serde_json::to_value(&snapshot).unwrap_or(json!({"error": "serialize"})))
+    } else {
+        Json(json!({
+            "status": {
+                "daily_pnl": 0.0, "daily_paused": false, "drawdown_halted": false,
+                "circuit_open": false, "consecutive_failures": 0, "peak_value": 0.0,
+                "vol_spike_active": false, "config": quant_risk::enforcement::RiskConfig::default()
+            },
+            "vol_spike_active": false,
+            "tail_risk": null,
+            "return_history_len": 0,
+            "recent_events": []
+        }))
+    }
+}
+
 pub async fn trade_performance(
     State(state): State<AppState>,
 ) -> Json<Value> {

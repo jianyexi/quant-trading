@@ -46,6 +46,11 @@ fn chat_routes() -> Router<AppState> {
         .route("/stream", get(ws::ws_chat))
 }
 
+fn monitor_routes() -> Router<AppState> {
+    Router::new()
+        .route("/ws", get(ws::ws_monitor))
+}
+
 fn trade_routes() -> Router<AppState> {
     Router::new()
         .route("/start", post(handlers::trade_start))
@@ -53,6 +58,7 @@ fn trade_routes() -> Router<AppState> {
         .route("/status", get(handlers::trade_status))
         .route("/performance", get(handlers::trade_performance))
         .route("/risk", get(handlers::risk_status))
+        .route("/risk/signals", get(handlers::risk_signals))
         .route("/risk/reset-circuit", post(handlers::risk_reset_circuit))
         .route("/risk/reset-daily", post(handlers::risk_reset_daily))
         .route("/retrain", post(handlers::ml_retrain))
@@ -159,6 +165,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/orders", order_routes())
         .nest("/api/portfolio", portfolio_routes())
         .nest("/api/chat", chat_routes())
+        .nest("/api/monitor", monitor_routes())
         .nest("/api/trade", trade_routes())
         .nest("/api/screen", screen_routes())
         .nest("/api/sentiment", sentiment_routes())
