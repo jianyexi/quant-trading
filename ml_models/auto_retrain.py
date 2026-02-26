@@ -91,23 +91,43 @@ def merge_journal_with_ohlcv(
     horizon: int = 5,
     threshold: float = 0.01,
 ) -> tuple:
-    """Merge OHLCV features with journal-based labels where available."""
-    features = compute_features(ohlcv_df)
+    """Merge OHLCV features with journal-based labels where available.
 
-    fwd_ret = ohlcv_df["close"].pct_change(horizon).shift(-horizon)
-    labels = (fwd_ret > threshold).astype(int)
+    If data contains a 'symbol' column (multi-stock), features and labels
+    are computed per stock to avoid cross-stock contamination of rolling
+    windows.
+    """
+    has_symbol = "symbol" in ohlcv_df.columns
+
+    if has_symbol:
+        # Per-stock feature computation — critical for correct rolling windows
+        parts = []
+        for sym, grp in ohlcv_df.groupby("symbol"):
+            grp_ohlcv = grp.drop(columns=["symbol"])
+            feat = compute_features(grp_ohlcv)
+            fwd_ret = grp_ohlcv["close"].pct_change(horizon).shift(-horizon)
+            lbl = (fwd_ret > threshold).astype(int)
+            feat["label"] = lbl
+            feat["symbol"] = sym
+            parts.append(feat)
+        combined = pd.concat(parts, axis=0)
+        combined.dropna(inplace=True)
+        combined.drop(columns=["symbol"], inplace=True)
+    else:
+        features = compute_features(ohlcv_df)
+        fwd_ret = ohlcv_df["close"].pct_change(horizon).shift(-horizon)
+        labels = (fwd_ret > threshold).astype(int)
+        combined = features.copy()
+        combined["label"] = labels
+        combined.dropna(inplace=True)
 
     if not journal_df.empty:
         journal_df = journal_df.set_index("timestamp").sort_index()
         for idx in journal_df.index:
-            closest = features.index.get_indexer([idx], method="nearest")
+            closest = combined.index.get_indexer([idx], method="nearest")
             if len(closest) > 0 and closest[0] >= 0:
                 pos = closest[0]
-                labels.iloc[pos] = journal_df.loc[idx, "label"]
-
-    combined = features.copy()
-    combined["label"] = labels
-    combined.dropna(inplace=True)
+                combined.iloc[pos, combined.columns.get_loc("label")] = journal_df.loc[idx, "label"]
 
     X = combined.drop(columns=["label"])
     y = combined["label"]
@@ -637,34 +657,44 @@ def walk_forward_cv_single(
     }
 
 
-# Default stock list for akshare training — 50 stocks across sectors
+# Default stock list for akshare training — 80 stocks across sectors
 DEFAULT_TRAIN_STOCKS = [
     # 白酒/食品 (Consumer Staples)
     "600519", "000858", "000568", "600809", "600887", "002304", "603288",
+    "000895", "603369", "002568",
     # 金融 (Financials)
     "600036", "601318", "601166", "600030", "601398", "601288",
+    "600000", "601601", "601688", "000776",
     # 新能源/汽车 (New Energy / Auto)
     "300750", "002594", "600438", "601012", "002460",
+    "600089", "002074", "300014", "601633",
     # 医药 (Healthcare)
     "600276", "000333", "300760", "603259", "300122",
+    "000538", "600196", "002007", "300347",
     # 科技/电子 (Tech / Electronics)
     "002415", "603501", "300782", "688981", "002049",
+    "002371", "300433", "601138", "002241",
     # 消费/家电 (Consumer Discretionary)
     "000651", "600690", "002032", "601888",
+    "000725", "002572", "603486",
     # 周期/材料 (Materials / Industrials)
     "601899", "600031", "600309", "601225", "600585",
+    "600019", "601600", "002466", "600348",
     # 公用事业/基建 (Utilities / Infra)
     "600900", "601669", "600048", "601800",
+    "600886", "601985", "003816",
     # 传媒/互联网 (Media / Internet)
     "300059", "002230", "603444",
+    "002555", "300413",
     # 军工 (Defense)
     "600760", "002179", "600893",
+    "600150", "000768",
 ]
 
 
 def _fetch_akshare_data(
     symbols: Optional[List[str]] = None,
-    start_date: str = "2022-01-01",
+    start_date: str = "2020-01-01",
     end_date: str = "2024-12-31",
     max_retries: int = 3,
     base_delay: float = 0.8,
@@ -672,6 +702,7 @@ def _fetch_akshare_data(
     """Fetch real A-share daily data from akshare for multiple stocks.
 
     Features:
+    - Per-stock feature computation (symbol column added)
     - Exponential backoff retry (up to max_retries) per stock
     - Throttle delay between requests to avoid rate limiting
     - Per-stock status tracking for diagnostics
@@ -721,6 +752,7 @@ def _fetch_akshare_data(
                 df["date"] = pd.to_datetime(df["date"])
                 df.set_index("date", inplace=True)
                 df = df[["open", "high", "low", "close", "volume"]].astype(float)
+                df["symbol"] = code
                 all_data.append(df)
                 fetch_stats[code] = {"status": "ok", "bars": len(df)}
                 print(f"OK ({len(df)} bars)")
@@ -764,7 +796,7 @@ def retrain(
     data_path: Optional[str] = None,
     data_source: str = "synthetic",
     symbols: Optional[List[str]] = None,
-    start_date: str = "2022-01-01",
+    start_date: str = "2020-01-01",
     end_date: str = "2024-12-31",
     journal_path: str = "data/trade_journal.db",
     output_dir: str = "ml_models",
