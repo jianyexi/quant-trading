@@ -1,9 +1,13 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   factorRegistryManage,
+  getTask,
   type FactorRegistry,
   type FactorRegistryEntry,
 } from '../../api/client';
+import { useTaskPoller } from '../../hooks/useTaskPoller';
+
+const STORAGE_KEY = 'task_registry_manage';
 
 const STATE_COLORS: Record<string, string> = {
   candidate: '#f59e0b',
@@ -108,21 +112,42 @@ export default function RegistryTab({
   registry: FactorRegistry | null;
   onRefresh: () => void;
 }) {
-  const [managing, setManaging] = useState(false);
   const [manageOutput, setManageOutput] = useState('');
   const [filter, setFilter] = useState<string>('all');
 
+  const { task, startPolling, reset } = useTaskPoller();
+  const managing = task?.status === 'Running';
+
+  useEffect(() => {
+    const savedId = sessionStorage.getItem(STORAGE_KEY);
+    if (savedId) startPolling(savedId);
+  }, [startPolling]);
+
+  useEffect(() => {
+    if (!task) return;
+    if (task.status === 'Completed') {
+      sessionStorage.removeItem(STORAGE_KEY);
+      try {
+        const parsed = task.result ? JSON.parse(task.result) : null;
+        setManageOutput(parsed?.stdout || task.result || '完成');
+      } catch {
+        setManageOutput(task.result || '完成');
+      }
+      onRefresh();
+    } else if (task.status === 'Failed') {
+      sessionStorage.removeItem(STORAGE_KEY);
+      setManageOutput(task.error || '失败');
+    }
+  }, [task?.status]);
+
   const handleManage = async () => {
-    setManaging(true);
     setManageOutput('');
     try {
       const result = await factorRegistryManage({ n_bars: 3000 });
-      setManageOutput(result.stdout || '完成');
-      onRefresh();
+      sessionStorage.setItem(STORAGE_KEY, result.task_id);
+      startPolling(result.task_id);
     } catch (e: unknown) {
       setManageOutput(e instanceof Error ? e.message : '失败');
-    } finally {
-      setManaging(false);
     }
   };
 
