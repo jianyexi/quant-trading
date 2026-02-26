@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { factorMineParametric, getTask } from '../../api/client';
+import { factorMineParametric } from '../../api/client';
 import { useTaskPoller } from '../../hooks/useTaskPoller';
 import DataSourceConfig from './DataSourceConfig';
 
@@ -19,7 +19,7 @@ export default function ParametricTab() {
   const [output, setOutput] = useState('');
   const [error, setError] = useState('');
 
-  const { task, startPolling, reset } = useTaskPoller();
+  const { task, startPolling } = useTaskPoller();
   const running = task?.status === 'Running';
 
   // Restore active task on mount

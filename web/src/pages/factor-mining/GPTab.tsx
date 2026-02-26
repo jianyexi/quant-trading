@@ -19,7 +19,7 @@ export default function GPTab() {
   const [output, setOutput] = useState('');
   const [error, setError] = useState('');
 
-  const { task, startPolling, reset } = useTaskPoller();
+  const { task, startPolling } = useTaskPoller();
   const running = task?.status === 'Running';
 
   useEffect(() => {

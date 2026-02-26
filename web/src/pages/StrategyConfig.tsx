@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { StrategyConfig, StrategyParam } from '../types';
-import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, getTask, type ModelInfo, type RetrainOptions, type TaskRecord } from '../api/client';
+import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, getTask, type ModelInfo, type RetrainOptions } from '../api/client';
 import { Save, Upload, Play, RotateCcw, Brain, Loader2, CheckCircle, AlertCircle, Zap, Database } from 'lucide-react';
 
 const STRATEGIES: StrategyConfig[] = [

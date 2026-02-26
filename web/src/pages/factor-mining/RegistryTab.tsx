@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import {
   factorRegistryManage,
-  getTask,
   type FactorRegistry,
   type FactorRegistryEntry,
 } from '../../api/client';
@@ -115,7 +114,7 @@ export default function RegistryTab({
   const [manageOutput, setManageOutput] = useState('');
   const [filter, setFilter] = useState<string>('all');
 
-  const { task, startPolling, reset } = useTaskPoller();
+  const { task, startPolling } = useTaskPoller();
   const managing = task?.status === 'Running';
 
   useEffect(() => {

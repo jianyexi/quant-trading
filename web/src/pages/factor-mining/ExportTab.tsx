@@ -10,7 +10,7 @@ export default function ExportTab({ results }: { results: FactorResults | null }
   const [error, setError] = useState('');
   const [showRust, setShowRust] = useState<'p1' | 'gp' | null>(null);
 
-  const { task, startPolling, reset } = useTaskPoller();
+  const { task, startPolling } = useTaskPoller();
   const exporting = task?.status === 'Running';
 
   useEffect(() => {
