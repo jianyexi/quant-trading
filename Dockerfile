@@ -37,4 +37,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -sf http://localhost:8080/api/health || exit 1
 
-CMD ["quant", "serve", "--config", "config/default.toml"]
+CMD ["quant", "--config", "config/default.toml", "serve"]
