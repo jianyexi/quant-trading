@@ -15,10 +15,10 @@ RUN npm ci
 COPY web/ .
 RUN npm run build
 
-# Runtime
-FROM debian:bookworm-slim
+# Runtime — must match builder's glibc
+FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y \
-    libssl3 ca-certificates curl python3 python3-pip \
+    libssl3t64 ca-certificates curl python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/quant /usr/local/bin/quant
