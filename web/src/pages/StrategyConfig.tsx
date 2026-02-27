@@ -1,6 +1,7 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import type { StrategyConfig, StrategyParam } from '../types';
-import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, getTask, type ModelInfo, type RetrainOptions } from '../api/client';
+import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, type ModelInfo, type RetrainOptions } from '../api/client';
+import { useTaskPoller } from '../hooks/useTaskPoller';
 import { Save, Upload, Play, RotateCcw, Brain, Loader2, CheckCircle, AlertCircle, Zap, Database } from 'lucide-react';
 
 const STRATEGIES: StrategyConfig[] = [
@@ -112,7 +113,6 @@ export default function StrategyConfigPage() {
   const [status, setStatus] = useState<{ text: string; type: 'info' | 'success' | 'error' } | null>(null);
   const [saving, setSaving] = useState(false);
   const [modelInfoData, setModelInfoData] = useState<ModelInfo | null>(null);
-  const [retraining, setRetraining] = useState(false);
   const [selectedAlgos, setSelectedAlgos] = useState<string[]>(['lgb', 'xgb', 'catboost']);
   const [trainDataSource, setTrainDataSource] = useState<'synthetic' | 'akshare'>('akshare');
   const [trainSymbols, setTrainSymbols] = useState('600519,000858,000001,600036,300750,002594,601318,600276,000333,601888,600030,601166,600900,000568,600809,601899,600031,600309,300059,600887,000651,002415,300760,601398,601288,600438,002460,603259,600690,601669');
@@ -120,49 +120,34 @@ export default function StrategyConfigPage() {
   const [trainEndDate, setTrainEndDate] = useState('2024-12-31');
   const [trainHorizon, setTrainHorizon] = useState(5);
   const [trainThreshold, setTrainThreshold] = useState(0.01);
-  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const { task: retrainTask, startPolling: startRetrainPolling } = useTaskPoller();
+  const retraining = retrainTask?.status === 'Running';
 
   const activeStrategy = STRATEGIES.find((s) => s.name === selectedStrategy)!;
-
-  const stopPolling = useCallback(() => {
-    if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
-  }, []);
-
-  const pollTask = useCallback(async (taskId: string) => {
-    try {
-      const t = await getTask(taskId);
-      if (t.status === 'Completed') {
-        sessionStorage.removeItem('task_retrain');
-        setRetraining(false);
-        stopPolling();
-        showStatus('模型训练完成！', 'success');
-        fetchModelInfo();
-      } else if (t.status === 'Failed') {
-        sessionStorage.removeItem('task_retrain');
-        setRetraining(false);
-        stopPolling();
-        showStatus(t.error || '训练失败，请检查日志', 'error');
-      } else if (t.progress) {
-        showStatus(t.progress, 'info');
-      }
-    } catch { /* transient error, keep polling */ }
-  }, []);
-
-  const startTaskPolling = useCallback((taskId: string) => {
-    setRetraining(true);
-    stopPolling();
-    pollTask(taskId);
-    pollTimer.current = setInterval(() => pollTask(taskId), 2000);
-  }, [pollTask, stopPolling]);
 
   // Load config from server on mount + restore active task
   useEffect(() => {
     loadFromServer();
     fetchModelInfo();
     const savedTaskId = sessionStorage.getItem('task_retrain');
-    if (savedTaskId) startTaskPolling(savedTaskId);
-    return stopPolling;
+    if (savedTaskId) startRetrainPolling(savedTaskId);
   }, []);
+
+  // React to retrain task completion/failure
+  useEffect(() => {
+    if (!retrainTask) return;
+    if (retrainTask.status === 'Completed') {
+      sessionStorage.removeItem('task_retrain');
+      setStatus({ text: '模型训练完成！', type: 'success' });
+      fetchModelInfo();
+    } else if (retrainTask.status === 'Failed') {
+      sessionStorage.removeItem('task_retrain');
+      setStatus({ text: retrainTask.error || '训练失败，请检查日志', type: 'error' });
+    } else if (retrainTask.progress) {
+      setStatus({ text: retrainTask.progress, type: 'info' });
+    }
+  }, [retrainTask?.status, retrainTask?.progress]);
 
   const showStatus = (text: string, type: 'info' | 'success' | 'error' = 'info') => {
     setStatus({ text, type });
@@ -264,7 +249,6 @@ export default function StrategyConfigPage() {
       showStatus('请至少选择一个算法', 'error');
       return;
     }
-    setRetraining(true);
     const srcLabel = trainDataSource === 'akshare' ? '真实行情' : '模拟数据';
     showStatus(`模型训练中 (${srcLabel})，请耐心等待…`, 'info');
     try {
@@ -281,10 +265,9 @@ export default function StrategyConfigPage() {
       }
       const result = await mlRetrain(opts);
       sessionStorage.setItem('task_retrain', result.task_id);
-      startTaskPolling(result.task_id);
+      startRetrainPolling(result.task_id);
     } catch {
       showStatus('训练请求失败', 'error');
-      setRetraining(false);
     }
   };
 
