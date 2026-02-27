@@ -13,6 +13,7 @@ use super::KlineQuery;
 
 /// Call scripts/market_data.py with given command and args, return parsed JSON.
 /// If a `log_store` is provided, errors are recorded with full detail.
+/// Enforces a 15-second timeout to prevent hanging when akshare is unreachable.
 fn call_market_data_logged(args: &[&str], log_store: Option<&crate::log_store::LogStore>) -> std::result::Result<Value, String> {
     use std::process::Command;
 
@@ -27,13 +28,13 @@ fn call_market_data_logged(args: &[&str], log_store: Option<&crate::log_store::L
     }
 
     let start = std::time::Instant::now();
-    let output = Command::new(&python)
+    let mut child = Command::new(&python)
         .arg(script)
         .args(args)
         .env("PYTHONIOENCODING", "utf-8")
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .output()
+        .spawn()
         .map_err(|e| {
             let msg = format!("Failed to run Python '{}': {}", python, e);
             if let Some(ls) = log_store {
@@ -41,6 +42,36 @@ fn call_market_data_logged(args: &[&str], log_store: Option<&crate::log_store::L
             }
             msg
         })?;
+
+    // Poll with 15-second timeout to prevent hanging when akshare is unreachable
+    let timeout = std::time::Duration::from_secs(15);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => break,
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let msg = format!("Python timed out after {}s", timeout.as_secs());
+                    if let Some(ls) = log_store {
+                        ls.push(crate::log_store::LogLevel::Warn, "PYTHON", &format!("market_data.py {}", args.join(" ")), 0,
+                            start.elapsed().as_millis() as u64, &msg, None);
+                    }
+                    return Err(msg);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let msg = format!("Failed to wait on Python: {}", e);
+                if let Some(ls) = log_store {
+                    ls.push(crate::log_store::LogLevel::Error, "PYTHON", &format!("market_data.py {}", args.join(" ")), 0, 0, &msg, None);
+                }
+                return Err(msg);
+            }
+        }
+    }
+    let output = child.wait_with_output().map_err(|e| format!("Failed to read output: {}", e))?;
     let duration_ms = start.elapsed().as_millis() as u64;
 
     let stdout = String::from_utf8_lossy(&output.stdout);

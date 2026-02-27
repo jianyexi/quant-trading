@@ -89,7 +89,7 @@ export default function MarketData() {
 
       const [quoteRes, klineRes] = await Promise.all([
         getQuote(symbol).catch(() => null),
-        getKline(symbol, start, end, days),
+        getKline(symbol, start, end, days).catch(() => null),
       ]);
 
       // Process quote

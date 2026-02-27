@@ -115,8 +115,8 @@ export default function AutoTrade() {
   const fetchJournal = async () => {
     try {
       const j = await getJournal({ limit: 50 });
-      setJournalEntries(j.entries);
-      setJournalTotal(j.total);
+      setJournalEntries(j?.entries ?? []);
+      setJournalTotal(j?.total ?? 0);
     } catch { /* ignore */ }
   };
 

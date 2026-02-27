@@ -1,21 +1,40 @@
 const API_BASE = '/api';
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const { headers: extraHeaders, ...rest } = options ?? {};
-  const res = await fetch(`${API_BASE}${url}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(extraHeaders instanceof Headers
-        ? Object.fromEntries(extraHeaders.entries())
-        : (extraHeaders as Record<string, string>) ?? {}),
-    },
-    ...rest,
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`API error ${res.status}: ${text || res.statusText}`);
+  const { headers: extraHeaders, signal: existingSignal, ...rest } = options ?? {};
+
+  // 20-second timeout to prevent hanging requests
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20_000);
+  // If caller already provided a signal, listen to it too
+  if (existingSignal) {
+    existingSignal.addEventListener('abort', () => controller.abort());
   }
-  return res.json();
+
+  try {
+    const res = await fetch(`${API_BASE}${url}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(extraHeaders instanceof Headers
+          ? Object.fromEntries(extraHeaders.entries())
+          : (extraHeaders as Record<string, string>) ?? {}),
+      },
+      signal: controller.signal,
+      ...rest,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`API error ${res.status}: ${text || res.statusText}`);
+    }
+    return res.json();
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new Error('Request timed out');
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export async function getDashboard() {
