@@ -529,9 +529,11 @@ fn cmd_backtest_run(strategy: &str, symbol: &str, start: &str, end: &str, capita
         stamp_tax_rate: 0.001,    // 千分之一 (卖出)
         slippage_ticks: 1,
         position_size_pct: 0.3,   // 每次建仓30%
-        max_concentration: 1.0,
-        stop_loss_pct: 0.05,      // 5%止损
+        max_concentration: 0.30,
+        stop_loss_pct: 0.08,      // 8%止损
         max_holding_days: 30,
+        daily_loss_limit: 0.03,   // 日亏损限制3%
+        max_drawdown_limit: 0.15, // 最大回撤15%暂停
     };
 
     let engine = BacktestEngine::new(bt_config);

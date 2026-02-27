@@ -105,6 +105,10 @@ def merge_journal_with_ohlcv(
         for sym, grp in ohlcv_df.groupby("symbol"):
             grp_ohlcv = grp.drop(columns=["symbol"])
             feat = compute_features(grp_ohlcv)
+            # Lag features by 1 bar: at decision time (bar N), we only know
+            # data up to bar N-1 close. This prevents look-ahead contamination.
+            feat = feat.shift(1)
+            # Label: forward return from bar N to bar N+horizon
             fwd_ret = grp_ohlcv["close"].pct_change(horizon).shift(-horizon)
             lbl = (fwd_ret > threshold).astype(int)
             feat["label"] = lbl
@@ -115,6 +119,8 @@ def merge_journal_with_ohlcv(
         combined.drop(columns=["symbol"], inplace=True)
     else:
         features = compute_features(ohlcv_df)
+        # Lag features by 1 bar to prevent look-ahead bias
+        features = features.shift(1)
         fwd_ret = ohlcv_df["close"].pct_change(horizon).shift(-horizon)
         labels = (fwd_ret > threshold).astype(int)
         combined = features.copy()
@@ -603,8 +609,9 @@ def walk_forward_cv_single(
     trainer: ModelTrainer,
     X: pd.DataFrame, y: pd.Series,
     n_splits: int = 5, train_ratio: float = 0.6,
+    embargo_bars: int = 5,
 ) -> dict:
-    """Walk-forward CV for a single trainer. Returns summary dict."""
+    """Walk-forward CV for a single trainer with embargo gap to prevent leakage."""
     from sklearn.metrics import roc_auc_score, accuracy_score
 
     n = len(X)
@@ -619,10 +626,16 @@ def walk_forward_cv_single(
             continue
 
         split = start + int((end - start) * train_ratio)
+        # Embargo: skip `embargo_bars` between train and validation
+        # to prevent label leakage from overlapping forward returns
+        val_start = min(split + embargo_bars, end)
+        if end - val_start < 30:
+            continue
+
         X_tr = X.iloc[start:split].values.astype(np.float32)
         y_tr = y.iloc[start:split].values.astype(int)
-        X_va = X.iloc[split:end].values.astype(np.float32)
-        y_va = y.iloc[split:end].values.astype(int)
+        X_va = X.iloc[val_start:end].values.astype(np.float32)
+        y_va = y.iloc[val_start:end].values.astype(int)
 
         if len(np.unique(y_tr)) < 2 or len(np.unique(y_va)) < 2:
             continue

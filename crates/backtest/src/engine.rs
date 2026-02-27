@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use quant_core::models::{Kline, Order, Portfolio, Position, Trade};
 use quant_core::traits::Strategy;
-use quant_core::types::{OrderSide, OrderStatus, OrderType, SignalAction};
+use quant_core::types::{OrderSide, OrderStatus, OrderType, Signal, SignalAction};
 
 use crate::matching::MatchingEngine;
 use crate::metrics::PerformanceMetrics;
@@ -113,22 +113,30 @@ pub struct BacktestConfig {
     pub commission_rate: f64,
     pub stamp_tax_rate: f64,
     pub slippage_ticks: u32,
-    /// Fraction of portfolio value per buy order (e.g. 0.10 = 10%). Default 1.0 = all-in.
+    /// Fraction of portfolio value per buy order (e.g. 0.10 = 10%). Default 0.10 = 10%.
     #[serde(default = "default_position_size_pct")]
     pub position_size_pct: f64,
-    /// Max fraction of portfolio in a single stock (e.g. 0.25 = 25%). Default 1.0 = no limit.
+    /// Max fraction of portfolio in a single stock (e.g. 0.25 = 25%). Default 0.30.
     #[serde(default = "default_max_concentration")]
     pub max_concentration: f64,
-    /// Stop-loss threshold per position (e.g. 0.05 = 5%). Default 0.0 = disabled.
-    #[serde(default)]
+    /// Stop-loss threshold per position (e.g. 0.05 = 5%). Default 0.08 = 8%.
+    #[serde(default = "default_stop_loss_pct")]
     pub stop_loss_pct: f64,
-    /// Max holding days before forced exit (0 = disabled).
-    #[serde(default)]
+    /// Max holding days before forced exit (0 = disabled). Default 30.
+    #[serde(default = "default_max_holding_days")]
     pub max_holding_days: u32,
+    /// Daily loss limit as fraction of portfolio (e.g. 0.03 = 3%). 0 = disabled.
+    #[serde(default)]
+    pub daily_loss_limit: f64,
+    /// Max portfolio drawdown from peak (e.g. 0.15 = 15%). 0 = disabled.
+    #[serde(default)]
+    pub max_drawdown_limit: f64,
 }
 
-fn default_position_size_pct() -> f64 { 1.0 }
-fn default_max_concentration() -> f64 { 1.0 }
+fn default_position_size_pct() -> f64 { 0.10 }
+fn default_max_concentration() -> f64 { 0.30 }
+fn default_stop_loss_pct() -> f64 { 0.08 }
+fn default_max_holding_days() -> u32 { 30 }
 
 pub struct BacktestResult {
     pub config: BacktestConfig,
@@ -177,6 +185,7 @@ impl BacktestEngine {
 
         let mut trade = self.matching.try_match(&order, kline)?;
         let turnover = trade.price * trade.quantity;
+        // Stamp tax (印花税) only applies to SELL side in China A-shares
         trade.commission =
             turnover * self.config.commission_rate + turnover * self.config.stamp_tax_rate;
 
@@ -212,16 +221,64 @@ impl BacktestEngine {
 
         strategy.on_init();
 
+        // Pending signal from previous bar (signal on bar N → fill at bar N+1 open)
+        let mut pending_signal: Option<Signal> = None;
+        // Daily PnL tracking
+        let mut day_start_value = self.config.initial_capital;
+        let mut current_day: Option<chrono::NaiveDate> = None;
+        let mut daily_paused = false;
+
         for kline in data {
+            // Day boundary: reset daily PnL tracking
+            let bar_date = kline.datetime.date();
+            if current_day != Some(bar_date) {
+                day_start_value = portfolio.total_value;
+                current_day = Some(bar_date);
+                daily_paused = false;
+            }
+
+            // Daily loss limit check
+            if self.config.daily_loss_limit > 0.0 {
+                let daily_pnl_pct = (portfolio.total_value - day_start_value) / day_start_value;
+                if daily_pnl_pct < -self.config.daily_loss_limit {
+                    if !daily_paused {
+                        seq += 1;
+                        events.push(BacktestEvent::RiskTriggered {
+                            seq, timestamp: kline.datetime, symbol: kline.symbol.clone(),
+                            trigger: "daily_loss_limit".into(),
+                            detail: format!("daily loss {:.2}% > limit {:.2}%", daily_pnl_pct * 100.0, self.config.daily_loss_limit * 100.0),
+                        });
+                        daily_paused = true;
+                    }
+                    pending_signal = None; // Cancel any pending buy
+                }
+            }
+
+            // Max drawdown limit check
+            if self.config.max_drawdown_limit > 0.0 && peak_value > 0.0 {
+                let drawdown = (peak_value - portfolio.total_value) / peak_value;
+                if drawdown > self.config.max_drawdown_limit {
+                    if !daily_paused {
+                        seq += 1;
+                        events.push(BacktestEvent::RiskTriggered {
+                            seq, timestamp: kline.datetime, symbol: kline.symbol.clone(),
+                            trigger: "max_drawdown".into(),
+                            detail: format!("drawdown {:.2}% > limit {:.2}%", drawdown * 100.0, self.config.max_drawdown_limit * 100.0),
+                        });
+                        daily_paused = true;
+                    }
+                    pending_signal = None;
+                }
+            }
             // 0. Risk checks: stop-loss & holding timeout on existing positions
             let mut forced_sells: Vec<(String, f64)> = Vec::new();
             for pos in portfolio.positions.values() {
                 if pos.symbol != kline.symbol {
                     continue;
                 }
-                // Stop-loss check
+                // Stop-loss check: use kline.low as worst-case price during bar
                 if self.config.stop_loss_pct > 0.0 && pos.avg_cost > 0.0 {
-                    let loss_pct = (pos.current_price - pos.avg_cost) / pos.avg_cost;
+                    let loss_pct = (kline.low - pos.avg_cost) / pos.avg_cost;
                     if loss_pct < -self.config.stop_loss_pct {
                         seq += 1;
                         events.push(BacktestEvent::RiskTriggered {
@@ -272,10 +329,173 @@ impl BacktestEngine {
                 }
             }
 
-            // 1. Generate signal
+            // 1. Execute PENDING signal from previous bar (fill at current bar's open)
+            //    This eliminates look-ahead bias: signal on bar N → fill at bar N+1 open
+            if let Some(sig) = pending_signal.take() {
+                if !daily_paused && sig.symbol == kline.symbol {
+                    let (side, should_trade) = match sig.action {
+                        SignalAction::Buy => (OrderSide::Buy, true),
+                        SignalAction::Sell => (OrderSide::Sell, true),
+                        SignalAction::Hold => (OrderSide::Buy, false),
+                    };
+
+                    if should_trade {
+                        let quantity = match side {
+                            OrderSide::Buy => {
+                                let allocation = portfolio.total_value * self.config.position_size_pct;
+                                let budget = allocation.min(portfolio.cash);
+                                let existing_value = portfolio
+                                    .positions
+                                    .get(&sig.symbol)
+                                    .map(|p| p.current_price * p.quantity)
+                                    .unwrap_or(0.0);
+                                let max_allowed =
+                                    portfolio.total_value * self.config.max_concentration - existing_value;
+                                let capped_budget = budget.min(max_allowed.max(0.0));
+
+                                if capped_budget < budget {
+                                    seq += 1;
+                                    events.push(BacktestEvent::RiskTriggered {
+                                        seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
+                                        trigger: "concentration_limit".into(),
+                                        detail: format!("budget capped from {:.0} to {:.0}", budget, capped_budget),
+                                    });
+                                }
+
+                                // Use kline.open for position sizing (what's actually available)
+                                let price_est = kline.open;
+                                let affordable =
+                                    (capped_budget / (price_est * (1.0 + self.config.commission_rate)))
+                                        .floor();
+                                (affordable / 100.0).floor() * 100.0
+                            }
+                            OrderSide::Sell => {
+                                portfolio
+                                    .positions
+                                    .get(&sig.symbol)
+                                    .map(|p| p.quantity)
+                                    .unwrap_or(0.0)
+                            }
+                        };
+
+                        if quantity > 0.0 {
+                            let side_str = if side == OrderSide::Sell { "SELL" } else { "BUY" };
+                            seq += 1;
+                            events.push(BacktestEvent::OrderCreated {
+                                seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
+                                side: side_str.into(), price: kline.open, quantity,
+                            });
+
+                            if side == OrderSide::Sell {
+                                let entry = entry_info.get(&sig.symbol).copied();
+                                if let Some(trade) =
+                                    self.execute_sell(&sig.symbol, quantity, kline, &mut portfolio)
+                                {
+                                    seq += 1;
+                                    events.push(BacktestEvent::OrderFilled {
+                                        seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
+                                        side: "SELL".into(), price: trade.price, quantity: trade.quantity,
+                                        commission: trade.commission,
+                                    });
+                                    if let Some((entry_time, entry_price)) = entry {
+                                        let holding_days = (kline.datetime - entry_time).num_days();
+                                        let pnl = (trade.price - entry_price) * trade.quantity - trade.commission;
+                                        seq += 1;
+                                        events.push(BacktestEvent::PositionClosed {
+                                            seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
+                                            entry_price, exit_price: trade.price, quantity: trade.quantity,
+                                            realized_pnl: pnl, holding_days,
+                                        });
+                                        entry_info.remove(&sig.symbol);
+                                    }
+                                    trades.push(trade);
+                                }
+                            } else {
+                                let is_new_position = !portfolio.positions.contains_key(&sig.symbol);
+                                let order = Order {
+                                    id: Uuid::new_v4(),
+                                    symbol: sig.symbol.clone(),
+                                    side,
+                                    order_type: OrderType::Market,
+                                    price: kline.open,
+                                    quantity,
+                                    filled_qty: 0.0,
+                                    status: OrderStatus::Pending,
+                                    created_at: kline.datetime,
+                                    updated_at: kline.datetime,
+                                };
+
+                                if let Some(mut trade) = self.matching.try_match(&order, kline) {
+                                    let turnover = trade.price * trade.quantity;
+                                    // Buy side: commission only, no stamp tax
+                                    trade.commission = turnover * self.config.commission_rate;
+
+                                    let cost = turnover + trade.commission;
+                                    portfolio.cash -= cost;
+
+                                    let pos = portfolio
+                                        .positions
+                                        .entry(trade.symbol.clone())
+                                        .or_insert(Position {
+                                            symbol: trade.symbol.clone(),
+                                            quantity: 0.0,
+                                            avg_cost: 0.0,
+                                            current_price: trade.price,
+                                            unrealized_pnl: 0.0,
+                                            realized_pnl: 0.0,
+                                            entry_time: kline.datetime,
+                                            scale_level: 1,
+                                            target_weight: 0.0,
+                                        });
+                                    let total_cost =
+                                        pos.avg_cost * pos.quantity + trade.price * trade.quantity;
+                                    pos.quantity += trade.quantity;
+                                    pos.avg_cost = if pos.quantity > 0.0 {
+                                        total_cost / pos.quantity
+                                    } else {
+                                        0.0
+                                    };
+
+                                    seq += 1;
+                                    events.push(BacktestEvent::OrderFilled {
+                                        seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
+                                        side: "BUY".into(), price: trade.price, quantity: trade.quantity,
+                                        commission: trade.commission,
+                                    });
+
+                                    if is_new_position {
+                                        seq += 1;
+                                        events.push(BacktestEvent::PositionOpened {
+                                            seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
+                                            side: "LONG".into(), entry_price: trade.price, quantity: trade.quantity,
+                                        });
+                                        entry_info.insert(sig.symbol.clone(), (kline.datetime, trade.price));
+                                    }
+
+                                    trades.push(trade);
+                                }
+                            }
+                        } else {
+                            let reason = if side == OrderSide::Buy {
+                                "insufficient cash or lot size rounding"
+                            } else {
+                                "no position to sell"
+                            };
+                            seq += 1;
+                            events.push(BacktestEvent::OrderRejected {
+                                seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
+                                side: if side == OrderSide::Sell { "SELL" } else { "BUY" }.into(),
+                                reason: reason.into(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 2. Generate signal for NEXT bar execution
+            //    Strategy sees current bar (including close), but order fills at NEXT bar open
             let signal = strategy.on_bar(kline);
 
-            // Record every signal (including Hold)
             if let Some(ref sig) = signal {
                 seq += 1;
                 events.push(BacktestEvent::Signal {
@@ -285,168 +505,8 @@ impl BacktestEngine {
                 });
             }
 
-            // 2. Convert signal to order and attempt fill
-            if let Some(sig) = signal {
-                let (side, should_trade) = match sig.action {
-                    SignalAction::Buy => (OrderSide::Buy, true),
-                    SignalAction::Sell => (OrderSide::Sell, true),
-                    SignalAction::Hold => (OrderSide::Buy, false),
-                };
-
-                if should_trade {
-                    let quantity = match side {
-                        OrderSide::Buy => {
-                            // Position sizing: use configured percentage of portfolio
-                            let allocation = portfolio.total_value * self.config.position_size_pct;
-                            let budget = allocation.min(portfolio.cash);
-
-                            // Concentration check: cap by max allowed for this symbol
-                            let existing_value = portfolio
-                                .positions
-                                .get(&sig.symbol)
-                                .map(|p| p.current_price * p.quantity)
-                                .unwrap_or(0.0);
-                            let max_allowed =
-                                portfolio.total_value * self.config.max_concentration - existing_value;
-                            let capped_budget = budget.min(max_allowed.max(0.0));
-
-                            if capped_budget < budget {
-                                seq += 1;
-                                events.push(BacktestEvent::RiskTriggered {
-                                    seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
-                                    trigger: "concentration_limit".into(),
-                                    detail: format!("budget capped from {:.0} to {:.0}", budget, capped_budget),
-                                });
-                            }
-
-                            let affordable =
-                                (capped_budget / (kline.close * (1.0 + self.config.commission_rate)))
-                                    .floor();
-                            // Round to lot size of 100 for A-shares
-                            (affordable / 100.0).floor() * 100.0
-                        }
-                        OrderSide::Sell => {
-                            // Sell entire position
-                            portfolio
-                                .positions
-                                .get(&sig.symbol)
-                                .map(|p| p.quantity)
-                                .unwrap_or(0.0)
-                        }
-                    };
-
-                    if quantity > 0.0 {
-                        let side_str = if side == OrderSide::Sell { "SELL" } else { "BUY" };
-                        seq += 1;
-                        events.push(BacktestEvent::OrderCreated {
-                            seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
-                            side: side_str.into(), price: kline.close, quantity,
-                        });
-
-                        if side == OrderSide::Sell {
-                            let entry = entry_info.get(&sig.symbol).copied();
-                            if let Some(trade) =
-                                self.execute_sell(&sig.symbol, quantity, kline, &mut portfolio)
-                            {
-                                seq += 1;
-                                events.push(BacktestEvent::OrderFilled {
-                                    seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
-                                    side: "SELL".into(), price: trade.price, quantity: trade.quantity,
-                                    commission: trade.commission,
-                                });
-                                if let Some((entry_time, entry_price)) = entry {
-                                    let holding_days = (kline.datetime - entry_time).num_days();
-                                    let pnl = (trade.price - entry_price) * trade.quantity - trade.commission;
-                                    seq += 1;
-                                    events.push(BacktestEvent::PositionClosed {
-                                        seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
-                                        entry_price, exit_price: trade.price, quantity: trade.quantity,
-                                        realized_pnl: pnl, holding_days,
-                                    });
-                                    entry_info.remove(&sig.symbol);
-                                }
-                                trades.push(trade);
-                            }
-                        } else {
-                            let is_new_position = !portfolio.positions.contains_key(&sig.symbol);
-                            let order = Order {
-                                id: Uuid::new_v4(),
-                                symbol: sig.symbol.clone(),
-                                side,
-                                order_type: OrderType::Market,
-                                price: kline.close,
-                                quantity,
-                                filled_qty: 0.0,
-                                status: OrderStatus::Pending,
-                                created_at: kline.datetime,
-                                updated_at: kline.datetime,
-                            };
-
-                            if let Some(mut trade) = self.matching.try_match(&order, kline) {
-                                let turnover = trade.price * trade.quantity;
-                                trade.commission = turnover * self.config.commission_rate;
-
-                                let cost = turnover + trade.commission;
-                                portfolio.cash -= cost;
-
-                                let pos = portfolio
-                                    .positions
-                                    .entry(trade.symbol.clone())
-                                    .or_insert(Position {
-                                        symbol: trade.symbol.clone(),
-                                        quantity: 0.0,
-                                        avg_cost: 0.0,
-                                        current_price: 0.0,
-                                        unrealized_pnl: 0.0,
-                                        realized_pnl: 0.0,
-                                        entry_time: kline.datetime,
-                                        scale_level: 1,
-                                        target_weight: 0.0,
-                                    });
-                                let total_cost =
-                                    pos.avg_cost * pos.quantity + trade.price * trade.quantity;
-                                pos.quantity += trade.quantity;
-                                pos.avg_cost = if pos.quantity > 0.0 {
-                                    total_cost / pos.quantity
-                                } else {
-                                    0.0
-                                };
-
-                                seq += 1;
-                                events.push(BacktestEvent::OrderFilled {
-                                    seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
-                                    side: "BUY".into(), price: trade.price, quantity: trade.quantity,
-                                    commission: trade.commission,
-                                });
-
-                                if is_new_position {
-                                    seq += 1;
-                                    events.push(BacktestEvent::PositionOpened {
-                                        seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
-                                        side: "LONG".into(), entry_price: trade.price, quantity: trade.quantity,
-                                    });
-                                    entry_info.insert(sig.symbol.clone(), (kline.datetime, trade.price));
-                                }
-
-                                trades.push(trade);
-                            }
-                        }
-                    } else {
-                        // Order rejected — zero quantity
-                        let reason = if side == OrderSide::Buy {
-                            "insufficient cash or lot size rounding"
-                        } else {
-                            "no position to sell"
-                        };
-                        seq += 1;
-                        events.push(BacktestEvent::OrderRejected {
-                            seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),
-                            side: if side == OrderSide::Sell { "SELL" } else { "BUY" }.into(),
-                            reason: reason.into(),
-                        });
-                    }
-                }
-            }
+            // Store signal for execution at next bar
+            pending_signal = signal;
 
             // 3. Update current prices & portfolio value
             let mut unrealized_pnl = 0.0;

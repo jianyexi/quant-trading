@@ -185,16 +185,25 @@ fn compute_rsi(closes: &[f64], period: usize) -> f64 {
 }
 
 fn compute_macd_features(closes: &[f64], current_close: f64) -> (f64, f64) {
-    // Simplified MACD: use recent closes for EMA approximation
     let n = closes.len();
-    if n < 26 { return (0.0, 0.0); }
+    if n < 34 { return (0.0, 0.0); } // need 26 + 9 - 1 bars
 
-    let ema12 = ema_approx(&closes[n.saturating_sub(30)..n], 12);
-    let ema26 = ema_approx(&closes[n.saturating_sub(40)..n], 26);
+    let ema12 = ema_approx(&closes[n.saturating_sub(40)..n], 12);
+    let ema26 = ema_approx(&closes[n.saturating_sub(50)..n], 26);
     let macd_line = ema12 - ema26;
 
-    // Signal line would need more history; approximate
-    let hist = macd_line * 0.5; // simplified
+    // Proper signal line: 9-period EMA of MACD line
+    // Compute MACD line for the last 9+ bars and then EMA-smooth
+    let lookback = 20.min(n); // enough for signal EMA convergence
+    let mut macd_series = Vec::with_capacity(lookback);
+    for i in (n - lookback)..n {
+        let slice_end = i + 1;
+        let e12 = ema_approx(&closes[slice_end.saturating_sub(40)..slice_end], 12);
+        let e26 = ema_approx(&closes[slice_end.saturating_sub(50)..slice_end], 26);
+        macd_series.push(e12 - e26);
+    }
+    let signal_line = ema_approx(&macd_series, 9);
+    let hist = macd_line - signal_line;
     let norm = safe_div(hist, current_close);
     (hist, norm)
 }

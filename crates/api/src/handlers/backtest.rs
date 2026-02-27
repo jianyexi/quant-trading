@@ -54,9 +54,11 @@ pub async fn run_backtest(
         stamp_tax_rate: 0.001,
         slippage_ticks: 1,
         position_size_pct: 0.3,
-        max_concentration: 1.0,
-        stop_loss_pct: 0.05,
+        max_concentration: 0.30,
+        stop_loss_pct: 0.08,
         max_holding_days: 30,
+        daily_loss_limit: 0.03,
+        max_drawdown_limit: 0.15,
     };
 
     let engine = BacktestEngine::new(bt_config);
@@ -154,6 +156,8 @@ pub async fn run_backtest(
         "total_return_percent": (m.total_return * 10000.0).round() / 100.0,
         "annual_return_percent": (m.annual_return * 10000.0).round() / 100.0,
         "sharpe_ratio": (m.sharpe_ratio * 100.0).round() / 100.0,
+        "sortino_ratio": (m.sortino_ratio * 100.0).round() / 100.0,
+        "calmar_ratio": (m.calmar_ratio * 100.0).round() / 100.0,
         "max_drawdown_percent": (m.max_drawdown * 10000.0).round() / 100.0,
         "max_drawdown_duration_days": m.max_drawdown_duration,
         "win_rate_percent": (m.win_rate * 10000.0).round() / 100.0,
@@ -163,6 +167,9 @@ pub async fn run_backtest(
         "profit_factor": (m.profit_factor * 100.0).round() / 100.0,
         "avg_win": (m.avg_win * 100.0).round() / 100.0,
         "avg_loss": (m.avg_loss * 100.0).round() / 100.0,
+        "avg_holding_days": (m.avg_holding_days * 10.0).round() / 10.0,
+        "total_commission": (m.total_commission * 100.0).round() / 100.0,
+        "turnover_rate": (m.turnover_rate * 100.0).round() / 100.0,
         "equity_curve": equity_curve,
         "trades": trades,
         "events": events,

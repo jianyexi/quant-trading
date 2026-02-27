@@ -8,6 +8,8 @@ pub struct PerformanceMetrics {
     pub total_return: f64,
     pub annual_return: f64,
     pub sharpe_ratio: f64,
+    pub sortino_ratio: f64,
+    pub calmar_ratio: f64,
     pub max_drawdown: f64,
     pub max_drawdown_duration: i64,
     pub win_rate: f64,
@@ -17,6 +19,9 @@ pub struct PerformanceMetrics {
     pub losing_trades: usize,
     pub avg_win: f64,
     pub avg_loss: f64,
+    pub avg_holding_days: f64,
+    pub total_commission: f64,
+    pub turnover_rate: f64,
 }
 
 impl PerformanceMetrics {
@@ -67,7 +72,26 @@ impl PerformanceMetrics {
             0.0
         };
 
-        // Max drawdown & duration
+        // Sortino ratio: like Sharpe but only penalizes downside volatility
+        let sortino_ratio = if daily_returns.len() > 1 {
+            let mean = daily_returns.iter().sum::<f64>() / daily_returns.len() as f64;
+            let downside_variance = daily_returns
+                .iter()
+                .filter(|r| **r < 0.0)
+                .map(|r| r.powi(2))
+                .sum::<f64>()
+                / daily_returns.len() as f64; // use all N, not just negative count
+            let downside_dev = downside_variance.sqrt();
+            if downside_dev > 0.0 {
+                (mean / downside_dev) * (252.0_f64).sqrt()
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        // Calmar ratio: annualized return / max drawdown
         let mut peak = initial_capital;
         let mut max_drawdown = 0.0_f64;
         let mut max_dd_duration: i64 = 0;
@@ -93,6 +117,12 @@ impl PerformanceMetrics {
                 }
             }
         }
+
+        let calmar_ratio = if max_drawdown > 0.0 {
+            annual_return / max_drawdown
+        } else {
+            0.0
+        };
 
         // Round-trip PnL: pair buy/sell trades per symbol
         let mut pnls: Vec<f64> = Vec::new();
@@ -157,10 +187,47 @@ impl PerformanceMetrics {
             0.0
         };
 
+        // Trade-level metrics: commission, turnover, holding period
+        let total_commission: f64 = trades.iter().map(|t| t.commission).sum();
+        let total_turnover: f64 = trades.iter().map(|t| t.price * t.quantity).sum();
+        let turnover_rate = if initial_capital > 0.0 && years > 0.0 {
+            total_turnover / initial_capital / years
+        } else {
+            0.0
+        };
+
+        // Average holding period from round trips
+        let mut holding_days_list: Vec<f64> = Vec::new();
+        let mut buy_times: std::collections::HashMap<String, Vec<NaiveDateTime>> =
+            std::collections::HashMap::new();
+        for trade in trades {
+            match trade.side {
+                OrderSide::Buy => {
+                    buy_times.entry(trade.symbol.clone()).or_default().push(trade.timestamp);
+                }
+                OrderSide::Sell => {
+                    if let Some(buys) = buy_times.get_mut(&trade.symbol) {
+                        if let Some(buy_time) = buys.first().copied() {
+                            let days = (trade.timestamp - buy_time).num_days() as f64;
+                            holding_days_list.push(days);
+                            buys.remove(0);
+                        }
+                    }
+                }
+            }
+        }
+        let avg_holding_days = if !holding_days_list.is_empty() {
+            holding_days_list.iter().sum::<f64>() / holding_days_list.len() as f64
+        } else {
+            0.0
+        };
+
         Self {
             total_return,
             annual_return,
             sharpe_ratio,
+            sortino_ratio,
+            calmar_ratio,
             max_drawdown,
             max_drawdown_duration: max_dd_duration,
             win_rate,
@@ -170,6 +237,9 @@ impl PerformanceMetrics {
             losing_trades,
             avg_win,
             avg_loss,
+            avg_holding_days,
+            total_commission,
+            turnover_rate,
         }
     }
 }

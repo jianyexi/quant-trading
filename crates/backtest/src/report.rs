@@ -9,6 +9,8 @@ pub fn format_report(metrics: &PerformanceMetrics) -> String {
 ║  Total Return:       {:>10.2}%          ║
 ║  Annual Return:      {:>10.2}%          ║
 ║  Sharpe Ratio:       {:>10.4}           ║
+║  Sortino Ratio:      {:>10.4}           ║
+║  Calmar Ratio:       {:>10.4}           ║
 ║  Max Drawdown:       {:>10.2}%          ║
 ║  Max DD Duration:    {:>7} days         ║
 ╠══════════════════════════════════════════╣
@@ -19,10 +21,15 @@ pub fn format_report(metrics: &PerformanceMetrics) -> String {
 ║  Profit Factor:      {:>10.4}           ║
 ║  Avg Win:            {:>10.2}           ║
 ║  Avg Loss:           {:>10.2}           ║
+║  Avg Holding Days:   {:>10.1}           ║
+║  Total Commission:   {:>10.2}           ║
+║  Turnover Rate:      {:>10.2}x          ║
 ╚══════════════════════════════════════════╝",
         metrics.total_return * 100.0,
         metrics.annual_return * 100.0,
         metrics.sharpe_ratio,
+        metrics.sortino_ratio,
+        metrics.calmar_ratio,
         metrics.max_drawdown * 100.0,
         metrics.max_drawdown_duration,
         metrics.total_trades,
@@ -32,5 +39,8 @@ pub fn format_report(metrics: &PerformanceMetrics) -> String {
         metrics.profit_factor,
         metrics.avg_win,
         metrics.avg_loss,
+        metrics.avg_holding_days,
+        metrics.total_commission,
+        metrics.turnover_rate,
     )
 }

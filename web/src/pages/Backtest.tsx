@@ -57,6 +57,8 @@ interface BacktestResultData {
   total_return_percent: number;
   annual_return_percent?: number;
   sharpe_ratio: number;
+  sortino_ratio?: number;
+  calmar_ratio?: number;
   max_drawdown_percent: number;
   max_drawdown_duration_days?: number;
   win_rate_percent: number;
@@ -66,6 +68,9 @@ interface BacktestResultData {
   profit_factor: number;
   avg_win?: number;
   avg_loss?: number;
+  avg_holding_days?: number;
+  total_commission?: number;
+  turnover_rate?: number;
   equity_curve?: EquityPoint[];
   trades?: TradeRecord[];
   data_source?: string;
@@ -168,10 +173,22 @@ export default function Backtest() {
           icon: BarChart3,
         },
         {
+          label: 'Sortino比率',
+          value: (result.sortino_ratio ?? 0).toFixed(2),
+          color: (result.sortino_ratio ?? 0) >= 1.5 ? '#22c55e' : '#eab308',
+          icon: BarChart3,
+        },
+        {
           label: '最大回撤',
           value: `-${(result.max_drawdown_percent ?? 0).toFixed(2)}%`,
           color: '#ef4444',
           icon: TrendingDown,
+        },
+        {
+          label: 'Calmar比率',
+          value: (result.calmar_ratio ?? 0).toFixed(2),
+          color: (result.calmar_ratio ?? 0) >= 1 ? '#22c55e' : '#eab308',
+          icon: BarChart3,
         },
         {
           label: '胜率',
@@ -189,6 +206,18 @@ export default function Backtest() {
           label: '盈亏比',
           value: result.profit_factor == null || result.profit_factor === Infinity ? '∞' : (result.profit_factor ?? 0).toFixed(2),
           color: (result.profit_factor ?? 0) >= 1 ? '#22c55e' : '#ef4444',
+          icon: DollarSign,
+        },
+        {
+          label: '平均持仓天数',
+          value: (result.avg_holding_days ?? 0).toFixed(1),
+          color: '#8b5cf6',
+          icon: Activity,
+        },
+        {
+          label: '总手续费',
+          value: `¥${(result.total_commission ?? 0).toFixed(0)}`,
+          color: '#f97316',
           icon: DollarSign,
         },
       ]
