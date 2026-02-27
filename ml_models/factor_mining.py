@@ -418,6 +418,9 @@ def mine_factors(
         print(f"{i+1:4d} {row['factor_name']:>30} {row['ic_mean']:8.4f} {row['ir']:8.3f} "
               f"{row['ic_pos_rate']:6.1%} {row['turnover']:6.3f} {row['decay']:6.2f}")
 
+    # Persist mining run to DB for history tracking
+    _persist_factor_mining_run("parametric", n_candidates, final, elapsed)
+
     return final
 
 
@@ -718,6 +721,51 @@ def mine_cross_stock(
         print(f"{i+1:4d} {row['factor_name']:>30} {row['ic_mean']:8.4f} {row['ir']:8.3f} {row['stock_win_rate']:9.1%}")
 
     return agg_df
+
+
+def _persist_factor_mining_run(method: str, n_candidates: int, final_df, elapsed: float):
+    """Save factor mining run to SQLite for history tracking."""
+    import sqlite3
+    try:
+        db_path = os.path.join("data", "training_history.db")
+        os.makedirs("data", exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS factor_mining_runs (
+                id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                method TEXT NOT NULL,
+                n_candidates INTEGER NOT NULL DEFAULT 0,
+                n_selected INTEGER NOT NULL DEFAULT 0,
+                elapsed_secs REAL,
+                factors TEXT,
+                status TEXT NOT NULL DEFAULT 'completed'
+            )
+        """)
+        import uuid
+        run_id = str(uuid.uuid4())
+        factors_json = final_df.to_json(orient="records") if len(final_df) > 0 else "[]"
+        conn.execute(
+            """INSERT INTO factor_mining_runs
+               (id, timestamp, method, n_candidates, n_selected, elapsed_secs, factors, status)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                run_id,
+                datetime.now().strftime("%Y%m%d_%H%M%S"),
+                method,
+                n_candidates,
+                len(final_df),
+                round(elapsed, 1),
+                factors_json,
+                "completed",
+            ),
+        )
+        conn.commit()
+        conn.close()
+        print(f"📊 Factor mining run saved to {db_path}")
+    except Exception as e:
+        print(f"⚠️  Failed to persist factor mining run: {e}")
 
 
 # ── Main ─────────────────────────────────────────────────────────────

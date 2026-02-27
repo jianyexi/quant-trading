@@ -17,3 +17,4 @@ data/l2/
 data/market_cache.db
 data/tasks.db
 factor_registry.json
+scripts/__pycache__/

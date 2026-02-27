@@ -955,7 +955,78 @@ def retrain(
 
     report["status"] = "completed"
     print(f"\n🎉 Retrain complete! Best: {best_algo} AUC={final_auc:.4f}")
+
+    # 10. Persist training run to DB for history tracking
+    _persist_training_run(report, journal_path)
+
     return report
+
+
+def _persist_training_run(report: dict, journal_path: str = "data/trade_journal.db"):
+    """Save training run metadata to SQLite for history tracking."""
+    import sqlite3
+    try:
+        db_path = os.path.join(os.path.dirname(journal_path), "training_history.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS training_runs (
+                id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                algorithm TEXT NOT NULL,
+                data_source TEXT NOT NULL DEFAULT 'unknown',
+                n_samples INTEGER NOT NULL DEFAULT 0,
+                n_features INTEGER NOT NULL DEFAULT 0,
+                auc REAL,
+                accuracy REAL,
+                cv_avg_auc REAL,
+                cv_std_auc REAL,
+                n_cv_folds INTEGER,
+                model_path TEXT,
+                feature_importance TEXT,
+                cv_results TEXT,
+                label_distribution TEXT,
+                status TEXT NOT NULL DEFAULT 'completed'
+            )
+        """)
+        import uuid
+        run_id = str(uuid.uuid4())
+        final_model = report.get("final_model", {})
+        best_cv = None
+        for cv in report.get("cv_competition", []):
+            if cv.get("algorithm") == report.get("best_algorithm"):
+                best_cv = cv
+                break
+        conn.execute(
+            """INSERT INTO training_runs
+               (id, timestamp, algorithm, data_source, n_samples, n_features,
+                auc, accuracy, cv_avg_auc, cv_std_auc, n_cv_folds,
+                model_path, feature_importance, cv_results, label_distribution, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                run_id,
+                report.get("timestamp", ""),
+                report.get("best_algorithm", "unknown"),
+                report.get("data_source", "unknown"),
+                report.get("n_samples", 0),
+                report.get("n_features", 0),
+                final_model.get("auc"),
+                final_model.get("accuracy"),
+                best_cv.get("avg_auc") if best_cv else None,
+                best_cv.get("std_auc") if best_cv else None,
+                best_cv.get("n_folds") if best_cv else None,
+                report.get("model_path", ""),
+                json.dumps(report.get("feature_importance", [])[:20]),
+                json.dumps(report.get("cv_competition", [])),
+                json.dumps(report.get("label_distribution", {})),
+                report.get("status", "completed"),
+            ),
+        )
+        conn.commit()
+        conn.close()
+        print(f"📊 Training run saved to {db_path}")
+    except Exception as e:
+        print(f"⚠️  Failed to persist training run: {e}")
 
 
 # ── Main ────────────────────────────────────────────────────────────

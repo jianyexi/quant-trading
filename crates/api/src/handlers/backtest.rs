@@ -95,6 +95,51 @@ pub async fn run_backtest(
         })
     }).collect();
 
+    // Serialize events (only action events, skip PortfolioSnapshot to keep response manageable)
+    let events: Vec<Value> = result.events.iter().filter(|ev| {
+        !matches!(ev, quant_backtest::engine::BacktestEvent::PortfolioSnapshot { .. })
+    }).map(|ev| serde_json::to_value(ev).unwrap_or_default()).collect();
+
+    // Portfolio snapshots as a separate array (sampled for large datasets)
+    let snapshots: Vec<Value> = result.events.iter().filter_map(|ev| {
+        if let quant_backtest::engine::BacktestEvent::PortfolioSnapshot {
+            timestamp, cash, total_value, n_positions, unrealized_pnl, drawdown_pct, ..
+        } = ev {
+            Some(json!({
+                "date": timestamp.format(eq_fmt).to_string(),
+                "cash": (*cash * 100.0).round() / 100.0,
+                "total_value": (*total_value * 100.0).round() / 100.0,
+                "n_positions": n_positions,
+                "unrealized_pnl": (*unrealized_pnl * 100.0).round() / 100.0,
+                "drawdown_pct": (*drawdown_pct * 100.0).round() / 100.0,
+            }))
+        } else {
+            None
+        }
+    }).collect();
+
+    // Per-symbol metrics
+    let symbol_metrics: Vec<Value> = result.symbol_metrics.iter().map(|sm| {
+        json!({
+            "symbol": sm.symbol,
+            "total_trades": sm.total_trades,
+            "winning_trades": sm.winning_trades,
+            "losing_trades": sm.losing_trades,
+            "total_pnl": (sm.total_pnl * 100.0).round() / 100.0,
+            "win_rate_pct": (sm.win_rate * 10000.0).round() / 100.0,
+            "avg_holding_days": (sm.avg_holding_days * 10.0).round() / 10.0,
+            "max_win": (sm.max_win * 100.0).round() / 100.0,
+            "max_loss": (sm.max_loss * 100.0).round() / 100.0,
+        })
+    }).collect();
+
+    // Event summary counts
+    let n_signals = result.events.iter().filter(|e| matches!(e, quant_backtest::engine::BacktestEvent::Signal { .. })).count();
+    let n_risk = result.events.iter().filter(|e| matches!(e, quant_backtest::engine::BacktestEvent::RiskTriggered { .. })).count();
+    let n_rejected = result.events.iter().filter(|e| matches!(e, quant_backtest::engine::BacktestEvent::OrderRejected { .. })).count();
+    let n_pos_opened = result.events.iter().filter(|e| matches!(e, quant_backtest::engine::BacktestEvent::PositionOpened { .. })).count();
+    let n_pos_closed = result.events.iter().filter(|e| matches!(e, quant_backtest::engine::BacktestEvent::PositionClosed { .. })).count();
+
     let m = &result.metrics;
     let id = format!("bt-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap());
 
@@ -120,6 +165,17 @@ pub async fn run_backtest(
         "avg_loss": (m.avg_loss * 100.0).round() / 100.0,
         "equity_curve": equity_curve,
         "trades": trades,
+        "events": events,
+        "snapshots": snapshots,
+        "symbol_metrics": symbol_metrics,
+        "event_summary": {
+            "total_signals": n_signals,
+            "risk_triggers": n_risk,
+            "orders_rejected": n_rejected,
+            "positions_opened": n_pos_opened,
+            "positions_closed": n_pos_closed,
+            "total_events": result.events.len(),
+        },
         "data_source": data_source,
         "period": period,
         "status": "completed"

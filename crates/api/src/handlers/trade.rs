@@ -674,3 +674,163 @@ pub async fn get_recorded_ticks(
         "symbols": symbols,
     }))
 }
+
+// ── Training & Factor Mining History ────────────────────────────────
+
+/// GET /api/ml/training-history — list recent training runs
+pub async fn ml_training_history() -> Json<Value> {
+    let db_path = "data/training_history.db";
+    let conn = match rusqlite::Connection::open(db_path) {
+        Ok(c) => c,
+        Err(_) => return Json(json!({"runs": [], "count": 0})),
+    };
+    // Ensure table exists (read-only safe)
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS training_runs (
+            id TEXT PRIMARY KEY, timestamp TEXT, algorithm TEXT, data_source TEXT,
+            n_samples INTEGER, n_features INTEGER, auc REAL, accuracy REAL,
+            cv_avg_auc REAL, cv_std_auc REAL, n_cv_folds INTEGER,
+            model_path TEXT, feature_importance TEXT, cv_results TEXT,
+            label_distribution TEXT, status TEXT
+        )"
+    );
+    let mut stmt = match conn.prepare(
+        "SELECT id, timestamp, algorithm, data_source, n_samples, n_features,
+                auc, accuracy, cv_avg_auc, cv_std_auc, n_cv_folds, model_path, status
+         FROM training_runs ORDER BY timestamp DESC LIMIT 50"
+    ) {
+        Ok(s) => s,
+        Err(e) => return Json(json!({"runs": [], "error": e.to_string()})),
+    };
+    let runs: Vec<Value> = stmt.query_map([], |row| {
+        Ok(json!({
+            "id": row.get::<_, String>(0)?,
+            "timestamp": row.get::<_, String>(1)?,
+            "algorithm": row.get::<_, String>(2)?,
+            "data_source": row.get::<_, String>(3).unwrap_or_default(),
+            "n_samples": row.get::<_, i64>(4).unwrap_or(0),
+            "n_features": row.get::<_, i64>(5).unwrap_or(0),
+            "auc": row.get::<_, f64>(6).ok(),
+            "accuracy": row.get::<_, f64>(7).ok(),
+            "cv_avg_auc": row.get::<_, f64>(8).ok(),
+            "cv_std_auc": row.get::<_, f64>(9).ok(),
+            "n_cv_folds": row.get::<_, i64>(10).ok(),
+            "model_path": row.get::<_, String>(11).unwrap_or_default(),
+            "status": row.get::<_, String>(12).unwrap_or_default(),
+        }))
+    }).ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default();
+    let count = runs.len();
+    Json(json!({"runs": runs, "count": count}))
+}
+
+/// GET /api/ml/training-history/:id — get detailed training run
+pub async fn ml_training_run_detail(
+    axum::extract::Path(run_id): axum::extract::Path<String>,
+) -> Json<Value> {
+    let db_path = "data/training_history.db";
+    let conn = match rusqlite::Connection::open(db_path) {
+        Ok(c) => c,
+        Err(e) => return Json(json!({"error": e.to_string()})),
+    };
+    match conn.query_row(
+        "SELECT id, timestamp, algorithm, data_source, n_samples, n_features,
+                auc, accuracy, cv_avg_auc, cv_std_auc, n_cv_folds,
+                model_path, feature_importance, cv_results, label_distribution, status
+         FROM training_runs WHERE id = ?1",
+        [&run_id],
+        |row| {
+            let fi_str: String = row.get::<_, String>(12).unwrap_or_default();
+            let cv_str: String = row.get::<_, String>(13).unwrap_or_default();
+            let ld_str: String = row.get::<_, String>(14).unwrap_or_default();
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "timestamp": row.get::<_, String>(1)?,
+                "algorithm": row.get::<_, String>(2)?,
+                "data_source": row.get::<_, String>(3).unwrap_or_default(),
+                "n_samples": row.get::<_, i64>(4).unwrap_or(0),
+                "n_features": row.get::<_, i64>(5).unwrap_or(0),
+                "auc": row.get::<_, f64>(6).ok(),
+                "accuracy": row.get::<_, f64>(7).ok(),
+                "cv_avg_auc": row.get::<_, f64>(8).ok(),
+                "cv_std_auc": row.get::<_, f64>(9).ok(),
+                "n_cv_folds": row.get::<_, i64>(10).ok(),
+                "model_path": row.get::<_, String>(11).unwrap_or_default(),
+                "feature_importance": serde_json::from_str::<Value>(&fi_str).unwrap_or(json!([])),
+                "cv_results": serde_json::from_str::<Value>(&cv_str).unwrap_or(json!([])),
+                "label_distribution": serde_json::from_str::<Value>(&ld_str).unwrap_or(json!({})),
+                "status": row.get::<_, String>(15).unwrap_or_default(),
+            }))
+        },
+    ) {
+        Ok(run) => Json(run),
+        Err(_) => Json(json!({"error": "not found"})),
+    }
+}
+
+/// GET /api/factor/mining-history — list recent factor mining runs
+pub async fn factor_mining_history() -> Json<Value> {
+    let db_path = "data/training_history.db";
+    let conn = match rusqlite::Connection::open(db_path) {
+        Ok(c) => c,
+        Err(_) => return Json(json!({"runs": [], "count": 0})),
+    };
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS factor_mining_runs (
+            id TEXT PRIMARY KEY, timestamp TEXT, method TEXT,
+            n_candidates INTEGER, n_selected INTEGER, elapsed_secs REAL,
+            factors TEXT, status TEXT
+        )"
+    );
+    let mut stmt = match conn.prepare(
+        "SELECT id, timestamp, method, n_candidates, n_selected, elapsed_secs, status
+         FROM factor_mining_runs ORDER BY timestamp DESC LIMIT 50"
+    ) {
+        Ok(s) => s,
+        Err(e) => return Json(json!({"runs": [], "error": e.to_string()})),
+    };
+    let runs: Vec<Value> = stmt.query_map([], |row| {
+        Ok(json!({
+            "id": row.get::<_, String>(0)?,
+            "timestamp": row.get::<_, String>(1)?,
+            "method": row.get::<_, String>(2)?,
+            "n_candidates": row.get::<_, i64>(3).unwrap_or(0),
+            "n_selected": row.get::<_, i64>(4).unwrap_or(0),
+            "elapsed_secs": row.get::<_, f64>(5).unwrap_or(0.0),
+            "status": row.get::<_, String>(6).unwrap_or_default(),
+        }))
+    }).ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default();
+    let count = runs.len();
+    Json(json!({"runs": runs, "count": count}))
+}
+
+/// GET /api/factor/mining-history/:id — get detailed factor mining run with factors
+pub async fn factor_mining_run_detail(
+    axum::extract::Path(run_id): axum::extract::Path<String>,
+) -> Json<Value> {
+    let db_path = "data/training_history.db";
+    let conn = match rusqlite::Connection::open(db_path) {
+        Ok(c) => c,
+        Err(e) => return Json(json!({"error": e.to_string()})),
+    };
+    match conn.query_row(
+        "SELECT id, timestamp, method, n_candidates, n_selected, elapsed_secs, factors, status
+         FROM factor_mining_runs WHERE id = ?1",
+        [&run_id],
+        |row| {
+            let factors_str: String = row.get::<_, String>(6).unwrap_or_default();
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "timestamp": row.get::<_, String>(1)?,
+                "method": row.get::<_, String>(2)?,
+                "n_candidates": row.get::<_, i64>(3).unwrap_or(0),
+                "n_selected": row.get::<_, i64>(4).unwrap_or(0),
+                "elapsed_secs": row.get::<_, f64>(5).unwrap_or(0.0),
+                "factors": serde_json::from_str::<Value>(&factors_str).unwrap_or(json!([])),
+                "status": row.get::<_, String>(7).unwrap_or_default(),
+            }))
+        },
+    ) {
+        Ok(run) => Json(run),
+        Err(_) => Json(json!({"error": "not found"})),
+    }
+}

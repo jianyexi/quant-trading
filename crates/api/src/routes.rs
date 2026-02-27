@@ -69,6 +69,12 @@ fn trade_routes() -> Router<AppState> {
         .route("/ticks", get(handlers::get_recorded_ticks))
 }
 
+fn ml_routes() -> Router<AppState> {
+    Router::new()
+        .route("/training-history", get(handlers::ml_training_history))
+        .route("/training-history/:id", get(handlers::ml_training_run_detail))
+}
+
 fn screen_routes() -> Router<AppState> {
     Router::new()
         .route("/scan", post(handlers::screen_scan))
@@ -101,6 +107,8 @@ fn factor_routes() -> Router<AppState> {
         .route("/manage", post(handlers::factor_registry_manage))
         .route("/export", post(handlers::factor_export_promoted))
         .route("/results", get(handlers::factor_results))
+        .route("/mining-history", get(handlers::factor_mining_history))
+        .route("/mining-history/:id", get(handlers::factor_mining_run_detail))
 }
 
 fn task_routes() -> Router<AppState> {
@@ -176,6 +184,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/chat", chat_routes())
         .nest("/api/monitor", monitor_routes())
         .nest("/api/trade", trade_routes())
+        .nest("/api/ml", ml_routes())
         .nest("/api/screen", screen_routes())
         .nest("/api/sentiment", sentiment_routes())
         .nest("/api/research", research_routes())
