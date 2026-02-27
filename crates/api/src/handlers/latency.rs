@@ -20,9 +20,30 @@ pub async fn get_latency(State(state): State<AppState>) -> Json<Value> {
     let Some(ref engine) = *engine_guard else {
         return Json(json!({
             "engine_running": false,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
             "modules": [],
             "bottleneck": null,
             "pipeline_total_us": 0,
+            "throughput": {
+                "total_bars": 0,
+                "total_signals": 0,
+                "total_orders": 0,
+                "total_fills": 0,
+                "total_rejected": 0,
+                "signal_ratio": 0.0,
+                "fill_ratio": 0.0,
+            },
+            "health_score": 100,
+            "thresholds": {
+                "data_fetch_warn_us": 500_000u64,
+                "data_fetch_critical_us": 2_000_000u64,
+                "strategy_warn_us": 10_000u64,
+                "strategy_critical_us": 100_000u64,
+                "risk_warn_us": 1_000u64,
+                "risk_critical_us": 10_000u64,
+                "order_warn_us": 5_000u64,
+                "order_critical_us": 50_000u64,
+            },
         }));
     };
 
