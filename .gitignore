@@ -4,6 +4,7 @@
 *.swo
 .env
 config/local.toml
+config/tushare_token.txt
 web/node_modules
 web/dist
 
