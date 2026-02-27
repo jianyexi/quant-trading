@@ -14,6 +14,8 @@ All output is JSON to stdout.
 import json
 import sys
 
+import pandas as pd
+
 # Pre-known stock names to avoid slow individual API calls
 _STOCK_NAMES = {
     # 主板 (Main Board)
@@ -90,94 +92,144 @@ def cmd_klines(args):
             })
         return records
 
-    # Minute-level data — fetch directly (not cached)
-    import akshare as ak
+    # Minute-level data — try tushare first, then akshare
+    start_fmt = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
+    end_fmt = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
+    df = None
+    try:
+        from tushare_provider import fetch_minute, is_available as ts_ok
+        if ts_ok():
+            df = fetch_minute(symbol, start_fmt, end_fmt, freq=period)
+    except (ImportError, Exception):
+        pass
 
-    # Convert dates to datetime format for minute API
-    start_dt = start[:4] + "-" + start[4:6] + "-" + start[6:8] + " 09:30:00"
-    end_dt = end[:4] + "-" + end[4:6] + "-" + end[6:8] + " 15:00:00"
-    df = ak.stock_zh_a_hist_min_em(
-        symbol=symbol, period=period,
-        start_date=start_dt, end_date=end_dt, adjust="qfq",
-    )
+    if df is None or df.empty:
+        try:
+            import akshare as ak
+            start_dt = start_fmt + " 09:30:00"
+            end_dt = end_fmt + " 15:00:00"
+            df = ak.stock_zh_a_hist_min_em(
+                symbol=symbol, period=period,
+                start_date=start_dt, end_date=end_dt, adjust="qfq",
+            )
+            if df is not None and not df.empty:
+                df = df.rename(columns={
+                    "时间": "date", "开盘": "open", "最高": "high",
+                    "最低": "low", "收盘": "close", "成交量": "volume",
+                })
+                df["date"] = pd.to_datetime(df["date"])
+                df.set_index("date", inplace=True)
+                df = df[["open", "high", "low", "close", "volume"]].astype(float)
+        except (ImportError, Exception):
+            pass
+
     if df is None or df.empty:
         return []
+
     records = []
-    for _, row in df.iterrows():
-        dt_str = str(row["时间"])
+    for date_val, row in df.iterrows():
+        dt_str = str(date_val)
         records.append({
             "symbol": full_symbol,
             "datetime": dt_str,
-            "open": round(float(row["开盘"]), 2),
-            "high": round(float(row["最高"]), 2),
-            "low": round(float(row["最低"]), 2),
-            "close": round(float(row["收盘"]), 2),
-            "volume": float(row["成交量"]),
+            "open": round(float(row["open"]), 2),
+            "high": round(float(row["high"]), 2),
+            "low": round(float(row["low"]), 2),
+            "close": round(float(row["close"]), 2),
+            "volume": float(row["volume"]),
         })
     return records
 
 
 def cmd_quote(args):
-    """Get latest quote by fetching last 5 trading days of klines."""
+    """Get latest quote. Tries tushare first, then akshare."""
     if not args:
         return {"error": "usage: quote <symbol>"}
     raw_symbol = args[0]
     symbol = normalize_symbol(raw_symbol)
     full_symbol = raw_symbol if "." in raw_symbol else exchange_suffix(symbol)
 
-    import akshare as ak
-    from datetime import datetime, timedelta
-    end = datetime.now().strftime("%Y%m%d")
-    start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
-    df = ak.stock_zh_a_hist(
-        symbol=symbol, period="daily",
-        start_date=start, end_date=end, adjust="qfq",
-    )
-    if df is None or df.empty:
-        return {"error": f"No quote data for {symbol}"}
-    r = df.iloc[-1]
+    # 1) Try tushare
+    try:
+        from tushare_provider import fetch_quote, is_available as ts_ok
+        if ts_ok():
+            q = fetch_quote(symbol)
+            q["symbol"] = full_symbol
+            name = _STOCK_NAMES.get(symbol)
+            if name:
+                q["name"] = name
+            return q
+    except (ImportError, Exception):
+        pass
 
-    # Use pre-known name map for common stocks (avoid slow API call)
-    name = _STOCK_NAMES.get(symbol, symbol)
-
-    return {
-        "symbol": full_symbol,
-        "name": name,
-        "price": float(r["收盘"]),
-        "open": float(r["开盘"]),
-        "high": float(r["最高"]),
-        "low": float(r["最低"]),
-        "volume": float(r["成交量"]),
-        "turnover": float(r["成交额"]),
-        "change": float(r["涨跌额"]),
-        "change_percent": float(r["涨跌幅"]),
-        "date": str(r["日期"]),
-    }
+    # 2) Fallback to akshare
+    try:
+        import akshare as ak
+        from datetime import datetime, timedelta
+        end = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+        df = ak.stock_zh_a_hist(
+            symbol=symbol, period="daily",
+            start_date=start, end_date=end, adjust="qfq",
+        )
+        if df is None or df.empty:
+            return {"error": f"No quote data for {symbol}"}
+        r = df.iloc[-1]
+        name = _STOCK_NAMES.get(symbol, symbol)
+        return {
+            "symbol": full_symbol,
+            "name": name,
+            "price": float(r["收盘"]),
+            "open": float(r["开盘"]),
+            "high": float(r["最高"]),
+            "low": float(r["最低"]),
+            "volume": float(r["成交量"]),
+            "turnover": float(r["成交额"]),
+            "change": float(r["涨跌额"]),
+            "change_percent": float(r["涨跌幅"]),
+            "date": str(r["日期"]),
+        }
+    except (ImportError, Exception) as e:
+        return {"error": f"No quote data for {symbol}: {e}"}
 
 
 def cmd_stock_info(args):
-    """Get individual stock info."""
+    """Get individual stock info. Tries tushare first, then akshare."""
     if not args:
         return {"error": "usage: stock_info <symbol>"}
     symbol = normalize_symbol(args[0])
     full_symbol = args[0] if "." in args[0] else exchange_suffix(symbol)
 
-    import akshare as ak
-    info = ak.stock_individual_info_em(symbol=symbol)
-    result = {"symbol": full_symbol}
-    for _, row in info.iterrows():
-        item, value = str(row["item"]), row["value"]
-        if item == "股票简称":
-            result["name"] = str(value)
-        elif item == "行业":
-            result["industry"] = str(value)
-        elif item == "上市时间":
-            result["list_date"] = str(value)
-        elif item == "总市值":
-            result["market_cap"] = float(value)
-        elif item == "流通市值":
-            result["float_market_cap"] = float(value)
-    return result
+    # 1) Try tushare
+    try:
+        from tushare_provider import fetch_stock_info, is_available as ts_ok
+        if ts_ok():
+            info = fetch_stock_info(symbol)
+            info["symbol"] = full_symbol
+            return info
+    except (ImportError, Exception):
+        pass
+
+    # 2) Fallback to akshare
+    try:
+        import akshare as ak
+        info = ak.stock_individual_info_em(symbol=symbol)
+        result = {"symbol": full_symbol}
+        for _, row in info.iterrows():
+            item, value = str(row["item"]), row["value"]
+            if item == "股票简称":
+                result["name"] = str(value)
+            elif item == "行业":
+                result["industry"] = str(value)
+            elif item == "上市时间":
+                result["list_date"] = str(value)
+            elif item == "总市值":
+                result["market_cap"] = float(value)
+            elif item == "流通市值":
+                result["float_market_cap"] = float(value)
+        return result
+    except (ImportError, Exception) as e:
+        return {"symbol": full_symbol, "error": str(e)}
 
 
 def cmd_stock_pool(args):
@@ -216,39 +268,58 @@ def cmd_stock_pool(args):
 
 
 def _index_pool(pool: str) -> dict:
-    """Fetch index constituents via akshare."""
-    import akshare as ak
+    """Fetch index constituents. Tries tushare first, then akshare."""
+    idx_map_ts = {"csi300": "000300.SH", "csi500": "000905.SH"}
+    idx_map_ak = {"csi300": "000300", "csi500": "000905"}
 
-    idx_map = {"csi300": "000300", "csi500": "000905"}
-    idx_code = idx_map[pool]
+    # 1) Try tushare
     try:
+        from tushare_provider import fetch_index_members, is_available as ts_ok
+        if ts_ok():
+            ts_idx = idx_map_ts[pool]
+            codes = fetch_index_members(ts_idx)
+            if codes:
+                stocks = []
+                for code in codes:
+                    name = _STOCK_NAMES.get(code, code)
+                    stocks.append({
+                        "symbol": exchange_suffix(code),
+                        "name": name,
+                        "industry": "",
+                    })
+                return {"pool": pool, "count": len(stocks), "stocks": stocks}
+    except (ImportError, Exception):
+        pass
+
+    # 2) Fallback to akshare
+    try:
+        import akshare as ak
+        idx_code = idx_map_ak[pool]
         df = ak.index_stock_cons_csindex_df(symbol=idx_code)
-    except Exception as e:
+
+        if df is None or df.empty:
+            return {"error": f"No data for {pool}", "stocks": []}
+
+        stocks = []
+        code_col = "成分券代码" if "成分券代码" in df.columns else df.columns[0]
+        name_col = "成分券名称" if "成分券名称" in df.columns else df.columns[1]
+
+        for _, row in df.iterrows():
+            code = str(row[code_col]).zfill(6)
+            name = str(row[name_col]) if name_col in df.columns else _STOCK_NAMES.get(code, code)
+            industry = ""
+            for col in df.columns:
+                if "行业" in str(col):
+                    industry = str(row[col]) if row[col] and str(row[col]) != "nan" else ""
+                    break
+            stocks.append({
+                "symbol": exchange_suffix(code),
+                "name": name,
+                "industry": industry or _STOCK_NAMES.get(code, ""),
+            })
+        return {"pool": pool, "count": len(stocks), "stocks": stocks}
+    except (ImportError, Exception) as e:
         return {"error": f"Failed to fetch {pool}: {e}", "stocks": []}
-
-    if df is None or df.empty:
-        return {"error": f"No data for {pool}", "stocks": []}
-
-    stocks = []
-    # Columns: 成分券代码, 成分券名称, etc.
-    code_col = "成分券代码" if "成分券代码" in df.columns else df.columns[0]
-    name_col = "成分券名称" if "成分券名称" in df.columns else df.columns[1]
-
-    for _, row in df.iterrows():
-        code = str(row[code_col]).zfill(6)
-        name = str(row[name_col]) if name_col in df.columns else _STOCK_NAMES.get(code, code)
-        # Try to get industry
-        industry = ""
-        for col in df.columns:
-            if "行业" in str(col):
-                industry = str(row[col]) if row[col] and str(row[col]) != "nan" else ""
-                break
-        stocks.append({
-            "symbol": exchange_suffix(code),
-            "name": name,
-            "industry": industry or _STOCK_NAMES.get(code, ""),
-        })
-    return {"pool": pool, "count": len(stocks), "stocks": stocks}
 
 
 def _curated_pool() -> dict:
@@ -375,6 +446,26 @@ def cmd_sync_cache(args):
     }
 
 
+def cmd_data_source_status(args):
+    """Return status of available data sources."""
+    result = {"primary": None, "available": [], "akshare": False, "tushare": False}
+    try:
+        from tushare_provider import is_available as ts_ok
+        if ts_ok():
+            result["tushare"] = True
+            result["available"].append("tushare")
+    except ImportError:
+        pass
+    try:
+        import akshare
+        result["akshare"] = True
+        result["available"].append("akshare")
+    except ImportError:
+        pass
+    result["primary"] = result["available"][0] if result["available"] else None
+    return result
+
+
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"error": "usage: market_data.py <command> [args...]"}))
@@ -398,6 +489,8 @@ def main():
             result = cmd_cache_status(args)
         elif cmd == "sync_cache":
             result = cmd_sync_cache(args)
+        elif cmd == "data_source_status":
+            result = cmd_data_source_status(args)
         else:
             result = {"error": f"Unknown command: {cmd}"}
         print(json.dumps(result, ensure_ascii=False))

@@ -27,6 +27,7 @@ services:
     environment:
       DATABASE_URL: postgresql://quant:quant_pass@postgres:5432/quant_trading
       RUST_LOG: "quant=info"
+      TUSHARE_TOKEN: "${TUSHARE_TOKEN:-}"
     volumes:
       - ./config:/app/config
       - ./data:/app/data

@@ -292,35 +292,77 @@ class MarketCache:
         self, symbol: str, gaps: List[Tuple[str, str]],
         max_retries: int, base_delay: float
     ):
-        """Fetch missing date ranges from akshare and store in cache."""
-        try:
-            import akshare as ak
-        except ImportError:
-            return
+        """Fetch missing date ranges and store in cache.
 
+        Priority: tushare (primary) → akshare (fallback).
+        """
         for gap_start, gap_end in gaps:
+            fetched = False
+
+            # 1) Try tushare first
             for attempt in range(1, max_retries + 1):
                 try:
-                    df = ak.stock_zh_a_hist(
-                        symbol=symbol, period="daily",
-                        start_date=gap_start.replace("-", ""),
-                        end_date=gap_end.replace("-", ""),
-                        adjust="qfq",
-                    )
-                    if df is not None and not df.empty:
-                        self._store_klines(symbol, df)
-                    break
-                except Exception as e:
-                    if attempt < max_retries:
-                        wait = base_delay * (2 ** (attempt - 1))
-                        time.sleep(wait)
+                    from tushare_provider import fetch_daily as ts_fetch_daily, is_available as ts_ok
+                    if ts_ok():
+                        df = ts_fetch_daily(symbol, gap_start, gap_end)
+                        if df is not None and not df.empty:
+                            self._store_klines_df(symbol, df)
+                            fetched = True
+                        break
                     else:
-                        # Log but don't fail — partial data is okay
-                        pass
+                        break  # No token, skip to akshare
+                except ImportError:
+                    break  # tushare not installed
+                except Exception:
+                    if attempt < max_retries:
+                        time.sleep(base_delay * (2 ** (attempt - 1)))
+
+            # 2) Fallback to akshare
+            if not fetched:
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        import akshare as ak
+                        df = ak.stock_zh_a_hist(
+                            symbol=symbol, period="daily",
+                            start_date=gap_start.replace("-", ""),
+                            end_date=gap_end.replace("-", ""),
+                            adjust="qfq",
+                        )
+                        if df is not None and not df.empty:
+                            self._store_klines(symbol, df)
+                        break
+                    except ImportError:
+                        break
+                    except Exception:
+                        if attempt < max_retries:
+                            time.sleep(base_delay * (2 ** (attempt - 1)))
 
             # Throttle between gap fetches
             if len(gaps) > 1:
                 time.sleep(base_delay)
+
+    def _store_klines_df(self, symbol: str, df: pd.DataFrame):
+        """Store a standardized DataFrame (date index, OHLCV columns) into cache."""
+        conn = self._conn()
+        rows = []
+        for date_val, row in df.iterrows():
+            date_str = str(date_val.date()) if hasattr(date_val, 'date') else str(date_val)[:10]
+            rows.append((
+                symbol, date_str,
+                float(row["open"]), float(row["high"]),
+                float(row["low"]), float(row["close"]),
+                float(row["volume"]),
+            ))
+        if not rows:
+            return
+        conn.executemany(
+            """INSERT OR REPLACE INTO kline_daily (symbol, date, open, high, low, close, volume)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        conn.commit()
+        self._update_meta(symbol, conn)
+        conn.close()
 
     def _store_klines(self, symbol: str, df: pd.DataFrame):
         """Store fetched akshare DataFrame into cache."""
@@ -389,21 +431,40 @@ class MarketCache:
         df = df.astype(float)
         return df
 
-    def _fetch_from_akshare_raw(
+    def _fetch_raw(
         self, symbol: str, start_date: str, end_date: str, period: str
     ) -> pd.DataFrame:
-        """Direct akshare fetch without caching (for minute data)."""
+        """Direct fetch without caching. Tries tushare first, then akshare."""
+        start = self._normalize_date(start_date)
+        end = self._normalize_date(end_date)
+
+        # 1) Try tushare
+        try:
+            from tushare_provider import is_available as ts_ok
+            if ts_ok():
+                if period in ("1", "5", "15", "30", "60"):
+                    from tushare_provider import fetch_minute
+                    df = fetch_minute(symbol, start, end, freq=period)
+                else:
+                    from tushare_provider import fetch_daily
+                    df = fetch_daily(symbol, start, end)
+                if df is not None and not df.empty:
+                    return df
+        except (ImportError, Exception):
+            pass
+
+        # 2) Fallback to akshare
         try:
             import akshare as ak
         except ImportError:
             return pd.DataFrame()
 
-        start = self._normalize_date(start_date).replace("-", "")
-        end = self._normalize_date(end_date).replace("-", "")
+        start_raw = start.replace("-", "")
+        end_raw = end.replace("-", "")
 
         if period in ("1", "5", "15", "30", "60"):
-            start_dt = f"{start[:4]}-{start[4:6]}-{start[6:8]} 09:30:00"
-            end_dt = f"{end[:4]}-{end[4:6]}-{end[6:8]} 15:00:00"
+            start_dt = f"{start_raw[:4]}-{start_raw[4:6]}-{start_raw[6:8]} 09:30:00"
+            end_dt = f"{end_raw[:4]}-{end_raw[4:6]}-{end_raw[6:8]} 15:00:00"
             df = ak.stock_zh_a_hist_min_em(
                 symbol=symbol, period=period,
                 start_date=start_dt, end_date=end_dt, adjust="qfq",
@@ -411,7 +472,7 @@ class MarketCache:
         else:
             df = ak.stock_zh_a_hist(
                 symbol=symbol, period="daily",
-                start_date=start, end_date=end, adjust="qfq",
+                start_date=start_raw, end_date=end_raw, adjust="qfq",
             )
 
         if df is None or df.empty:
@@ -426,6 +487,9 @@ class MarketCache:
         df.set_index("date", inplace=True)
         df = df[["open", "high", "low", "close", "volume"]].astype(float)
         return df
+
+    # Keep old name as alias for backward compat
+    _fetch_from_akshare_raw = _fetch_raw
 
 
 # ── Convenience singleton ────────────────────────────────────────────

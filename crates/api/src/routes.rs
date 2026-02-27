@@ -19,6 +19,7 @@ fn market_routes() -> Router<AppState> {
         .route("/kline/:symbol", get(handlers::get_kline))
         .route("/quote/:symbol", get(handlers::get_quote))
         .route("/stocks", get(handlers::list_stocks))
+        .route("/data-source", get(handlers::data_source_status))
         .route("/cache-status", get(handlers::cache_status))
         .route("/sync-data", post(handlers::sync_data))
 }

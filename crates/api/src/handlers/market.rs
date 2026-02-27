@@ -426,6 +426,14 @@ pub async fn list_stocks() -> Json<Value> {
 
 // ── Market Data Cache ───────────────────────────────────────────────
 
+/// GET /api/market/data-source — check which data sources are available
+pub async fn data_source_status() -> Json<Value> {
+    match call_market_data(&["data_source_status"]) {
+        Ok(data) => Json(data),
+        Err(e) => Json(json!({"primary": null, "available": [], "error": e})),
+    }
+}
+
 pub async fn cache_status() -> Json<Value> {
     match call_market_data(&["cache_status"]) {
         Ok(data) => Json(data),

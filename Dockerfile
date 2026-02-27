@@ -29,7 +29,7 @@ COPY scripts/ /app/scripts/
 COPY ml_models/ /app/ml_models/
 
 # Install Python deps for ML/market data
-RUN pip3 install --break-system-packages akshare lightgbm scikit-learn pandas numpy 2>/dev/null || true
+RUN pip3 install --break-system-packages tushare akshare lightgbm scikit-learn pandas numpy 2>/dev/null || true
 
 WORKDIR /app
 EXPOSE 8080
