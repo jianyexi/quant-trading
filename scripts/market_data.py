@@ -67,47 +67,47 @@ def cmd_klines(args):
     symbol = normalize_symbol(raw_symbol)
     full_symbol = raw_symbol if "." in raw_symbol else exchange_suffix(raw_symbol)
 
-    import akshare as ak
-
-    # Minute-level data uses a different API
-    if period in ("1", "5", "15", "30", "60"):
-        # Convert dates to datetime format for minute API
-        start_dt = start[:4] + "-" + start[4:6] + "-" + start[6:8] + " 09:30:00"
-        end_dt = end[:4] + "-" + end[4:6] + "-" + end[6:8] + " 15:00:00"
-        df = ak.stock_zh_a_hist_min_em(
-            symbol=symbol, period=period,
-            start_date=start_dt, end_date=end_dt, adjust="qfq",
-        )
+    # Use local cache for daily data to avoid redundant API calls
+    if period == "daily":
+        from market_cache import get_cache
+        cache = get_cache()
+        start_fmt = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
+        end_fmt = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
+        df = cache.get_or_fetch(symbol, start_fmt, end_fmt)
         if df is None or df.empty:
             return []
         records = []
-        for _, row in df.iterrows():
-            dt_str = str(row["时间"])
+        for date_val, row in df.iterrows():
+            dt = str(date_val.date()) + " 15:00:00"
             records.append({
                 "symbol": full_symbol,
-                "datetime": dt_str,
-                "open": round(float(row["开盘"]), 2),
-                "high": round(float(row["最高"]), 2),
-                "low": round(float(row["最低"]), 2),
-                "close": round(float(row["收盘"]), 2),
-                "volume": float(row["成交量"]),
+                "datetime": dt,
+                "open": round(float(row["open"]), 2),
+                "high": round(float(row["high"]), 2),
+                "low": round(float(row["low"]), 2),
+                "close": round(float(row["close"]), 2),
+                "volume": float(row["volume"]),
             })
         return records
 
-    # Daily data
-    df = ak.stock_zh_a_hist(
-        symbol=symbol, period="daily",
-        start_date=start, end_date=end, adjust="qfq",
+    # Minute-level data — fetch directly (not cached)
+    import akshare as ak
+
+    # Convert dates to datetime format for minute API
+    start_dt = start[:4] + "-" + start[4:6] + "-" + start[6:8] + " 09:30:00"
+    end_dt = end[:4] + "-" + end[4:6] + "-" + end[6:8] + " 15:00:00"
+    df = ak.stock_zh_a_hist_min_em(
+        symbol=symbol, period=period,
+        start_date=start_dt, end_date=end_dt, adjust="qfq",
     )
     if df is None or df.empty:
         return []
     records = []
     for _, row in df.iterrows():
-        date_str = str(row["日期"])
-        dt = date_str + " 15:00:00" if len(date_str) == 10 else date_str
+        dt_str = str(row["时间"])
         records.append({
             "symbol": full_symbol,
-            "datetime": dt,
+            "datetime": dt_str,
             "open": round(float(row["开盘"]), 2),
             "high": round(float(row["最高"]), 2),
             "low": round(float(row["最低"]), 2),
@@ -340,6 +340,41 @@ def cmd_stock_list(args):
     return {"stocks": results}
 
 
+def cmd_cache_status(args):
+    """Return cache coverage info for all cached symbols."""
+    from market_cache import get_cache
+    cache = get_cache()
+    status = cache.cache_status()
+    total_bars = sum(s["bar_count"] for s in status)
+    return {
+        "symbols": status,
+        "total_symbols": len(status),
+        "total_bars": total_bars,
+    }
+
+
+def cmd_sync_cache(args):
+    """Pre-fetch and cache data for given symbols.
+
+    Usage: sync_cache <symbols_csv> <start> <end>
+    """
+    if len(args) < 3:
+        return {"error": "usage: sync_cache <symbols_csv> <start> <end>"}
+    symbols = [s.strip() for s in args[0].split(",") if s.strip()]
+    start_date = args[1]
+    end_date = args[2]
+    from market_cache import get_cache
+    cache = get_cache()
+    df = cache.get_or_fetch_multi(symbols, start_date, end_date)
+    status = cache.cache_status()
+    return {
+        "status": "ok",
+        "synced_symbols": len(symbols),
+        "total_bars": len(df) if df is not None else 0,
+        "cache": status,
+    }
+
+
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"error": "usage: market_data.py <command> [args...]"}))
@@ -359,6 +394,10 @@ def main():
             result = cmd_stock_list(args)
         elif cmd == "stock_pool":
             result = cmd_stock_pool(args)
+        elif cmd == "cache_status":
+            result = cmd_cache_status(args)
+        elif cmd == "sync_cache":
+            result = cmd_sync_cache(args)
         else:
             result = {"error": f"Unknown command: {cmd}"}
         print(json.dumps(result, ensure_ascii=False))

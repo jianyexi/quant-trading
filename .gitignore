@@ -14,4 +14,6 @@ dashboard-check.png
 
 # L2 recorded data (large binary files)
 data/l2/
+data/market_cache.db
+data/tasks.db
 factor_registry.json

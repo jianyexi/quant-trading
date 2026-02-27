@@ -392,3 +392,61 @@ pub async fn list_stocks() -> Json<Value> {
         ]
     }))
 }
+
+// ── Market Data Cache ───────────────────────────────────────────────
+
+pub async fn cache_status() -> Json<Value> {
+    match call_market_data(&["cache_status"]) {
+        Ok(data) => Json(data),
+        Err(e) => Json(json!({"error": e, "symbols": []})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct SyncDataRequest {
+    pub symbols: Vec<String>,
+    #[serde(default = "default_sync_start")]
+    pub start_date: String,
+    #[serde(default = "default_sync_end")]
+    pub end_date: String,
+}
+
+fn default_sync_start() -> String { "2020-01-01".to_string() }
+fn default_sync_end() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+pub async fn sync_data(
+    State(state): State<AppState>,
+    Json(req): Json<SyncDataRequest>,
+) -> Json<Value> {
+    let ts = state.task_store.clone();
+    let task_id = ts.create("data_sync");
+    ts.set_progress(&task_id, &format!("Syncing {} symbols...", req.symbols.len()));
+
+    let symbols_str = req.symbols.join(",");
+    let start = req.start_date.clone();
+    let end = req.end_date.clone();
+    let tid = task_id.clone();
+
+    tokio::task::spawn_blocking(move || {
+        // Use market_data.py sync_cache command
+        let result = std::process::Command::new("python3")
+            .args(["scripts/market_data.py", "sync_cache", &symbols_str, &start, &end])
+            .output();
+        match result {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                if output.status.success() {
+                    ts.complete(&tid, &stdout);
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    ts.fail(&tid, &format!("exit {}: {}", output.status, stderr));
+                }
+            }
+            Err(e) => ts.fail(&tid, &format!("spawn error: {}", e)),
+        }
+    });
+
+    Json(json!({"task_id": task_id}))
+}

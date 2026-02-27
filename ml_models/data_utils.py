@@ -29,51 +29,21 @@ def fetch_akshare_data(
     start_date: str = "2023-01-01",
     end_date: str = "2024-12-31",
 ) -> pd.DataFrame:
-    """Fetch real A-share daily OHLCV data from akshare."""
-    try:
-        import akshare as ak
-    except ImportError:
-        print("⚠️  akshare not installed. Run: pip install akshare")
-        print("   Falling back to synthetic data.")
-        return generate_synthetic_data(3000)
+    """Fetch real A-share daily OHLCV data, using local cache to avoid re-fetching."""
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+    from market_cache import get_cache
 
     stock_list = symbols if symbols else DEFAULT_STOCKS
     print(f"📡 Fetching real data: {len(stock_list)} stocks, {start_date} ~ {end_date}")
 
-    all_data = []
-    for i, sym in enumerate(stock_list):
-        code = sym.split(".")[0]
-        print(f"  [{i+1}/{len(stock_list)}] {code}...", end=" ", flush=True)
-        try:
-            df = ak.stock_zh_a_hist(
-                symbol=code, period="daily",
-                start_date=start_date.replace("-", ""),
-                end_date=end_date.replace("-", ""),
-                adjust="qfq",
-            )
-            if df is None or df.empty or len(df) < 100:
-                print(f"skip ({0 if df is None else len(df)} bars)")
-                continue
-            df = df.rename(columns={
-                "日期": "date", "开盘": "open", "最高": "high",
-                "最低": "low", "收盘": "close", "成交量": "volume",
-            })
-            df["date"] = pd.to_datetime(df["date"])
-            df.set_index("date", inplace=True)
-            df = df[["open", "high", "low", "close", "volume"]].astype(float)
-            df["symbol"] = code
-            all_data.append(df)
-            print(f"OK ({len(df)} bars)")
-        except Exception as e:
-            print(f"ERROR: {e}")
-            continue
+    cache = get_cache()
+    combined = cache.get_or_fetch_multi(stock_list, start_date, end_date)
 
-    if not all_data:
+    if combined is None or combined.empty:
         print("⚠️  No data fetched, falling back to synthetic")
         return generate_synthetic_data(3000)
 
-    combined = pd.concat(all_data, axis=0).sort_index()
-    print(f"✅ Total: {len(combined)} bars from {len(all_data)} stocks")
     return combined
 
 
@@ -82,51 +52,23 @@ def fetch_akshare_multi(
     start_date: str = "2023-01-01",
     end_date: str = "2024-12-31",
 ) -> Dict[str, pd.DataFrame]:
-    """Fetch per-stock DataFrames for cross-stock mining."""
-    try:
-        import akshare as ak
-    except ImportError:
-        print("⚠️  akshare not installed, using synthetic multi-stock data")
-        from factor_mining import generate_multi_stock_data
-        return generate_multi_stock_data(10, 2000)
+    """Fetch per-stock DataFrames for cross-stock mining, using local cache."""
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+    from market_cache import get_cache
 
     stock_list = symbols if symbols else DEFAULT_STOCKS
     print(f"📡 Fetching per-stock data: {len(stock_list)} stocks, {start_date} ~ {end_date}")
 
-    stocks = {}
-    for i, sym in enumerate(stock_list):
-        code = sym.split(".")[0]
-        print(f"  [{i+1}/{len(stock_list)}] {code}...", end=" ", flush=True)
-        try:
-            df = ak.stock_zh_a_hist(
-                symbol=code, period="daily",
-                start_date=start_date.replace("-", ""),
-                end_date=end_date.replace("-", ""),
-                adjust="qfq",
-            )
-            if df is None or df.empty or len(df) < 100:
-                print(f"skip ({0 if df is None else len(df)} bars)")
-                continue
-            df = df.rename(columns={
-                "日期": "date", "开盘": "open", "最高": "high",
-                "最低": "low", "收盘": "close", "成交量": "volume",
-            })
-            df["date"] = pd.to_datetime(df["date"])
-            df.set_index("date", inplace=True)
-            df = df[["open", "high", "low", "close", "volume"]].astype(float)
-            stocks[code] = df
-            print(f"OK ({len(df)} bars)")
-        except Exception as e:
-            print(f"ERROR: {e}")
-            continue
+    cache = get_cache()
+    result = cache.get_or_fetch_multi_dict(stock_list, start_date, end_date)
 
-    if not stocks:
+    if not result:
         print("⚠️  No data fetched, using synthetic")
         from factor_mining import generate_multi_stock_data
         return generate_multi_stock_data(10, 2000)
 
-    print(f"✅ Loaded {len(stocks)} stocks")
-    return stocks
+    return result
 
 
 def load_data(args) -> pd.DataFrame:
