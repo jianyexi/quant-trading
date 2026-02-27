@@ -1,0 +1,10 @@
+{
+  "DashboardUrl": "http://quant-7193c2e8.eastasia.cloudapp.azure.com:8080",
+  "AdminUser": "quant",
+  "ResourceGroup": "rg-quant-trading",
+  "PublicIP": "20.205.98.189",
+  "Location": "eastasia",
+  "VmName": "quant-trading-vm",
+  "VmSize": "Standard_B2ms",
+  "FQDN": "quant-7193c2e8.eastasia.cloudapp.azure.com"
+}
