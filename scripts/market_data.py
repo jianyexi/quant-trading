@@ -474,6 +474,12 @@ def main():
     cmd = sys.argv[1]
     args = sys.argv[2:]
 
+    # Redirect stderr to suppress library warnings (tushare/pandas/akshare)
+    # that would corrupt JSON stdout output
+    import io
+    old_stderr = sys.stderr
+    sys.stderr = io.StringIO()
+
     try:
         if cmd == "klines":
             result = cmd_klines(args)
@@ -497,6 +503,8 @@ def main():
     except Exception as e:
         print(json.dumps({"error": str(e)}))
         sys.exit(1)
+    finally:
+        sys.stderr = old_stderr
 
 
 if __name__ == "__main__":

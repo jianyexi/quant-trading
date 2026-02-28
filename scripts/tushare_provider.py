@@ -96,6 +96,50 @@ def from_ts_code(ts_code: str) -> str:
 
 # ── Daily OHLCV ─────────────────────────────────────────────────────
 
+def _fetch_daily_with_manual_adj(api, ts_code: str, start: str, end: str, adjust: str) -> pd.DataFrame:
+    """Fallback: fetch unadjusted daily + adj_factor and compute adjusted prices.
+
+    This avoids pro_bar() which requires adj_factor API permissions (200+ credits).
+    Uses daily() + adj_factor() separately, or just daily() if adj_factor fails.
+    """
+    import sys
+
+    # 1) Fetch raw daily data
+    try:
+        df = api.daily(ts_code=ts_code, start_date=start, end_date=end)
+    except Exception:
+        return pd.DataFrame()
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    # 2) Try to fetch adjustment factors
+    try:
+        adj_df = api.adj_factor(ts_code=ts_code, start_date=start, end_date=end)
+        if adj_df is not None and not adj_df.empty:
+            adj_df = adj_df[["trade_date", "adj_factor"]].drop_duplicates("trade_date")
+            df = df.merge(adj_df, on="trade_date", how="left")
+            df["adj_factor"] = df["adj_factor"].fillna(method="ffill").fillna(1.0)
+
+            if adjust == "qfq":
+                # Forward-adjusted: multiply by (adj_factor / latest_adj_factor)
+                latest = df["adj_factor"].iloc[0]  # df is sorted desc from tushare
+                ratio = df["adj_factor"] / latest
+            else:
+                # Backward-adjusted: multiply by adj_factor
+                ratio = df["adj_factor"]
+
+            for col in ["open", "high", "low", "close"]:
+                if col in df.columns:
+                    df[col] = df[col] * ratio
+        else:
+            print("  ⚠️ adj_factor unavailable, using unadjusted prices", file=sys.stderr)
+    except Exception as e:
+        print(f"  ⚠️ adj_factor API failed ({e}), using unadjusted prices", file=sys.stderr)
+
+    return df
+
+
 def fetch_daily(
     symbol: str,
     start_date: str,
@@ -121,27 +165,38 @@ def fetch_daily(
     start = start_date.replace("-", "")
     end = end_date.replace("-", "")
 
-    if adjust == "qfq":
-        # Use pro_bar for adjusted data (forward-adjusted)
-        import tushare as ts
-        df = ts.pro_bar(
-            ts_code=ts_code,
-            start_date=start,
-            end_date=end,
-            adj="qfq",
-            asset="E",
-            freq="D",
-        )
-    elif adjust == "hfq":
-        import tushare as ts
-        df = ts.pro_bar(
-            ts_code=ts_code,
-            start_date=start,
-            end_date=end,
-            adj="hfq",
-            asset="E",
-            freq="D",
-        )
+    df = None
+
+    if adjust in ("qfq", "hfq"):
+        # Try pro_bar first, but suppress stdout/stderr leaks from tushare
+        # (adj_factor API needs 200+ credits; errors pollute stdout as text)
+        import io
+        import sys
+        import warnings
+        try:
+            import tushare as ts
+            old_stdout, old_stderr = sys.stdout, sys.stderr
+            sys.stdout = io.StringIO()
+            sys.stderr = io.StringIO()
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    df = ts.pro_bar(
+                        ts_code=ts_code,
+                        start_date=start,
+                        end_date=end,
+                        adj=adjust,
+                        asset="E",
+                        freq="D",
+                    )
+            finally:
+                sys.stdout, sys.stderr = old_stdout, old_stderr
+        except Exception:
+            df = None
+
+        # Fallback: fetch unadjusted and manually apply adj_factor
+        if df is None or df.empty:
+            df = _fetch_daily_with_manual_adj(api, ts_code, start, end, adjust)
     else:
         # Unadjusted: use daily() API
         df = api.daily(ts_code=ts_code, start_date=start, end_date=end)
