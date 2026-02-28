@@ -44,9 +44,33 @@ fn call_market_data_logged(args: &[&str], log_store: Option<&crate::log_store::L
         })?;
 
     // Poll with timeout to prevent hanging when data sources are unreachable
-    // Use 45s for klines (gap-filling can be slow), 15s for other commands
+    // Use 120s for klines (cache read + gap-filling for large ranges), 15s for other commands
     let is_klines = args.first().map_or(false, |a| *a == "klines");
-    let timeout = std::time::Duration::from_secs(if is_klines { 45 } else { 15 });
+    let timeout = std::time::Duration::from_secs(if is_klines { 120 } else { 15 });
+    // Read stdout/stderr in background threads to avoid pipe buffer deadlock.
+    // On Windows, pipe buffer is ~4KB; large JSON output (>100KB) blocks the child process
+    // if the parent doesn't consume stdout while the child is running.
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(mut pipe) = stdout_pipe {
+            use std::io::Read;
+            let _ = pipe.read_to_string(&mut buf);
+        }
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(mut pipe) = stderr_pipe {
+            use std::io::Read;
+            let _ = pipe.read_to_string(&mut buf);
+        }
+        buf
+    });
+
+    // Poll with timeout
     loop {
         match child.try_wait() {
             Ok(Some(_status)) => break,
@@ -73,19 +97,18 @@ fn call_market_data_logged(args: &[&str], log_store: Option<&crate::log_store::L
             }
         }
     }
-    let output = child.wait_with_output().map_err(|e| format!("Failed to read output: {}", e))?;
+    let exit_status = child.wait().unwrap_or_else(|_| std::process::ExitStatus::default());
+    let stdout = stdout_thread.join().unwrap_or_default();
+    let stderr = stderr_thread.join().unwrap_or_default();
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let msg = format!("Python exit {}", output.status);
+    if !exit_status.success() {
+        let msg = format!("Python exit {}", exit_status);
         if let Some(ls) = log_store {
             ls.push(crate::log_store::LogLevel::Error, "PYTHON", &format!("market_data.py {}", args.join(" ")), 1, duration_ms, &msg,
                 Some(format!("stderr: {}\nstdout: {}", stderr, &stdout[..stdout.len().min(500)])));
         }
-        return Err(format!("Python exit {}: stdout={}, stderr={}", output.status, stdout, stderr));
+        return Err(format!("Python exit {}: stdout={}, stderr={}", exit_status, stdout, stderr));
     }
 
     if stdout.trim().is_empty() {

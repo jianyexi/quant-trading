@@ -309,6 +309,12 @@ class MarketCache:
         for gap_start, gap_end in gaps:
             fetched = False
 
+            # Skip tiny gaps (≤3 calendar days) — likely holidays/weekends, no trading data
+            gap_days = (datetime.strptime(gap_end, "%Y-%m-%d") - datetime.strptime(gap_start, "%Y-%m-%d")).days
+            if gap_days <= 3:
+                print(f"[cache] Skipping small gap for {symbol} ({gap_start}~{gap_end}, {gap_days}d)", file=sys.stderr)
+                continue
+
             # US/HK: use yfinance
             if market in ("US", "HK"):
                 last_err = None
@@ -360,18 +366,33 @@ class MarketCache:
                     if attempt < max_retries:
                         time.sleep(base_delay * (2 ** (attempt - 1)))
 
-            # 2) Fallback to akshare
+            # 2) Fallback to akshare (with 10s timeout to avoid hanging)
             ak_err = None
             if not fetched:
                 for attempt in range(1, max_retries + 1):
                     try:
                         import akshare as ak
-                        df = ak.stock_zh_a_hist(
-                            symbol=symbol, period="daily",
-                            start_date=gap_start.replace("-", ""),
-                            end_date=gap_end.replace("-", ""),
-                            adjust="qfq",
-                        )
+                        import threading
+                        result_holder = [None, None]  # [df, error]
+                        def _ak_fetch():
+                            try:
+                                result_holder[0] = ak.stock_zh_a_hist(
+                                    symbol=symbol, period="daily",
+                                    start_date=gap_start.replace("-", ""),
+                                    end_date=gap_end.replace("-", ""),
+                                    adjust="qfq",
+                                )
+                            except Exception as e:
+                                result_holder[1] = e
+                        t = threading.Thread(target=_ak_fetch, daemon=True)
+                        t.start()
+                        t.join(timeout=10)
+                        if t.is_alive():
+                            ak_err = "akshare timed out (10s)"
+                            break
+                        if result_holder[1]:
+                            raise result_holder[1]
+                        df = result_holder[0]
                         if df is not None and not df.empty:
                             self._store_klines(symbol, df)
                             fetched = True
