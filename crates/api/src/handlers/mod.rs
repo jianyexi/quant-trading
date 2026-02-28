@@ -55,6 +55,8 @@ pub struct BacktestRequest {
     pub period: Option<String>,
     /// ML inference mode: "embedded" (default), "tcp_mq", "http"
     pub inference_mode: Option<String>,
+    /// Additional symbols for multi-stock portfolio backtest
+    pub symbols: Option<Vec<String>>,
 }
 
 // ── Chat Request ────────────────────────────────────────────────────

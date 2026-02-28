@@ -10,6 +10,8 @@ import {
   Activity,
   DollarSign,
   Loader2,
+  X,
+  Plus,
 } from 'lucide-react';
 import {
   XAxis,
@@ -19,6 +21,9 @@ import {
   ResponsiveContainer,
   Area,
   AreaChart,
+  LineChart,
+  Line,
+  Legend,
 } from 'recharts';
 import { runBacktest, getBacktestResults } from '../api/client';
 
@@ -30,6 +35,7 @@ interface BacktestConfig {
   capital: number;
   period: string;
   inference_mode: string;
+  extraSymbols: string[];
 }
 
 interface EquityPoint {
@@ -77,6 +83,30 @@ interface BacktestResultData {
   trades?: TradeRecord[];
   data_source?: string;
   status: string;
+  // Multi-stock fields
+  is_multi?: boolean;
+  symbols?: string[];
+  per_symbol_results?: PerSymbolResult[];
+  per_symbol_curves?: { symbol: string; data: EquityPoint[] }[];
+  failed_symbols?: { symbol: string; error: string }[];
+}
+
+interface PerSymbolResult {
+  symbol: string;
+  initial_capital: number;
+  final_value: number;
+  total_return_percent: number;
+  annual_return_percent?: number;
+  sharpe_ratio: number;
+  max_drawdown_percent: number;
+  total_trades: number;
+  win_rate_percent: number;
+  profit_factor?: number;
+  data_bars?: number;
+  actual_start?: string;
+  actual_end?: string;
+  status: string;
+  error?: string;
 }
 
 const STRATEGIES = [
@@ -86,6 +116,8 @@ const STRATEGIES = [
   { value: 'multi_factor', label: '多因子模型' },
   { value: 'ml_factor', label: 'ML因子模型' },
 ];
+
+const MULTI_COLORS = ['#3b82f6', '#22c55e', '#eab308', '#ef4444', '#a855f7', '#06b6d4', '#f97316', '#ec4899'];
 
 const PERIODS = [
   { value: 'daily', label: '日线' },
@@ -116,6 +148,7 @@ const defaultConfig: BacktestConfig = {
   capital: 1000000,
   period: 'daily',
   inference_mode: 'embedded',
+  extraSymbols: [],
 };
 
 export default function Backtest() {
@@ -157,6 +190,7 @@ export default function Backtest() {
         capital: config.capital,
         period: config.period,
         inference_mode: config.inference_mode,
+        symbols: config.extraSymbols.length > 0 ? config.extraSymbols : undefined,
       });
 
       // Poll for progress
@@ -296,12 +330,40 @@ export default function Backtest() {
                   ))}
                 </select>
               </div>
-              <div>
-                <label className="block text-sm text-[#94a3b8] mb-1.5">股票代码</label>
-                <input type="text" value={config.symbol}
-                  onChange={(e) => updateConfig('symbol', e.target.value)}
-                  placeholder="600519.SH / AAPL / 0700.HK"
-                  className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#3b82f6]" />
+              <div className="lg:col-span-2">
+                <label className="block text-sm text-[#94a3b8] mb-1.5">股票代码 {config.extraSymbols.length > 0 && <span className="text-[#3b82f6]">（组合回测: {1 + config.extraSymbols.length}只）</span>}</label>
+                <div className="flex gap-2">
+                  <input type="text" value={config.symbol}
+                    onChange={(e) => updateConfig('symbol', e.target.value)}
+                    placeholder="主股票: 600519.SH"
+                    className="flex-1 bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#3b82f6]" />
+                  <button onClick={() => {
+                    setConfig(prev => ({ ...prev, extraSymbols: [...prev.extraSymbols, ''] }));
+                  }}
+                    className="flex items-center gap-1 px-3 py-2 bg-[#334155] hover:bg-[#475569] text-[#94a3b8] hover:text-[#f8fafc] rounded-lg text-xs transition-colors cursor-pointer"
+                    title="添加更多股票进行组合回测">
+                    <Plus size={14} /> 多股
+                  </button>
+                </div>
+                {/* Extra symbol inputs */}
+                {config.extraSymbols.map((sym, idx) => (
+                  <div key={idx} className="flex gap-2 mt-1.5">
+                    <input type="text" value={sym}
+                      onChange={(e) => {
+                        const updated = [...config.extraSymbols];
+                        updated[idx] = e.target.value;
+                        setConfig(prev => ({ ...prev, extraSymbols: updated }));
+                      }}
+                      placeholder={`股票 ${idx + 2}: 如 000001.SZ`}
+                      className="flex-1 bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#3b82f6]" />
+                    <button onClick={() => {
+                      setConfig(prev => ({ ...prev, extraSymbols: prev.extraSymbols.filter((_, i) => i !== idx) }));
+                    }}
+                      className="px-2 py-2 text-[#94a3b8] hover:text-red-400 transition-colors cursor-pointer">
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
                 <div className="flex gap-1 mt-1 flex-wrap">
                   {[
                     { sym: '600519.SH', label: '茅台' },
@@ -309,9 +371,23 @@ export default function Backtest() {
                     { sym: 'MSFT', label: 'MSFT' },
                     { sym: '0700.HK', label: '腾讯' },
                     { sym: '9988.HK', label: '阿里' },
+                    { sym: '000001.SZ', label: '平安' },
+                    { sym: '300750.SZ', label: '宁德' },
+                    { sym: '601318.SH', label: '中国平安' },
                   ].map((s) => (
-                    <button key={s.sym} onClick={() => updateConfig('symbol', s.sym)}
-                      className="text-xs px-1.5 py-0.5 rounded bg-[#334155] text-[#94a3b8] hover:bg-[#475569] hover:text-[#f8fafc] transition-colors cursor-pointer">
+                    <button key={s.sym} onClick={() => {
+                      if (config.symbol === s.sym || config.extraSymbols.includes(s.sym)) return;
+                      if (!config.symbol) {
+                        updateConfig('symbol', s.sym);
+                      } else {
+                        setConfig(prev => ({ ...prev, extraSymbols: [...prev.extraSymbols, s.sym] }));
+                      }
+                    }}
+                      className={`text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer ${
+                        config.symbol === s.sym || config.extraSymbols.includes(s.sym)
+                          ? 'bg-[#3b82f6]/20 text-[#3b82f6] border border-[#3b82f6]/30'
+                          : 'bg-[#334155] text-[#94a3b8] hover:bg-[#475569] hover:text-[#f8fafc]'
+                      }`}>
                       {s.label}
                     </button>
                   ))}
@@ -457,10 +533,93 @@ export default function Backtest() {
             </div>
           )}
 
-          {/* Equity Curve */}
+          {/* Per-Symbol Comparison (multi-stock only) */}
+          {result.is_multi && result.per_symbol_results && result.per_symbol_results.length > 0 && (
+            <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-6">
+              <h3 className="text-base font-semibold text-[#f8fafc] mb-4">📊 个股对比</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-[#334155]">
+                      {['股票', '初始资金', '最终净值', '收益率', '年化', '夏普', '最大回撤', '交易次数', '胜率', '数据'].map((h) => (
+                        <th key={h} className="text-left py-3 px-3 text-xs font-medium text-[#94a3b8]">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.per_symbol_results.map((sr: PerSymbolResult) => (
+                      <tr key={sr.symbol} className="border-b border-[#334155]/50 hover:bg-[#334155]/30">
+                        <td className="py-2 px-3 text-[#3b82f6] font-mono font-medium">{sr.symbol}</td>
+                        <td className="py-2 px-3 text-[#f8fafc] font-mono">¥{sr.initial_capital?.toLocaleString()}</td>
+                        <td className="py-2 px-3 text-[#f8fafc] font-mono">¥{sr.final_value?.toLocaleString()}</td>
+                        <td className={`py-2 px-3 font-mono font-bold ${(sr.total_return_percent ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {(sr.total_return_percent ?? 0) >= 0 ? '+' : ''}{(sr.total_return_percent ?? 0).toFixed(2)}%
+                        </td>
+                        <td className={`py-2 px-3 font-mono ${(sr.annual_return_percent ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {(sr.annual_return_percent ?? 0).toFixed(2)}%
+                        </td>
+                        <td className={`py-2 px-3 font-mono ${(sr.sharpe_ratio ?? 0) >= 0.5 ? 'text-green-400' : (sr.sharpe_ratio ?? 0) >= 0 ? 'text-yellow-400' : 'text-red-400'}`}>
+                          {(sr.sharpe_ratio ?? 0).toFixed(2)}
+                        </td>
+                        <td className="py-2 px-3 text-red-400 font-mono">-{(sr.max_drawdown_percent ?? 0).toFixed(2)}%</td>
+                        <td className="py-2 px-3 text-[#f8fafc] font-mono">{sr.total_trades ?? 0}</td>
+                        <td className={`py-2 px-3 font-mono ${(sr.win_rate_percent ?? 0) >= 50 ? 'text-green-400' : 'text-[#94a3b8]'}`}>
+                          {(sr.win_rate_percent ?? 0).toFixed(1)}%
+                        </td>
+                        <td className="py-2 px-3 text-[#94a3b8] text-xs">{sr.data_bars ?? 0}条</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {result.failed_symbols && result.failed_symbols.length > 0 && (
+                <div className="mt-3 text-xs text-red-400">
+                  ⚠️ 失败: {result.failed_symbols.map(f => `${f.symbol} (${f.error})`).join(', ')}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Multi-stock Equity Curves */}
+          {result.is_multi && result.per_symbol_curves && result.per_symbol_curves.length > 0 && (
+            <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-6">
+              <h3 className="text-base font-semibold text-[#f8fafc] mb-4">📈 个股净值对比</h3>
+              <ResponsiveContainer width="100%" height={350}>
+                <LineChart data={(() => {
+                  // Merge all curves by date for recharts
+                  const dateMap: Record<string, Record<string, number>> = {};
+                  for (const curve of (result.per_symbol_curves ?? [])) {
+                    for (const pt of curve.data) {
+                      if (!dateMap[pt.date]) dateMap[pt.date] = {};
+                      dateMap[pt.date][curve.symbol] = pt.value;
+                    }
+                  }
+                  return Object.entries(dateMap).sort(([a], [b]) => a.localeCompare(b)).map(([date, vals]) => ({ date, ...vals }));
+                })()}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                  <XAxis dataKey="date" tick={{ fill: '#94a3b8', fontSize: 10 }} tickLine={{ stroke: '#334155' }} axisLine={{ stroke: '#334155' }}
+                    interval={Math.floor((result.per_symbol_curves?.[0]?.data?.length ?? 100) / 6)} />
+                  <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} tickLine={{ stroke: '#334155' }} axisLine={{ stroke: '#334155' }}
+                    tickFormatter={(v: number) => `¥${(v / 1000).toFixed(0)}k`} />
+                  <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', color: '#f8fafc', fontSize: '12px' }}
+                    formatter={(value: number | undefined, name: string | undefined) => [`¥${(value ?? 0).toLocaleString()}`, name ?? '']}
+                    labelStyle={{ color: '#94a3b8' }} />
+                  <Legend wrapperStyle={{ fontSize: '12px', color: '#94a3b8' }} />
+                  {(result.per_symbol_curves ?? []).map((curve, i) => (
+                    <Line key={curve.symbol} type="monotone" dataKey={curve.symbol}
+                      stroke={MULTI_COLORS[i % MULTI_COLORS.length]} strokeWidth={1.5} dot={false} />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Combined Equity Curve (single or multi portfolio total) */}
           {equityCurve.length > 0 && (
             <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-6">
-              <h3 className="text-base font-semibold text-[#f8fafc] mb-4">📈 净值曲线</h3>
+              <h3 className="text-base font-semibold text-[#f8fafc] mb-4">
+                {result.is_multi ? '📈 组合净值曲线' : '📈 净值曲线'}
+              </h3>
               <ResponsiveContainer width="100%" height={350}>
                 <AreaChart data={equityCurve}>
                   <defs>

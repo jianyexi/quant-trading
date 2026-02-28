@@ -69,6 +69,7 @@ export async function runBacktest(params: {
   capital?: number;
   period?: string;
   inference_mode?: string;
+  symbols?: string[];
 }): Promise<{ task_id: string; status: string; progress: string }> {
   return fetchJson('/backtest/run', {
     method: 'POST',
