@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   ChevronDown,
   ChevronUp,
@@ -20,7 +20,7 @@ import {
   Area,
   AreaChart,
 } from 'recharts';
-import { runBacktest } from '../api/client';
+import { runBacktest, getBacktestResults } from '../api/client';
 
 interface BacktestConfig {
   strategy: string;
@@ -121,8 +121,19 @@ export default function Backtest() {
   const [config, setConfig] = useState<BacktestConfig>({ ...defaultConfig, ...saved });
   const [configOpen, setConfigOpen] = useState(true);
   const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
   const [result, setResult] = useState<BacktestResultData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const pollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollerRef.current) {
+      clearInterval(pollerRef.current);
+      pollerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => stopPolling, [stopPolling]);
 
   // Auto-save config to localStorage whenever it changes
   useEffect(() => {
@@ -132,8 +143,11 @@ export default function Backtest() {
   const handleRun = async () => {
     setRunning(true);
     setError(null);
+    setProgress('⏳ Submitting backtest...');
+    setResult(null);
+    stopPolling();
     try {
-      const res = (await runBacktest({
+      const { task_id } = await runBacktest({
         strategy: config.strategy,
         symbol: config.symbol,
         start: config.start,
@@ -141,12 +155,38 @@ export default function Backtest() {
         capital: config.capital,
         period: config.period,
         inference_mode: config.inference_mode,
-      })) as BacktestResultData;
-      setResult(res);
-      setConfigOpen(false);
+      });
+
+      // Poll for progress
+      const poll = async () => {
+        try {
+          const data = await getBacktestResults(task_id) as Record<string, unknown>;
+          const status = data.status as string;
+          if (status === 'completed' || status === 'Completed') {
+            stopPolling();
+            setResult(data as unknown as BacktestResultData);
+            setProgress(null);
+            setRunning(false);
+            setConfigOpen(false);
+          } else if (status === 'Failed' || status === 'failed') {
+            stopPolling();
+            setError((data.error as string) ?? 'Backtest failed');
+            setProgress(null);
+            setRunning(false);
+          } else {
+            setProgress((data.progress as string) ?? '⏳ Running...');
+          }
+        } catch {
+          // transient error, keep polling
+        }
+      };
+
+      // First poll after short delay, then every 1s
+      setTimeout(() => void poll(), 500);
+      pollerRef.current = setInterval(() => void poll(), 1000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '回测失败');
-    } finally {
+      setError(err instanceof Error ? err.message : '回测提交失败');
+      setProgress(null);
       setRunning(false);
     }
   };
@@ -309,6 +349,13 @@ export default function Backtest() {
 
             {error && (
               <div className="text-sm text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-4 py-2">{error}</div>
+            )}
+
+            {running && progress && (
+              <div className="flex items-center gap-3 text-sm text-[#60a5fa] bg-[#3b82f6]/10 border border-[#3b82f6]/20 rounded-lg px-4 py-2.5">
+                <Loader2 size={16} className="animate-spin flex-shrink-0" />
+                <span>{progress}</span>
+              </div>
             )}
 
             <button onClick={() => void handleRun()} disabled={running}

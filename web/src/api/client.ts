@@ -69,15 +69,15 @@ export async function runBacktest(params: {
   capital?: number;
   period?: string;
   inference_mode?: string;
-}) {
+}): Promise<{ task_id: string; status: string; progress: string }> {
   return fetchJson('/backtest/run', {
     method: 'POST',
     body: JSON.stringify(params),
   });
 }
 
-export async function getBacktestResults(id: string) {
-  return fetchJson(`/backtest/results/${id}`);
+export async function getBacktestResults(taskId: string) {
+  return fetchJson(`/backtest/results/${taskId}`);
 }
 
 export async function getPortfolio() {

@@ -12,16 +12,44 @@ use super::BacktestRequest;
 use super::market::{fetch_real_klines_with_period, generate_backtest_klines};
 
 pub async fn run_backtest(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(req): Json<BacktestRequest>,
 ) -> (StatusCode, Json<Value>) {
+    use std::sync::Arc;
+
+    let capital = req.capital.unwrap_or(1_000_000.0);
+    let period = req.period.clone().unwrap_or_else(|| "daily".to_string());
+    debug!(symbol=%req.symbol, "Backtest started");
+
+    let ts = state.task_store.clone();
+    let task_id = ts.create("backtest");
+    let tid = task_id.clone();
+
+    let ts2 = Arc::clone(&ts);
+    tokio::task::spawn_blocking(move || {
+        run_backtest_task(&ts2, &tid, &req, capital, &period);
+    });
+
+    (StatusCode::OK, Json(json!({
+        "task_id": task_id,
+        "status": "Running",
+        "progress": "Backtest started..."
+    })))
+}
+
+fn run_backtest_task(
+    ts: &crate::task_store::TaskStore,
+    tid: &str,
+    req: &BacktestRequest,
+    capital: f64,
+    period: &str,
+) {
     use quant_backtest::engine::{BacktestConfig, BacktestEngine};
     use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy, MultiFactorConfig};
     use quant_strategy::ml_factor::{MlFactorStrategy, MlFactorConfig};
 
-    let capital = req.capital.unwrap_or(1_000_000.0);
-    let period = req.period.as_deref().unwrap_or("daily");
-    debug!(symbol=%req.symbol, "Backtest started");
+    // Stage 1: Fetch data
+    ts.set_progress(tid, "📊 Fetching market data...");
 
     let (klines, data_source) = match fetch_real_klines_with_period(&req.symbol, &req.start, &req.end, period) {
         Ok(k) if !k.is_empty() => {
@@ -30,9 +58,8 @@ pub async fn run_backtest(
             (k, format!("akshare ({}条真实{})", n, label))
         }
         Ok(_) | Err(_) if period != "daily" => {
-            return (StatusCode::BAD_REQUEST, Json(json!({
-                "error": format!("无法获取{}分钟级数据。分钟K线仅支持近5个交易日，请缩短日期范围或使用日线(daily)。", period)
-            })));
+            ts.fail(tid, &format!("无法获取{}分钟级数据。分钟K线仅支持近5个交易日。", period));
+            return;
         }
         Ok(_) => {
             let k = generate_backtest_klines(&req.symbol, &req.start, &req.end);
@@ -45,27 +72,13 @@ pub async fn run_backtest(
     };
 
     if klines.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "No kline data for date range"})));
+        ts.fail(tid, "No kline data for date range");
+        return;
     }
 
-    let bt_config = BacktestConfig {
-        initial_capital: capital,
-        commission_rate: 0.001,
-        stamp_tax_rate: 0.001,
-        slippage_ticks: 1,
-        position_size_pct: 0.3,
-        max_concentration: 0.30,
-        stop_loss_pct: 0.08,
-        max_holding_days: 30,
-        daily_loss_limit: 0.03,
-        max_drawdown_limit: 0.15,
-        use_atr_sizing: true,
-        atr_period: 14,
-        risk_per_trade: 0.02,
-    };
+    ts.set_progress(tid, &format!("📊 Data loaded ({} bars). Initializing strategy...", klines.len()));
 
-    let engine = BacktestEngine::new(bt_config);
-
+    // Stage 2: Build strategy
     let mut active_inference_mode = String::new();
     let mut strategy: Box<dyn quant_core::traits::Strategy> = match req.strategy.as_str() {
         "sma_cross" | "DualMaCrossover" => Box::new(DualMaCrossover::new(5, 20)),
@@ -85,7 +98,30 @@ pub async fn run_backtest(
         _ => Box::new(DualMaCrossover::new(5, 20)),
     };
 
+    // Stage 3: Run backtest
+    ts.set_progress(tid, &format!("🚀 Running backtest on {} bars...", klines.len()));
+
+    let bt_config = BacktestConfig {
+        initial_capital: capital,
+        commission_rate: 0.001,
+        stamp_tax_rate: 0.001,
+        slippage_ticks: 1,
+        position_size_pct: 0.3,
+        max_concentration: 0.30,
+        stop_loss_pct: 0.08,
+        max_holding_days: 30,
+        daily_loss_limit: 0.03,
+        max_drawdown_limit: 0.15,
+        use_atr_sizing: true,
+        atr_period: 14,
+        risk_per_trade: 0.02,
+    };
+
+    let engine = BacktestEngine::new(bt_config);
     let result = engine.run(strategy.as_mut(), &klines);
+
+    // Stage 4: Compute metrics
+    ts.set_progress(tid, "📈 Computing metrics and building report...");
 
     let eq_fmt = if period == "daily" { "%Y-%m-%d" } else { "%Y-%m-%d %H:%M" };
     let equity_curve: Vec<Value> = result.equity_curve.iter().map(|(dt, val)| {
@@ -151,7 +187,7 @@ pub async fn run_backtest(
     let m = &result.metrics;
     let id = format!("bt-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap());
 
-    (StatusCode::OK, Json(json!({
+    let report = json!({
         "id": id,
         "strategy": req.strategy,
         "symbol": req.symbol,
@@ -193,18 +229,36 @@ pub async fn run_backtest(
         "period": period,
         "active_inference_mode": active_inference_mode,
         "status": "completed"
-    })))
+    });
+
+    ts.complete(tid, &report.to_string());
 }
 
 pub async fn get_backtest_results(
     Path(id): Path<String>,
-    State(_state): State<AppState>,
-) -> Json<Value> {
-    Json(json!({
-        "id": id,
-        "status": "not_found",
-        "error": "Backtest results are not persisted. Please run a new backtest."
-    }))
+    State(state): State<AppState>,
+) -> (StatusCode, Json<Value>) {
+    match state.task_store.get(&id) {
+        Some(task) => {
+            let mut resp = json!({
+                "task_id": task.id,
+                "status": task.status,
+                "progress": task.progress,
+            });
+            if task.status == crate::task_store::TaskStatus::Completed {
+                if let Some(result_str) = &task.result {
+                    if let Ok(result_json) = serde_json::from_str::<Value>(result_str) {
+                        resp = result_json;
+                        resp["task_id"] = json!(task.id);
+                    }
+                }
+            } else if task.status == crate::task_store::TaskStatus::Failed {
+                resp["error"] = json!(task.error);
+            }
+            (StatusCode::OK, Json(resp))
+        }
+        None => (StatusCode::NOT_FOUND, Json(json!({"error": "Task not found"}))),
+    }
 }
 
 pub async fn walk_forward(
