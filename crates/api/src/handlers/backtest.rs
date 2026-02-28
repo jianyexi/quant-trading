@@ -80,6 +80,53 @@ fn run_backtest_task(
     let actual_start = klines.first().unwrap().datetime.format("%Y-%m-%d").to_string();
     let actual_end = klines.last().unwrap().datetime.format("%Y-%m-%d").to_string();
 
+    // Validate data coverage: refuse to run on severely incomplete data
+    {
+        use chrono::NaiveDate;
+        let req_start = NaiveDate::parse_from_str(&req.start, "%Y-%m-%d");
+        let req_end_raw = NaiveDate::parse_from_str(&req.end, "%Y-%m-%d");
+        let act_start = NaiveDate::parse_from_str(&actual_start, "%Y-%m-%d");
+        let act_end = NaiveDate::parse_from_str(&actual_end, "%Y-%m-%d");
+
+        if let (Ok(rs), Ok(re), Ok(a_s), Ok(a_e)) = (req_start, req_end_raw, act_start, act_end) {
+            // Cap requested end to today (don't penalize for requesting future dates)
+            let today = chrono::Local::now().date_naive();
+            let re_capped = re.min(today);
+
+            let req_days = (re_capped - rs).num_days().max(1);
+            let act_days = (a_e - a_s).num_days().max(1);
+            let coverage = act_days as f64 / req_days as f64;
+
+            // Start too late (>7 calendar days gap)
+            let start_gap = (a_s - rs).num_days();
+            // End too early (>7 calendar days gap, ignoring future dates)
+            let end_gap = (re_capped - a_e).num_days();
+
+            if coverage < 0.5 || (start_gap > 30 && end_gap > 30) {
+                ts.fail(tid, &format!(
+                    "数据覆盖不足，无法回测。\n\
+                     请求范围: {} ~ {}\n\
+                     实际数据: {} ~ {} (仅 {} 条K线，覆盖率 {:.0}%)\n\n\
+                     可能原因:\n\
+                     • 该股票在请求期间未上市或已退市\n\
+                     • 数据源缺少该时段历史数据\n\
+                     • 缓存未同步，请先在「数据管理」页面同步该股票数据\n\n\
+                     建议: 缩小日期范围，或先同步缓存后重试。",
+                    req.start, req.end, actual_start, actual_end,
+                    klines.len(), coverage * 100.0
+                ));
+                return;
+            }
+
+            if start_gap > 7 || end_gap > 7 {
+                ts.set_progress(tid, &format!(
+                    "⚠️ 数据覆盖部分缺失: 请求 {} ~ {}, 实际 {} ~ {} ({} 条)。继续回测...",
+                    req.start, req.end, actual_start, actual_end, klines.len()
+                ));
+            }
+        }
+    }
+
     ts.set_progress(tid, &format!("📊 Data loaded ({} bars, {} ~ {}). Initializing strategy...", klines.len(), actual_start, actual_end));
 
     // Stage 2: Build strategy
