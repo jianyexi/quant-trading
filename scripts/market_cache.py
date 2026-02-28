@@ -304,11 +304,14 @@ class MarketCache:
         For CN: tushare (primary) → akshare (fallback).
         For US/HK: yfinance.
         """
+        import sys
+
         for gap_start, gap_end in gaps:
             fetched = False
 
             # US/HK: use yfinance
             if market in ("US", "HK"):
+                last_err = None
                 for attempt in range(1, max_retries + 1):
                     try:
                         from yfinance_provider import fetch_daily as yf_fetch, is_available as yf_ok
@@ -319,18 +322,24 @@ class MarketCache:
                                 fetched = True
                             break
                         else:
+                            last_err = "yfinance not available"
                             break
                     except ImportError:
+                        last_err = "yfinance not installed"
                         break
-                    except Exception:
+                    except Exception as e:
+                        last_err = str(e)
                         if attempt < max_retries:
                             time.sleep(base_delay * (2 ** (attempt - 1)))
+                if not fetched and last_err:
+                    print(f"[cache] yfinance failed for {symbol} ({gap_start}~{gap_end}): {last_err}", file=sys.stderr)
                 if fetched or market in ("US", "HK"):
                     if len(gaps) > 1:
                         time.sleep(base_delay)
                     continue
 
             # CN: tushare first
+            ts_err = None
             for attempt in range(1, max_retries + 1):
                 try:
                     from tushare_provider import fetch_daily as ts_fetch_daily, is_available as ts_ok
@@ -341,14 +350,18 @@ class MarketCache:
                             fetched = True
                         break
                     else:
+                        ts_err = "no tushare token"
                         break  # No token, skip to akshare
                 except ImportError:
+                    ts_err = "tushare not installed"
                     break  # tushare not installed
-                except Exception:
+                except Exception as e:
+                    ts_err = str(e)
                     if attempt < max_retries:
                         time.sleep(base_delay * (2 ** (attempt - 1)))
 
             # 2) Fallback to akshare
+            ak_err = None
             if not fetched:
                 for attempt in range(1, max_retries + 1):
                     try:
@@ -361,12 +374,21 @@ class MarketCache:
                         )
                         if df is not None and not df.empty:
                             self._store_klines(symbol, df)
+                            fetched = True
                         break
                     except ImportError:
+                        ak_err = "akshare not installed"
                         break
-                    except Exception:
+                    except Exception as e:
+                        ak_err = str(e)
                         if attempt < max_retries:
                             time.sleep(base_delay * (2 ** (attempt - 1)))
+
+            if not fetched:
+                reasons = []
+                if ts_err: reasons.append(f"tushare: {ts_err}")
+                if ak_err: reasons.append(f"akshare: {ak_err}")
+                print(f"[cache] All providers failed for {symbol} ({gap_start}~{gap_end}): {'; '.join(reasons) or 'empty data'}", file=sys.stderr)
 
             # Throttle between gap fetches
             if len(gaps) > 1:
@@ -385,14 +407,28 @@ class MarketCache:
                 float(row["volume"]),
             ))
         if not rows:
+            conn.close()
             return
         conn.executemany(
             """INSERT OR REPLACE INTO kline_daily (symbol, date, open, high, low, close, volume)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
+
+        # Update metadata
+        all_dates = conn.execute(
+            "SELECT MIN(date), MAX(date), COUNT(*) FROM kline_daily WHERE symbol = ?",
+            (symbol,)
+        ).fetchone()
+        if all_dates and all_dates[0]:
+            conn.execute(
+                """INSERT OR REPLACE INTO cache_meta (symbol, min_date, max_date, bar_count, last_updated)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (symbol, all_dates[0], all_dates[1], all_dates[2],
+                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+
         conn.commit()
-        self._update_meta(symbol, conn)
         conn.close()
 
     def _store_klines(self, symbol: str, df: pd.DataFrame):

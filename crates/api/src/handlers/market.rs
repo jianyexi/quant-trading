@@ -43,8 +43,10 @@ fn call_market_data_logged(args: &[&str], log_store: Option<&crate::log_store::L
             msg
         })?;
 
-    // Poll with 15-second timeout to prevent hanging when akshare is unreachable
-    let timeout = std::time::Duration::from_secs(15);
+    // Poll with timeout to prevent hanging when data sources are unreachable
+    // Use 45s for klines (gap-filling can be slow), 15s for other commands
+    let is_klines = args.first().map_or(false, |a| *a == "klines");
+    let timeout = std::time::Duration::from_secs(if is_klines { 45 } else { 15 });
     loop {
         match child.try_wait() {
             Ok(Some(_status)) => break,
@@ -120,35 +122,62 @@ pub(crate) fn call_market_data(args: &[&str]) -> std::result::Result<Value, Stri
 }
 
 /// Fetch real historical klines via akshare. `period`: "daily", "1", "5", "15", "30", "60"
+/// Retries up to 2 times with backoff on transient failures.
 pub(crate) fn fetch_real_klines_with_period(symbol: &str, start: &str, end: &str, period: &str) -> std::result::Result<Vec<Kline>, String> {
     use chrono::NaiveDateTime;
 
-    let parsed = if period == "daily" {
-        call_market_data(&["klines", symbol, start, end])?
-    } else {
-        call_market_data(&["klines", symbol, start, end, period])?
-    };
-    let arr = parsed.as_array().ok_or("Expected JSON array")?;
-    if arr.is_empty() {
-        return Err("akshare returned empty data".into());
+    let max_attempts = 3;
+    let mut last_err = String::new();
+
+    for attempt in 1..=max_attempts {
+        let parsed = if period == "daily" {
+            call_market_data(&["klines", symbol, start, end])
+        } else {
+            call_market_data(&["klines", symbol, start, end, period])
+        };
+
+        match parsed {
+            Ok(val) => {
+                let arr = match val.as_array() {
+                    Some(a) => a,
+                    None => return Err("Expected JSON array".into()),
+                };
+                if arr.is_empty() {
+                    return Err("akshare returned empty data".into());
+                }
+
+                let mut klines = Vec::with_capacity(arr.len());
+                for item in arr {
+                    let sym = item["symbol"].as_str().unwrap_or(symbol).to_string();
+                    let dt_str = item["datetime"].as_str().unwrap_or("");
+                    let datetime = NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%d %H:%M:%S")
+                        .map_err(|e| format!("Bad datetime '{}': {}", dt_str, e))?;
+                    klines.push(Kline {
+                        symbol: sym, datetime,
+                        open: item["open"].as_f64().unwrap_or(0.0),
+                        high: item["high"].as_f64().unwrap_or(0.0),
+                        low: item["low"].as_f64().unwrap_or(0.0),
+                        close: item["close"].as_f64().unwrap_or(0.0),
+                        volume: item["volume"].as_f64().unwrap_or(0.0),
+                    });
+                }
+                return Ok(klines);
+            }
+            Err(e) => {
+                last_err = e;
+                // Don't retry on non-transient errors (bad symbol, empty data)
+                if last_err.contains("empty") || last_err.contains("usage:") {
+                    return Err(last_err);
+                }
+                if attempt < max_attempts {
+                    tracing::warn!(symbol, attempt, error=%last_err, "Kline fetch failed, retrying...");
+                    std::thread::sleep(std::time::Duration::from_millis(500 * attempt as u64));
+                }
+            }
+        }
     }
 
-    let mut klines = Vec::with_capacity(arr.len());
-    for item in arr {
-        let sym = item["symbol"].as_str().unwrap_or(symbol).to_string();
-        let dt_str = item["datetime"].as_str().unwrap_or("");
-        let datetime = NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%d %H:%M:%S")
-            .map_err(|e| format!("Bad datetime '{}': {}", dt_str, e))?;
-        klines.push(Kline {
-            symbol: sym, datetime,
-            open: item["open"].as_f64().unwrap_or(0.0),
-            high: item["high"].as_f64().unwrap_or(0.0),
-            low: item["low"].as_f64().unwrap_or(0.0),
-            close: item["close"].as_f64().unwrap_or(0.0),
-            volume: item["volume"].as_f64().unwrap_or(0.0),
-        });
-    }
-    Ok(klines)
+    Err(format!("Failed after {} attempts: {}", max_attempts, last_err))
 }
 
 /// Convenience wrapper for daily klines (used by backtest/screener)
