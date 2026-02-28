@@ -4,14 +4,15 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = []
-onnx = ["dep:ort", "dep:ndarray"]
+default = ["collector"]
+collector = ["dep:quant-data", "dep:quant-llm", "dep:quant-config"]
 
 [dependencies]
 quant-core = { workspace = true }
-quant-config = { workspace = true }
-quant-data = { workspace = true }
-quant-llm = { workspace = true }
+quant-config = { workspace = true, optional = true }
+quant-ml = { workspace = true }
+quant-data = { workspace = true, optional = true }
+quant-llm = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
@@ -23,5 +24,3 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
-ort = { version = "2.0.0-rc.11", features = ["ndarray"], optional = true }
-ndarray = { version = "0.17", optional = true }

@@ -19,3 +19,19 @@ data/market_cache.db
 data/tasks.db
 factor_registry.json
 scripts/__pycache__/
+
+# ML model artifacts (keep only source .py and requirements.txt)
+ml_models/*.model
+ml_models/*.csv
+ml_models/*_report_*.json
+ml_models/factor_mining_report_*.json
+ml_models/factor_model.lgb.txt
+ml_models/gp_factors_rust_snippet.rs
+ml_models/mined_factors_rust_snippet.rs
+ml_models/*_features.txt
+ml_models/__pycache__/
+
+# Misc artifacts
+_test_pred.rs
+retrain_stderr.txt
+retrain_stdout.txt

@@ -1723,7 +1723,6 @@ dependencies = [
  "chrono",
  "quant-core",
  "quant-data",
- "quant-risk",
  "quant-strategy",
  "serde",
  "serde_json",
@@ -1799,7 +1798,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "quant-config",
  "reqwest",
  "serde",
  "serde_json",
@@ -1849,6 +1847,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "quant-ml"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "ndarray",
+ "ort",
+ "quant-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "quant-risk"
 version = "0.1.0"
 dependencies = [
@@ -1870,12 +1885,11 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "ndarray",
- "ort",
  "quant-config",
  "quant-core",
  "quant-data",
  "quant-llm",
+ "quant-ml",
  "reqwest",
  "rusqlite",
  "serde",

@@ -1,3 +1,0 @@
-ret_kurt_60
-atr_norm_60
-volume_ratio_5

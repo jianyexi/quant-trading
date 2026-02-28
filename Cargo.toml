@@ -4,6 +4,7 @@ members = [
     "crates/config",
     "crates/core",
     "crates/data",
+    "crates/ml",
     "crates/strategy",
     "crates/backtest",
     "crates/broker",
@@ -64,4 +65,5 @@ quant-backtest = { path = "crates/backtest" }
 quant-broker = { path = "crates/broker" }
 quant-risk = { path = "crates/risk" }
 quant-llm = { path = "crates/llm" }
+quant-ml = { path = "crates/ml" }
 quant-api = { path = "crates/api" }
