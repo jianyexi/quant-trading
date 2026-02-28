@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import {
   factorRegistryManage,
   type FactorRegistry,
   type FactorRegistryEntry,
 } from '../../api/client';
-import { useTaskPoller } from '../../hooks/useTaskPoller';
+import { useTaskManager } from '../../hooks/useTaskManager';
+import { TaskOutput } from '../../components/TaskPipeline';
 
 const STORAGE_KEY = 'task_registry_manage';
 
@@ -111,44 +112,30 @@ export default function RegistryTab({
   registry: FactorRegistry | null;
   onRefresh: () => void;
 }) {
-  const [manageOutput, setManageOutput] = useState('');
   const [filter, setFilter] = useState<string>('all');
 
-  const { task, startPolling } = useTaskPoller();
-  const managing = task?.status === 'Running';
+  const tm = useTaskManager(STORAGE_KEY);
 
-  useEffect(() => {
-    const savedId = sessionStorage.getItem(STORAGE_KEY);
-    if (savedId) startPolling(savedId);
-  }, [startPolling]);
+  // Refresh registry when task completes
+  if (tm.task?.status === 'Completed' && tm.output) {
+    // onRefresh called once via effect-like check
+  }
 
-  useEffect(() => {
-    if (!task) return;
-    if (task.status === 'Completed') {
-      sessionStorage.removeItem(STORAGE_KEY);
+  const handleManage = () => tm.submit(async () => {
+    const result = await factorRegistryManage({ n_bars: 3000 });
+    // Schedule refresh after task completes
+    const checkInterval = setInterval(async () => {
       try {
-        const parsed = task.result ? JSON.parse(task.result) : null;
-        setManageOutput(parsed?.stdout || task.result || '完成');
-      } catch {
-        setManageOutput(task.result || '完成');
-      }
-      onRefresh();
-    } else if (task.status === 'Failed') {
-      sessionStorage.removeItem(STORAGE_KEY);
-      setManageOutput(task.error || '失败');
-    }
-  }, [task?.status]);
-
-  const handleManage = async () => {
-    setManageOutput('');
-    try {
-      const result = await factorRegistryManage({ n_bars: 3000 });
-      sessionStorage.setItem(STORAGE_KEY, result.task_id);
-      startPolling(result.task_id);
-    } catch (e: unknown) {
-      setManageOutput(e instanceof Error ? e.message : '失败');
-    }
-  };
+        const res = await fetch(`/api/tasks/${result.task_id}`);
+        const t = await res.json();
+        if (t.status === 'Completed' || t.status === 'Failed') {
+          clearInterval(checkInterval);
+          if (t.status === 'Completed') onRefresh();
+        }
+      } catch { /* ignore */ }
+    }, 3000);
+    return result;
+  });
 
   const factors = Object.entries(registry?.factors ?? {});
   const filtered = filter === 'all'
@@ -181,18 +168,14 @@ export default function RegistryTab({
             className="px-3 py-1.5 rounded-lg bg-[#334155] text-[#94a3b8] text-xs hover:bg-[#475569]">
             🔄 刷新
           </button>
-          <button onClick={handleManage} disabled={managing}
+          <button onClick={handleManage} disabled={tm.running}
             className="px-3 py-1.5 rounded-lg bg-[#10b981] text-white text-xs font-medium hover:bg-[#059669] disabled:opacity-50">
-            {managing ? '⏳ 管理中...' : '⚙️ 运行生命周期管理'}
+            {tm.running ? '⏳ 管理中...' : '⚙️ 运行生命周期管理'}
           </button>
         </div>
       </div>
 
-      {manageOutput && (
-        <div className="rounded-xl border border-[#334155] bg-[#0f172a] p-4">
-          <pre className="text-xs text-[#cbd5e1] whitespace-pre-wrap max-h-48 overflow-y-auto font-mono">{manageOutput}</pre>
-        </div>
-      )}
+      <TaskOutput {...tm} />
 
       {/* Factor table */}
       {filtered.length === 0 ? (

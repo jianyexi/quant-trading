@@ -1,73 +1,29 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { factorMineParametric } from '../../api/client';
-import { useTaskPoller } from '../../hooks/useTaskPoller';
+import { useTaskManager } from '../../hooks/useTaskManager';
+import { TaskOutput, ParamGrid } from '../../components/TaskPipeline';
 import DataSourceConfig from './DataSourceConfig';
 
-const STORAGE_KEY = 'task_parametric';
-
 export default function ParametricTab() {
-  const [nBars, setNBars] = useState(3000);
-  const [horizon, setHorizon] = useState(5);
-  const [icThreshold, setIcThreshold] = useState(0.02);
-  const [topN, setTopN] = useState(30);
+  const [params, setParams] = useState({
+    nBars: 3000, horizon: 5, icThreshold: 0.02, topN: 30,
+  });
   const [retrain, setRetrain] = useState(false);
   const [crossStock, setCrossStock] = useState(false);
   const [dataSource, setDataSource] = useState('akshare');
   const [symbols, setSymbols] = useState('');
   const [startDate, setStartDate] = useState('2023-01-01');
   const [endDate, setEndDate] = useState('2024-12-31');
-  const [output, setOutput] = useState('');
-  const [error, setError] = useState('');
 
-  const { task, startPolling } = useTaskPoller();
-  const running = task?.status === 'Running';
+  const tm = useTaskManager('task_parametric');
+  const setP = (k: string, v: number) => setParams(p => ({ ...p, [k]: v }));
 
-  // Restore active task on mount
-  useEffect(() => {
-    const savedId = sessionStorage.getItem(STORAGE_KEY);
-    if (savedId) startPolling(savedId);
-  }, [startPolling]);
-
-  // Handle task completion/failure
-  useEffect(() => {
-    if (!task) return;
-    if (task.status === 'Completed') {
-      sessionStorage.removeItem(STORAGE_KEY);
-      try {
-        const parsed = task.result ? JSON.parse(task.result) : null;
-        setOutput(parsed?.stdout || task.result || '完成');
-        if (parsed?.stderr) setOutput(prev => prev + '\n\n--- stderr ---\n' + parsed.stderr);
-      } catch {
-        setOutput(task.result || '完成');
-      }
-    } else if (task.status === 'Failed') {
-      sessionStorage.removeItem(STORAGE_KEY);
-      setError(task.error || '任务失败');
-    }
-  }, [task?.status]);
-
-  const handleRun = async () => {
-    setError('');
-    setOutput('');
-    try {
-      const result = await factorMineParametric({
-        n_bars: nBars,
-        horizon,
-        ic_threshold: icThreshold,
-        top_n: topN,
-        retrain,
-        cross_stock: crossStock,
-        data_source: dataSource,
-        symbols: symbols || undefined,
-        start_date: startDate,
-        end_date: endDate,
-      });
-      sessionStorage.setItem(STORAGE_KEY, result.task_id);
-      startPolling(result.task_id);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '请求失败');
-    }
-  };
+  const handleRun = () => tm.submit(() => factorMineParametric({
+    n_bars: params.nBars, horizon: params.horizon,
+    ic_threshold: params.icThreshold, top_n: params.topN,
+    retrain, cross_stock: crossStock,
+    data_source: dataSource, symbols: symbols || undefined, start_date: startDate, end_date: endDate,
+  }));
 
   return (
     <div className="space-y-6">
@@ -82,26 +38,14 @@ export default function ParametricTab() {
           symbols={symbols} setSymbols={setSymbols}
           startDate={startDate} setStartDate={setStartDate}
           endDate={endDate} setEndDate={setEndDate}
-          nBars={nBars} setNBars={setNBars}
+          nBars={params.nBars} setNBars={(v) => setP('nBars', v)}
         />
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
-          <div>
-            <label className="text-xs text-[#94a3b8] block mb-1">预测窗口</label>
-            <input type="number" value={horizon} onChange={(e) => setHorizon(Number(e.target.value))}
-              className="w-full rounded-lg border border-[#334155] bg-[#0f172a] px-3 py-2 text-sm text-[#f8fafc] focus:border-[#3b82f6] focus:outline-none" />
-          </div>
-          <div>
-            <label className="text-xs text-[#94a3b8] block mb-1">IC阈值</label>
-            <input type="number" step="0.01" value={icThreshold} onChange={(e) => setIcThreshold(Number(e.target.value))}
-              className="w-full rounded-lg border border-[#334155] bg-[#0f172a] px-3 py-2 text-sm text-[#f8fafc] focus:border-[#3b82f6] focus:outline-none" />
-          </div>
-          <div>
-            <label className="text-xs text-[#94a3b8] block mb-1">Top N</label>
-            <input type="number" value={topN} onChange={(e) => setTopN(Number(e.target.value))}
-              className="w-full rounded-lg border border-[#334155] bg-[#0f172a] px-3 py-2 text-sm text-[#f8fafc] focus:border-[#3b82f6] focus:outline-none" />
-          </div>
-        </div>
+        <ParamGrid fields={[
+          { key: 'horizon', label: '预测窗口', value: params.horizon },
+          { key: 'icThreshold', label: 'IC阈值', value: params.icThreshold, step: 0.01 },
+          { key: 'topN', label: 'Top N', value: params.topN },
+        ]} onChange={setP} columns={4} />
 
         <div className="flex items-center gap-4 flex-wrap">
           <label className="flex items-center gap-2 text-sm text-[#cbd5e1]">
@@ -116,27 +60,14 @@ export default function ParametricTab() {
               跨股票筛选
             </label>
           )}
-          <button onClick={handleRun} disabled={running}
+          <button onClick={handleRun} disabled={tm.running}
             className="rounded-lg bg-[#3b82f6] px-5 py-2 text-sm font-medium text-white hover:bg-[#2563eb] disabled:opacity-50">
-            {running ? '⏳ 搜索中...' : '🚀 开始搜索'}
+            {tm.running ? '⏳ 搜索中...' : '🚀 开始搜索'}
           </button>
         </div>
 
-        {running && (
-          <div className="mt-3 text-xs text-[#94a3b8]">
-            ⏱️ {dataSource === 'akshare' ? '正在从akshare拉取真实行情数据，首次可能需要几分钟...' : '搜索中...'}
-          </div>
-        )}
+        <TaskOutput {...tm} runningText={dataSource === 'akshare' ? '正在从akshare拉取真实行情数据，首次可能需要几分钟...' : '搜索中...'} />
       </div>
-
-      {error && <div className="rounded-lg bg-red-500/10 border border-red-500/30 p-3 text-sm text-red-400">{error}</div>}
-
-      {output && (
-        <div className="rounded-xl border border-[#334155] bg-[#0f172a] p-4">
-          <h4 className="text-sm font-bold text-[#f8fafc] mb-2">输出</h4>
-          <pre className="text-xs text-[#cbd5e1] whitespace-pre-wrap max-h-96 overflow-y-auto font-mono leading-relaxed">{output}</pre>
-        </div>
-      )}
     </div>
   );
 }

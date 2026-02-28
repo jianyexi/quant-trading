@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { StrategyConfig, StrategyParam } from '../types';
-import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, cancelTask, type ModelInfo, type RetrainOptions } from '../api/client';
-import { useTaskPoller } from '../hooks/useTaskPoller';
+import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, type ModelInfo, type RetrainOptions } from '../api/client';
+import { useTaskManager } from '../hooks/useTaskManager';
 import { Save, Upload, Play, RotateCcw, Brain, Loader2, CheckCircle, AlertCircle, Zap, Database } from 'lucide-react';
 
 const STRATEGIES: StrategyConfig[] = [
@@ -121,43 +121,34 @@ export default function StrategyConfigPage() {
   const [trainHorizon, setTrainHorizon] = useState(5);
   const [trainThreshold, setTrainThreshold] = useState(0.01);
 
-  const { task: retrainTask, startPolling: startRetrainPolling, reset: resetRetrainTask } = useTaskPoller();
-  const retraining = retrainTask?.status === 'Running';
+  const retrainTm = useTaskManager('task_retrain');
+  const retraining = retrainTm.running;
 
   const handleCancelRetrain = async () => {
-    const taskId = sessionStorage.getItem('task_retrain');
-    if (taskId) {
-      try { await cancelTask(taskId); } catch { /* ignore */ }
-      sessionStorage.removeItem('task_retrain');
-    }
-    resetRetrainTask();
+    await retrainTm.cancel();
     showStatus('训练已取消', 'info');
   };
 
   const activeStrategy = STRATEGIES.find((s) => s.name === selectedStrategy)!;
 
-  // Load config from server on mount + restore active task
+  // Load config from server on mount
   useEffect(() => {
     loadFromServer();
     fetchModelInfo();
-    const savedTaskId = sessionStorage.getItem('task_retrain');
-    if (savedTaskId) startRetrainPolling(savedTaskId);
   }, []);
 
   // React to retrain task completion/failure
   useEffect(() => {
-    if (!retrainTask) return;
-    if (retrainTask.status === 'Completed') {
-      sessionStorage.removeItem('task_retrain');
+    if (!retrainTm.task) return;
+    if (retrainTm.task.status === 'Completed') {
       setStatus({ text: '模型训练完成！', type: 'success' });
       fetchModelInfo();
-    } else if (retrainTask.status === 'Failed') {
-      sessionStorage.removeItem('task_retrain');
-      setStatus({ text: retrainTask.error || '训练失败，请检查日志', type: 'error' });
-    } else if (retrainTask.progress) {
-      setStatus({ text: retrainTask.progress, type: 'info' });
+    } else if (retrainTm.task.status === 'Failed') {
+      setStatus({ text: retrainTm.error || '训练失败，请检查日志', type: 'error' });
+    } else if (retrainTm.progress) {
+      setStatus({ text: retrainTm.progress, type: 'info' });
     }
-  }, [retrainTask?.status, retrainTask?.progress]);
+  }, [retrainTm.task?.status, retrainTm.progress]);
 
   const showStatus = (text: string, type: 'info' | 'success' | 'error' = 'info') => {
     setStatus({ text, type });
@@ -261,24 +252,18 @@ export default function StrategyConfigPage() {
     }
     const srcLabel = trainDataSource === 'akshare' ? '真实行情' : '模拟数据';
     showStatus(`模型训练中 (${srcLabel})，请耐心等待…`, 'info');
-    try {
-      const opts: RetrainOptions = {
-        algorithms: selectedAlgos.join(','),
-        data_source: trainDataSource,
-        horizon: trainHorizon,
-        threshold: trainThreshold,
-      };
-      if (trainDataSource === 'akshare') {
-        opts.symbols = trainSymbols;
-        opts.start_date = trainStartDate;
-        opts.end_date = trainEndDate;
-      }
-      const result = await mlRetrain(opts);
-      sessionStorage.setItem('task_retrain', result.task_id);
-      startRetrainPolling(result.task_id);
-    } catch {
-      showStatus('训练请求失败', 'error');
+    const opts: RetrainOptions = {
+      algorithms: selectedAlgos.join(','),
+      data_source: trainDataSource,
+      horizon: trainHorizon,
+      threshold: trainThreshold,
+    };
+    if (trainDataSource === 'akshare') {
+      opts.symbols = trainSymbols;
+      opts.start_date = trainStartDate;
+      opts.end_date = trainEndDate;
     }
+    retrainTm.submit(() => mlRetrain(opts));
   };
 
   const currentParams = paramValues[selectedStrategy] ?? {};
