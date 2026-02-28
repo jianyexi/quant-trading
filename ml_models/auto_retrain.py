@@ -734,8 +734,7 @@ def _fetch_akshare_data(
     )
 
     if combined is None or combined.empty:
-        print("⚠️  No data fetched from akshare, falling back to synthetic")
-        return generate_synthetic_data(5000)
+        raise RuntimeError("❌ No market data fetched. Check network/API access and stock codes.")
 
     return combined
 
@@ -778,8 +777,7 @@ def retrain(
     elif data_source == "akshare":
         df = _fetch_akshare_data(symbols, start_date, end_date)
     else:
-        print("📂 No market data provided, using synthetic (5000 bars)")
-        df = generate_synthetic_data(5000)
+        raise RuntimeError("❌ No market data provided. Use --data <csv> or --data-source akshare")
     report["data_rows"] = len(df)
     report["data_source"] = data_source if not data_path else "csv"
     # Include per-stock fetch statistics in report
@@ -1047,8 +1045,8 @@ def _persist_training_run(report: dict, journal_path: str = "data/trade_journal.
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Auto-retrain ML Factor Model (multi-algorithm)")
     parser.add_argument("--data", default=None, help="Path to OHLCV CSV data")
-    parser.add_argument("--data-source", default="synthetic", choices=["synthetic", "akshare"],
-                        help="Data source: synthetic (random GBM) or akshare (real A-share data)")
+    parser.add_argument("--data-source", default="akshare", choices=["akshare"],
+                        help="Data source: akshare (real A-share data)")
     parser.add_argument("--symbols", default=None,
                         help="Comma-separated stock codes for akshare (e.g. 600519,000858). Default: top 20 A-shares")
     parser.add_argument("--start-date", default="2022-01-01", help="Start date for akshare data (YYYY-MM-DD)")

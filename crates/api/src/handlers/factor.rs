@@ -8,25 +8,18 @@ use serde_json::{json, Value};
 use super::{find_python, run_python_script};
 use crate::state::AppState;
 
-fn build_data_args(args: &mut Vec<String>, data_source: &str, symbols: &str, start_date: &str, end_date: &str, n_bars: i64) {
-    match data_source {
-        "akshare" => {
-            args.push("--akshare".into());
-            if !symbols.is_empty() {
-                args.push("--symbols".into());
-                args.push(symbols.to_string());
-            }
-            args.push("--start-date".into());
-            args.push(start_date.to_string());
-            args.push("--end-date".into());
-            args.push(end_date.to_string());
-        }
-        _ => {
-            args.push("--synthetic".into());
-            args.push("--n-bars".into());
-            args.push(n_bars.to_string());
-        }
+fn build_data_args(args: &mut Vec<String>, data_source: &str, symbols: &str, start_date: &str, end_date: &str, _n_bars: i64) {
+    // Always use real data (akshare/tushare) — synthetic data is not allowed
+    args.push("--akshare".into());
+    if !symbols.is_empty() {
+        args.push("--symbols".into());
+        args.push(symbols.to_string());
     }
+    args.push("--start-date".into());
+    args.push(start_date.to_string());
+    args.push("--end-date".into());
+    args.push(end_date.to_string());
+    let _ = data_source; // always real data
 }
 
 /// Run Phase-1 parameterized factor mining (async task)
@@ -41,7 +34,7 @@ pub async fn factor_mine_parametric(
     let top_n = body_val.get("top_n").and_then(|v| v.as_i64()).unwrap_or(30);
     let retrain = body_val.get("retrain").and_then(|v| v.as_bool()).unwrap_or(false);
     let cross_stock = body_val.get("cross_stock").and_then(|v| v.as_bool()).unwrap_or(false);
-    let data_source = body_val.get("data_source").and_then(|v| v.as_str()).unwrap_or("synthetic").to_string();
+    let data_source = body_val.get("data_source").and_then(|v| v.as_str()).unwrap_or("akshare").to_string();
     let symbols = body_val.get("symbols").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let start_date = body_val.get("start_date").and_then(|v| v.as_str()).unwrap_or("2023-01-01").to_string();
     let end_date = body_val.get("end_date").and_then(|v| v.as_str()).unwrap_or("2024-12-31").to_string();
@@ -92,7 +85,7 @@ pub async fn factor_mine_gp(
     let max_depth = body_val.get("max_depth").and_then(|v| v.as_i64()).unwrap_or(6);
     let horizon = body_val.get("horizon").and_then(|v| v.as_i64()).unwrap_or(5);
     let retrain = body_val.get("retrain").and_then(|v| v.as_bool()).unwrap_or(false);
-    let data_source = body_val.get("data_source").and_then(|v| v.as_str()).unwrap_or("synthetic").to_string();
+    let data_source = body_val.get("data_source").and_then(|v| v.as_str()).unwrap_or("akshare").to_string();
     let symbols = body_val.get("symbols").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let start_date = body_val.get("start_date").and_then(|v| v.as_str()).unwrap_or("2023-01-01").to_string();
     let end_date = body_val.get("end_date").and_then(|v| v.as_str()).unwrap_or("2024-12-31").to_string();
@@ -175,7 +168,7 @@ pub async fn factor_registry_manage(
 
         let mut args = vec!["ml_models/gp_factor_mining.py".to_string(), "--manage".into()];
         if data_path.is_empty() {
-            args.push("--synthetic".into());
+            args.push("--akshare".into());
             args.extend(["--n-bars".into(), n_bars.to_string()]);
         } else {
             args.push("--data".into());
@@ -220,7 +213,7 @@ pub async fn factor_export_promoted(
             "--export-promoted".into(),
         ];
         if data_path.is_empty() {
-            args.push("--synthetic".into());
+            args.push("--akshare".into());
         } else {
             args.push("--data".into());
             args.push(data_path);

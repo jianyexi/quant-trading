@@ -41,8 +41,7 @@ def fetch_akshare_data(
     combined = cache.get_or_fetch_multi(stock_list, start_date, end_date)
 
     if combined is None or combined.empty:
-        print("⚠️  No data fetched, falling back to synthetic")
-        return generate_synthetic_data(3000)
+        raise RuntimeError("❌ No market data fetched. Check network/API access and stock codes.")
 
     return combined
 
@@ -64,16 +63,14 @@ def fetch_akshare_multi(
     result = cache.get_or_fetch_multi_dict(stock_list, start_date, end_date)
 
     if not result:
-        print("⚠️  No data fetched, using synthetic")
-        from factor_mining import generate_multi_stock_data
-        return generate_multi_stock_data(10, 2000)
+        raise RuntimeError("❌ No per-stock data fetched. Check network/API access and stock codes.")
 
     return result
 
 
 def load_data(args) -> pd.DataFrame:
     """Unified data loading from argparse args.
-    Supports: --data (CSV), --akshare, --synthetic (default)."""
+    Supports: --data (CSV), --akshare (default: real data)."""
     if getattr(args, 'data', None):
         print(f"Loading data from {args.data}")
         df = pd.read_csv(args.data, index_col=0, parse_dates=True)
@@ -82,17 +79,13 @@ def load_data(args) -> pd.DataFrame:
                 raise ValueError(f"Missing column '{col}' in CSV")
         return df
 
-    if getattr(args, 'akshare', False):
-        symbols = None
-        if getattr(args, 'symbols', None):
-            symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
-        start = getattr(args, 'start_date', '2023-01-01')
-        end = getattr(args, 'end_date', '2024-12-31')
-        return fetch_akshare_data(symbols, start, end)
-
-    n_bars = getattr(args, 'n_bars', 3000)
-    print(f"Generating synthetic data ({n_bars} bars)...")
-    return generate_synthetic_data(n_bars)
+    # Default: always fetch real data via akshare/tushare
+    symbols = None
+    if getattr(args, 'symbols', None):
+        symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    start = getattr(args, 'start_date', '2023-01-01')
+    end = getattr(args, 'end_date', '2024-12-31')
+    return fetch_akshare_data(symbols, start, end)
 
 
 def add_data_args(parser):

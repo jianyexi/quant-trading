@@ -352,7 +352,7 @@ pub async fn ml_retrain(
     let algorithms = body_val.get("algorithms").and_then(|a| a.as_str())
         .unwrap_or("lgb").to_string();
     let data_source = body_val.get("data_source").and_then(|a| a.as_str())
-        .unwrap_or("synthetic").to_string();
+        .unwrap_or("akshare").to_string();
     let symbols = body_val.get("symbols").and_then(|a| a.as_str())
         .unwrap_or("").to_string();
     let start_date = body_val.get("start_date").and_then(|a| a.as_str())

@@ -12,7 +12,7 @@ export default function GPTab() {
   const [maxDepth, setMaxDepth] = useState(6);
   const [horizon, setHorizon] = useState(5);
   const [retrain, setRetrain] = useState(false);
-  const [dataSource, setDataSource] = useState('synthetic');
+  const [dataSource, setDataSource] = useState('akshare');
   const [symbols, setSymbols] = useState('');
   const [startDate, setStartDate] = useState('2023-01-01');
   const [endDate, setEndDate] = useState('2024-12-31');

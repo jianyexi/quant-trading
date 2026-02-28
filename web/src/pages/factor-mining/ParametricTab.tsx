@@ -12,7 +12,7 @@ export default function ParametricTab() {
   const [topN, setTopN] = useState(30);
   const [retrain, setRetrain] = useState(false);
   const [crossStock, setCrossStock] = useState(false);
-  const [dataSource, setDataSource] = useState('synthetic');
+  const [dataSource, setDataSource] = useState('akshare');
   const [symbols, setSymbols] = useState('');
   const [startDate, setStartDate] = useState('2023-01-01');
   const [endDate, setEndDate] = useState('2024-12-31');

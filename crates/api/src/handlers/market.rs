@@ -320,19 +320,8 @@ fn generate_kline_data(symbol: &str, limit: usize, start: Option<&str>, end: Opt
     if is_minute {
         return vec![];
     }
-    let klines = generate_backtest_klines(symbol, &start_str, &end_str);
-    let take = klines.len().min(limit);
-    let skip = klines.len().saturating_sub(take);
-    klines[skip..].iter().map(|k| {
-        json!({
-            "date": k.datetime.format("%Y-%m-%d").to_string(),
-            "open": k.open,
-            "high": k.high,
-            "low": k.low,
-            "close": k.close,
-            "volume": k.volume as u64
-        })
-    }).collect()
+    // No synthetic fallback — return empty if real data unavailable
+    vec![]
 }
 
 pub async fn get_kline(

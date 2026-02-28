@@ -523,12 +523,8 @@ pub async fn screen_scan(
                 });
             }
             _ => {
-                let klines = market::generate_backtest_klines(symbol, &start_str, &end_str);
-                if !klines.is_empty() {
-                    stock_data.insert(symbol.to_string(), StockEntry {
-                        name: name.to_string(), klines, sector: sector.to_string(),
-                    });
-                }
+                // Skip stocks with no real data — never use synthetic
+                tracing::warn!(symbol, "Screener: skipping stock, no real market data available");
             }
         }
     }
@@ -582,7 +578,9 @@ pub async fn screen_factors(
 
     let klines = match market::fetch_real_klines(&symbol, &start_str, &end_str) {
         Ok(k) if !k.is_empty() => k,
-        _ => market::generate_backtest_klines(&symbol, &start_str, &end_str),
+        _ => {
+            return Json(json!({"error": format!("无法获取 {} 的行情数据，请先同步缓存", symbol)}));
+        }
     };
 
     let mut stock_data: HashMap<String, StockEntry> = HashMap::new();

@@ -9,7 +9,7 @@ use tracing::debug;
 
 use crate::state::AppState;
 use super::BacktestRequest;
-use super::market::{fetch_real_klines_with_period, generate_backtest_klines};
+use super::market::fetch_real_klines_with_period;
 
 pub async fn run_backtest(
     State(state): State<AppState>,
@@ -62,12 +62,12 @@ fn run_backtest_task(
             return;
         }
         Ok(_) => {
-            let k = generate_backtest_klines(&req.symbol, &req.start, &req.end);
-            (k, "synthetic (akshare返回空数据)".to_string())
+            ts.fail(tid, &format!("无法获取 {} 的行情数据：数据源返回空数据。请检查股票代码是否正确，或先同步缓存数据。", req.symbol));
+            return;
         }
         Err(reason) => {
-            let k = generate_backtest_klines(&req.symbol, &req.start, &req.end);
-            (k, format!("synthetic ({})", reason))
+            ts.fail(tid, &format!("无法获取 {} 的行情数据：{}。请检查数据源连接或先同步缓存数据。", req.symbol, reason));
+            return;
         }
     };
 
@@ -276,12 +276,15 @@ pub async fn walk_forward(
 
     let (klines, _data_source) = match fetch_real_klines_with_period(symbol, &req.start, &req.end, "daily") {
         Ok(k) if !k.is_empty() => (k, "akshare".to_string()),
-        _ => {
-            let gen = generate_backtest_klines(symbol, &req.start, &req.end);
-            if gen.is_empty() {
-                return (StatusCode::BAD_REQUEST, Json(json!({"error": "No kline data for date range"})));
-            }
-            (gen, "synthetic".to_string())
+        Ok(_) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error": format!("无法获取 {} 的行情数据：数据源返回空数据。请检查股票代码或先同步缓存。", symbol)
+            })));
+        }
+        Err(reason) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error": format!("无法获取 {} 的行情数据：{}。请检查数据源连接或先同步缓存。", symbol, reason)
+            })));
         }
     };
 
