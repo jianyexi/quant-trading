@@ -268,8 +268,9 @@ impl RiskEnforcer {
     pub fn check_stop_losses(&self, positions: &[PositionInfo]) -> Vec<StopLossSignal> {
         let mut signals = Vec::new();
         for pos in positions {
-            let loss_pct = pos.unrealized_pnl_pct();
-            if loss_pct < -self.config.stop_loss_pct {
+            if let Some(loss_pct) =
+                crate::pure_checks::check_stop_loss(pos.current_price, pos.avg_cost, self.config.stop_loss_pct)
+            {
                 signals.push(StopLossSignal {
                     symbol: pos.symbol.clone(),
                     quantity: pos.quantity,
@@ -326,17 +327,18 @@ impl RiskEnforcer {
         if current_value > *peak {
             *peak = current_value;
         }
-        let drawdown = (*peak - current_value) / *peak;
-        if drawdown > self.config.max_drawdown_pct && self.config.halt_on_drawdown {
-            if !self.drawdown_halted.swap(true, Ordering::SeqCst) {
-                self.push_event(
-                    RiskSeverity::Critical,
-                    "max_drawdown",
-                    &format!("最大回撤触发停止: {:.1}% > {:.1}%", drawdown * 100.0, self.config.max_drawdown_pct * 100.0),
-                    None,
-                );
+        if let Some(dd) = crate::pure_checks::check_drawdown(current_value, *peak, self.config.max_drawdown_pct) {
+            if self.config.halt_on_drawdown {
+                if !self.drawdown_halted.swap(true, Ordering::SeqCst) {
+                    self.push_event(
+                        RiskSeverity::Critical,
+                        "max_drawdown",
+                        &format!("最大回撤触发停止: {:.1}% > {:.1}%", dd * 100.0, self.config.max_drawdown_pct * 100.0),
+                        None,
+                    );
+                }
+                return true;
             }
-            return true;
         }
         false
     }
@@ -408,13 +410,13 @@ impl RiskEnforcer {
         let mut signals = Vec::new();
         for pos in positions {
             let days = pos.holding_days();
-            if days > self.config.max_holding_days as i64 {
+            if let Some(held) = crate::pure_checks::check_holding_timeout(days, self.config.max_holding_days) {
                 let profit_pct = pos.unrealized_pnl_pct();
                 if profit_pct < self.config.timeout_min_profit_pct {
                     signals.push(TimeoutSignal {
                         symbol: pos.symbol.clone(),
                         quantity: pos.quantity,
-                        holding_days: days,
+                        holding_days: held,
                         profit_pct,
                         max_days: self.config.max_holding_days,
                     });

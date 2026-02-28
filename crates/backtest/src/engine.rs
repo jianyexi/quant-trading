@@ -10,6 +10,7 @@ use quant_core::types::{OrderSide, OrderStatus, OrderType, Signal, SignalAction}
 
 use crate::matching::MatchingEngine;
 use crate::metrics::PerformanceMetrics;
+use quant_risk::pure_checks;
 
 // ── Backtest Events ─────────────────────────────────────────────────
 
@@ -253,37 +254,31 @@ impl BacktestEngine {
             }
 
             // Daily loss limit check
-            if self.config.daily_loss_limit > 0.0 {
-                let daily_pnl_pct = (portfolio.total_value - day_start_value) / day_start_value;
-                if daily_pnl_pct < -self.config.daily_loss_limit {
-                    if !daily_paused {
-                        seq += 1;
-                        events.push(BacktestEvent::RiskTriggered {
-                            seq, timestamp: kline.datetime, symbol: kline.symbol.clone(),
-                            trigger: "daily_loss_limit".into(),
-                            detail: format!("daily loss {:.2}% > limit {:.2}%", daily_pnl_pct * 100.0, self.config.daily_loss_limit * 100.0),
-                        });
-                        daily_paused = true;
-                    }
-                    pending_signal = None; // Cancel any pending buy
+            if let Some(daily_pnl_pct) = pure_checks::check_daily_loss(portfolio.total_value, day_start_value, self.config.daily_loss_limit) {
+                if !daily_paused {
+                    seq += 1;
+                    events.push(BacktestEvent::RiskTriggered {
+                        seq, timestamp: kline.datetime, symbol: kline.symbol.clone(),
+                        trigger: "daily_loss_limit".into(),
+                        detail: format!("daily loss {:.2}% > limit {:.2}%", daily_pnl_pct * 100.0, self.config.daily_loss_limit * 100.0),
+                    });
+                    daily_paused = true;
                 }
+                pending_signal = None; // Cancel any pending buy
             }
 
             // Max drawdown limit check
-            if self.config.max_drawdown_limit > 0.0 && peak_value > 0.0 {
-                let drawdown = (peak_value - portfolio.total_value) / peak_value;
-                if drawdown > self.config.max_drawdown_limit {
-                    if !daily_paused {
-                        seq += 1;
-                        events.push(BacktestEvent::RiskTriggered {
-                            seq, timestamp: kline.datetime, symbol: kline.symbol.clone(),
-                            trigger: "max_drawdown".into(),
-                            detail: format!("drawdown {:.2}% > limit {:.2}%", drawdown * 100.0, self.config.max_drawdown_limit * 100.0),
-                        });
-                        daily_paused = true;
-                    }
-                    pending_signal = None;
+            if let Some(drawdown) = pure_checks::check_drawdown(portfolio.total_value, peak_value, self.config.max_drawdown_limit) {
+                if !daily_paused {
+                    seq += 1;
+                    events.push(BacktestEvent::RiskTriggered {
+                        seq, timestamp: kline.datetime, symbol: kline.symbol.clone(),
+                        trigger: "max_drawdown".into(),
+                        detail: format!("drawdown {:.2}% > limit {:.2}%", drawdown * 100.0, self.config.max_drawdown_limit * 100.0),
+                    });
+                    daily_paused = true;
                 }
+                pending_signal = None;
             }
             // 0. Risk checks: stop-loss & holding timeout on existing positions
             let mut forced_sells: Vec<(String, f64)> = Vec::new();
@@ -292,31 +287,28 @@ impl BacktestEngine {
                     continue;
                 }
                 // Stop-loss check: use kline.low as worst-case price during bar
-                if self.config.stop_loss_pct > 0.0 && pos.avg_cost > 0.0 {
-                    let loss_pct = (kline.low - pos.avg_cost) / pos.avg_cost;
-                    if loss_pct < -self.config.stop_loss_pct {
-                        seq += 1;
-                        events.push(BacktestEvent::RiskTriggered {
-                            seq, timestamp: kline.datetime, symbol: pos.symbol.clone(),
-                            trigger: "stop_loss".into(),
-                            detail: format!("loss {:.2}% > threshold {:.2}%", loss_pct * 100.0, self.config.stop_loss_pct * 100.0),
-                        });
-                        forced_sells.push((pos.symbol.clone(), pos.quantity));
-                        continue;
-                    }
+                if let Some(loss_pct) = pure_checks::check_stop_loss(kline.low, pos.avg_cost, self.config.stop_loss_pct) {
+                    seq += 1;
+                    events.push(BacktestEvent::RiskTriggered {
+                        seq, timestamp: kline.datetime, symbol: pos.symbol.clone(),
+                        trigger: "stop_loss".into(),
+                        detail: format!("loss {:.2}% > threshold {:.2}%", loss_pct * 100.0, self.config.stop_loss_pct * 100.0),
+                    });
+                    forced_sells.push((pos.symbol.clone(), pos.quantity));
+                    continue;
                 }
                 // Holding timeout check
-                if self.config.max_holding_days > 0 {
-                    let days = (kline.datetime - pos.entry_time).num_days();
-                    if days > self.config.max_holding_days as i64 {
-                        seq += 1;
-                        events.push(BacktestEvent::RiskTriggered {
-                            seq, timestamp: kline.datetime, symbol: pos.symbol.clone(),
-                            trigger: "holding_timeout".into(),
-                            detail: format!("held {} days > max {}", days, self.config.max_holding_days),
-                        });
-                        forced_sells.push((pos.symbol.clone(), pos.quantity));
-                    }
+                if let Some(days) = pure_checks::check_holding_timeout(
+                    (kline.datetime - pos.entry_time).num_days(),
+                    self.config.max_holding_days,
+                ) {
+                    seq += 1;
+                    events.push(BacktestEvent::RiskTriggered {
+                        seq, timestamp: kline.datetime, symbol: pos.symbol.clone(),
+                        trigger: "holding_timeout".into(),
+                        detail: format!("held {} days > max {}", days, self.config.max_holding_days),
+                    });
+                    forced_sells.push((pos.symbol.clone(), pos.quantity));
                 }
             }
             for (sym, qty) in &forced_sells {
@@ -379,11 +371,11 @@ impl BacktestEngine {
                                     .get(&sig.symbol)
                                     .map(|p| p.current_price * p.quantity)
                                     .unwrap_or(0.0);
-                                let max_allowed =
-                                    portfolio.total_value * self.config.max_concentration - existing_value;
-                                let capped_budget = budget.min(max_allowed.max(0.0));
+                                let (capped_budget, was_capped) = pure_checks::cap_by_concentration(
+                                    budget, existing_value, portfolio.total_value, self.config.max_concentration,
+                                );
 
-                                if capped_budget < budget {
+                                if was_capped {
                                     seq += 1;
                                     events.push(BacktestEvent::RiskTriggered {
                                         seq, timestamp: kline.datetime, symbol: sig.symbol.clone(),

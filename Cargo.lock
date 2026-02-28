@@ -1723,6 +1723,7 @@ dependencies = [
  "chrono",
  "quant-core",
  "quant-data",
+ "quant-risk",
  "quant-strategy",
  "serde",
  "serde_json",
