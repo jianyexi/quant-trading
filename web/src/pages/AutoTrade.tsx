@@ -18,6 +18,9 @@ const STOCK_PRESETS = [
   { symbols: ['600519.SH', '000858.SZ'], label: '白酒组合' },
   { symbols: ['300750.SZ', '002594.SZ'], label: '新能源组合' },
   { symbols: ['000001.SZ', '600036.SH', '601318.SH'], label: '金融三巨头' },
+  { symbols: ['AAPL', 'MSFT', 'GOOGL'], label: 'US Big Tech' },
+  { symbols: ['NVDA', 'TSLA', 'AMZN'], label: 'US Growth' },
+  { symbols: ['0700.HK', '9988.HK', '3690.HK'], label: 'HK Tech' },
 ];
 
 export default function AutoTrade() {

@@ -79,36 +79,42 @@ class MarketCache:
         period: str = "daily",
         max_retries: int = 3,
         base_delay: float = 0.8,
+        market: str = "CN",
     ) -> pd.DataFrame:
-        """Get klines from cache, fetching missing ranges from akshare.
+        """Get klines from cache, fetching missing ranges.
 
         Args:
-            symbol: Stock code, e.g. "600519"
+            symbol: Stock code, e.g. "600519", "AAPL", "0700.HK"
             start_date: "YYYY-MM-DD" or "YYYYMMDD"
             end_date: "YYYY-MM-DD" or "YYYYMMDD"
             period: "daily" only for cache (minute data bypasses cache)
-            max_retries: Retry count for akshare API
+            max_retries: Retry count for API calls
             base_delay: Base delay between retries (exponential backoff)
+            market: "CN" (default), "US", or "HK"
 
         Returns:
             DataFrame with columns [open, high, low, close, volume], date index
         """
         if period != "daily":
-            # Minute-level data is not cached — too large, fetch directly
-            return self._fetch_from_akshare_raw(symbol, start_date, end_date, period)
+            if market in ("US", "HK"):
+                return self._fetch_yfinance_direct(symbol, start_date, end_date, market)
+            return self._fetch_raw(symbol, start_date, end_date, period)
+
+        # Use market-prefixed cache key to avoid symbol collisions
+        cache_key = f"{market}:{symbol}" if market != "CN" else symbol
 
         start = self._normalize_date(start_date)
         end = self._normalize_date(end_date)
 
         # Check what we already have
-        meta = self._get_meta(symbol)
-        gaps = self._find_gaps(symbol, start, end, meta)
+        meta = self._get_meta(cache_key)
+        gaps = self._find_gaps(cache_key, start, end, meta)
 
         if gaps:
-            self._fill_gaps(symbol, gaps, max_retries, base_delay)
+            self._fill_gaps(cache_key, gaps, max_retries, base_delay, market=market, raw_symbol=symbol)
 
         # Return from cache
-        return self._read_cache(symbol, start, end)
+        return self._read_cache(cache_key, start, end)
 
     def get_or_fetch_multi(
         self,
@@ -290,16 +296,41 @@ class MarketCache:
 
     def _fill_gaps(
         self, symbol: str, gaps: List[Tuple[str, str]],
-        max_retries: int, base_delay: float
+        max_retries: int, base_delay: float,
+        market: str = "CN", raw_symbol: str = "",
     ):
         """Fetch missing date ranges and store in cache.
 
-        Priority: tushare (primary) → akshare (fallback).
+        For CN: tushare (primary) → akshare (fallback).
+        For US/HK: yfinance.
         """
         for gap_start, gap_end in gaps:
             fetched = False
 
-            # 1) Try tushare first
+            # US/HK: use yfinance
+            if market in ("US", "HK"):
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        from yfinance_provider import fetch_daily as yf_fetch, is_available as yf_ok
+                        if yf_ok():
+                            df = yf_fetch(raw_symbol or symbol, gap_start, gap_end, market=market)
+                            if df is not None and not df.empty:
+                                self._store_klines_df(symbol, df)
+                                fetched = True
+                            break
+                        else:
+                            break
+                    except ImportError:
+                        break
+                    except Exception:
+                        if attempt < max_retries:
+                            time.sleep(base_delay * (2 ** (attempt - 1)))
+                if fetched or market in ("US", "HK"):
+                    if len(gaps) > 1:
+                        time.sleep(base_delay)
+                    continue
+
+            # CN: tushare first
             for attempt in range(1, max_retries + 1):
                 try:
                     from tushare_provider import fetch_daily as ts_fetch_daily, is_available as ts_ok
@@ -490,6 +521,20 @@ class MarketCache:
 
     # Keep old name as alias for backward compat
     _fetch_from_akshare_raw = _fetch_raw
+
+    def _fetch_yfinance_direct(
+        self, symbol: str, start_date: str, end_date: str, market: str
+    ) -> pd.DataFrame:
+        """Direct fetch from yfinance without caching (for minute data)."""
+        try:
+            from yfinance_provider import fetch_daily as yf_fetch, is_available as yf_ok
+            if yf_ok():
+                df = yf_fetch(symbol, start_date, end_date, market=market)
+                if df is not None and not df.empty:
+                    return df
+        except (ImportError, Exception):
+            pass
+        return pd.DataFrame()
 
 
 # ── Convenience singleton ────────────────────────────────────────────

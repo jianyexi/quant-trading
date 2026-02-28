@@ -25,12 +25,25 @@ interface StockInfo {
 }
 
 const POPULAR_STOCKS: { symbol: string; name: string }[] = [
+  // China A-Shares
   { symbol: '600519.SH', name: '贵州茅台' },
   { symbol: '000858.SZ', name: '五粮液' },
   { symbol: '601318.SH', name: '中国平安' },
   { symbol: '300750.SZ', name: '宁德时代' },
   { symbol: '002594.SZ', name: '比亚迪' },
   { symbol: '600036.SH', name: '招商银行' },
+  // US
+  { symbol: 'AAPL', name: 'Apple' },
+  { symbol: 'MSFT', name: 'Microsoft' },
+  { symbol: 'GOOGL', name: 'Google' },
+  { symbol: 'NVDA', name: 'NVIDIA' },
+  { symbol: 'TSLA', name: 'Tesla' },
+  { symbol: 'AMZN', name: 'Amazon' },
+  // Hong Kong
+  { symbol: '0700.HK', name: '腾讯' },
+  { symbol: '9988.HK', name: '阿里巴巴' },
+  { symbol: '3690.HK', name: '美团' },
+  { symbol: '9999.HK', name: '网易' },
 ];
 
 const TIME_RANGES = [

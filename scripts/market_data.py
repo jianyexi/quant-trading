@@ -46,7 +46,7 @@ _STOCK_NAMES = {
 
 
 def normalize_symbol(sym: str) -> str:
-    """Strip exchange suffix (.SH / .SZ) for akshare."""
+    """Strip exchange suffix (.SH / .SZ / .HK / .US) for provider APIs."""
     return sym.split(".")[0]
 
 
@@ -55,10 +55,58 @@ def normalize_date(d: str) -> str:
 
 
 def exchange_suffix(code: str) -> str:
-    """Infer .SH/.SZ from numeric code."""
+    """Infer .SH/.SZ from numeric code (China A-shares only)."""
     if code.startswith(("6", "5", "9")):
         return code + ".SH"
     return code + ".SZ"
+
+
+def detect_market(symbol: str) -> str:
+    """Detect market from symbol pattern.
+
+    Returns: "CN", "US", or "HK"
+    """
+    upper = symbol.upper()
+    if upper.endswith(".HK"):
+        return "HK"
+    if upper.endswith(".US"):
+        return "US"
+    if upper.endswith(".SH") or upper.endswith(".SZ"):
+        return "CN"
+    # Pure alphabetic → US (AAPL, GOOGL, BRK-B)
+    base = upper.split(".")[0].replace("-", "")
+    if base and base.isalpha():
+        return "US"
+    # Numeric → CN
+    return "CN"
+
+
+def full_symbol(raw_symbol: str, market: str) -> str:
+    """Construct full symbol with exchange suffix."""
+    if "." in raw_symbol:
+        return raw_symbol
+    if market == "US":
+        return raw_symbol
+    if market == "HK":
+        return raw_symbol.zfill(4) + ".HK"
+    return exchange_suffix(raw_symbol)
+
+
+def _df_to_records(df, fsym, close_time="15:00:00", daily=True):
+    """Convert DataFrame to JSON-serializable records."""
+    records = []
+    for date_val, row in df.iterrows():
+        dt = str(date_val.date()) + f" {close_time}" if daily else str(date_val)
+        records.append({
+            "symbol": fsym,
+            "datetime": dt,
+            "open": round(float(row["open"]), 2),
+            "high": round(float(row["high"]), 2),
+            "low": round(float(row["low"]), 2),
+            "close": round(float(row["close"]), 2),
+            "volume": float(row["volume"]),
+        })
+    return records
 
 
 def cmd_klines(args):
@@ -66,35 +114,43 @@ def cmd_klines(args):
         return {"error": "usage: klines <symbol> <start> <end> [period]"}
     raw_symbol, start, end = args[0], normalize_date(args[1]), normalize_date(args[2])
     period = args[3] if len(args) > 3 else "daily"
+    market = detect_market(raw_symbol)
     symbol = normalize_symbol(raw_symbol)
-    full_symbol = raw_symbol if "." in raw_symbol else exchange_suffix(raw_symbol)
+    fsym = full_symbol(raw_symbol, market)
+    start_fmt = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
+    end_fmt = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
 
-    # Use local cache for daily data to avoid redundant API calls
+    # ── US / HK stocks: use yfinance via cache ──
+    if market in ("US", "HK"):
+        close_time = "16:00:00"
+        if period == "daily":
+            from market_cache import get_cache
+            cache = get_cache()
+            df = cache.get_or_fetch(raw_symbol, start_fmt, end_fmt, market=market)
+            if df is None or df.empty:
+                return []
+            return _df_to_records(df, fsym, close_time, daily=True)
+        # Minute data: fetch directly (not cached)
+        try:
+            from yfinance_provider import fetch_daily, is_available as yf_ok
+            if yf_ok():
+                df = fetch_daily(raw_symbol, start_fmt, end_fmt, market=market)
+                if df is not None and not df.empty:
+                    return _df_to_records(df, fsym, close_time, daily=False)
+        except (ImportError, Exception):
+            pass
+        return []
+
+    # ── CN stocks: existing tushare/akshare logic ──
     if period == "daily":
         from market_cache import get_cache
         cache = get_cache()
-        start_fmt = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
-        end_fmt = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
         df = cache.get_or_fetch(symbol, start_fmt, end_fmt)
         if df is None or df.empty:
             return []
-        records = []
-        for date_val, row in df.iterrows():
-            dt = str(date_val.date()) + " 15:00:00"
-            records.append({
-                "symbol": full_symbol,
-                "datetime": dt,
-                "open": round(float(row["open"]), 2),
-                "high": round(float(row["high"]), 2),
-                "low": round(float(row["low"]), 2),
-                "close": round(float(row["close"]), 2),
-                "volume": float(row["volume"]),
-            })
-        return records
+        return _df_to_records(df, fsym, "15:00:00", daily=True)
 
     # Minute-level data — try tushare first, then akshare
-    start_fmt = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
-    end_fmt = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
     df = None
     try:
         from tushare_provider import fetch_minute, is_available as ts_ok
@@ -125,36 +181,36 @@ def cmd_klines(args):
 
     if df is None or df.empty:
         return []
-
-    records = []
-    for date_val, row in df.iterrows():
-        dt_str = str(date_val)
-        records.append({
-            "symbol": full_symbol,
-            "datetime": dt_str,
-            "open": round(float(row["open"]), 2),
-            "high": round(float(row["high"]), 2),
-            "low": round(float(row["low"]), 2),
-            "close": round(float(row["close"]), 2),
-            "volume": float(row["volume"]),
-        })
-    return records
+    return _df_to_records(df, fsym, daily=False)
 
 
 def cmd_quote(args):
-    """Get latest quote. Tries tushare first, then akshare."""
+    """Get latest quote. Routes to yfinance for US/HK, tushare/akshare for CN."""
     if not args:
         return {"error": "usage: quote <symbol>"}
     raw_symbol = args[0]
+    market = detect_market(raw_symbol)
     symbol = normalize_symbol(raw_symbol)
-    full_symbol = raw_symbol if "." in raw_symbol else exchange_suffix(symbol)
+    fsym = full_symbol(raw_symbol, market)
 
-    # 1) Try tushare
+    # US/HK: use yfinance
+    if market in ("US", "HK"):
+        try:
+            from yfinance_provider import fetch_quote as yf_quote, is_available as yf_ok
+            if yf_ok():
+                q = yf_quote(raw_symbol, market=market)
+                q["symbol"] = fsym
+                return q
+        except (ImportError, Exception) as e:
+            return {"error": f"No quote data for {raw_symbol}: {e}"}
+        return {"error": f"yfinance not available for {raw_symbol}"}
+
+    # CN: try tushare first, then akshare
     try:
         from tushare_provider import fetch_quote, is_available as ts_ok
         if ts_ok():
             q = fetch_quote(symbol)
-            q["symbol"] = full_symbol
+            q["symbol"] = fsym
             name = _STOCK_NAMES.get(symbol)
             if name:
                 q["name"] = name
@@ -162,7 +218,6 @@ def cmd_quote(args):
     except (ImportError, Exception):
         pass
 
-    # 2) Fallback to akshare
     try:
         import akshare as ak
         from datetime import datetime, timedelta
@@ -177,7 +232,7 @@ def cmd_quote(args):
         r = df.iloc[-1]
         name = _STOCK_NAMES.get(symbol, symbol)
         return {
-            "symbol": full_symbol,
+            "symbol": fsym,
             "name": name,
             "price": float(r["收盘"]),
             "open": float(r["开盘"]),
@@ -194,27 +249,40 @@ def cmd_quote(args):
 
 
 def cmd_stock_info(args):
-    """Get individual stock info. Tries tushare first, then akshare."""
+    """Get individual stock info. Routes by market."""
     if not args:
         return {"error": "usage: stock_info <symbol>"}
-    symbol = normalize_symbol(args[0])
-    full_symbol = args[0] if "." in args[0] else exchange_suffix(symbol)
+    raw_symbol = args[0]
+    market = detect_market(raw_symbol)
+    symbol = normalize_symbol(raw_symbol)
+    fsym = full_symbol(raw_symbol, market)
 
-    # 1) Try tushare
+    # US/HK: use yfinance
+    if market in ("US", "HK"):
+        try:
+            from yfinance_provider import fetch_stock_info as yf_info, is_available as yf_ok
+            if yf_ok():
+                info = yf_info(raw_symbol, market=market)
+                info["symbol"] = fsym
+                return info
+        except (ImportError, Exception) as e:
+            return {"symbol": fsym, "error": str(e)}
+        return {"symbol": fsym, "error": "yfinance not available"}
+
+    # CN: try tushare first, then akshare
     try:
         from tushare_provider import fetch_stock_info, is_available as ts_ok
         if ts_ok():
             info = fetch_stock_info(symbol)
-            info["symbol"] = full_symbol
+            info["symbol"] = fsym
             return info
     except (ImportError, Exception):
         pass
 
-    # 2) Fallback to akshare
     try:
         import akshare as ak
         info = ak.stock_individual_info_em(symbol=symbol)
-        result = {"symbol": full_symbol}
+        result = {"symbol": fsym}
         for _, row in info.iterrows():
             item, value = str(row["item"]), row["value"]
             if item == "股票简称":
@@ -229,7 +297,7 @@ def cmd_stock_info(args):
                 result["float_market_cap"] = float(value)
         return result
     except (ImportError, Exception) as e:
-        return {"symbol": full_symbol, "error": str(e)}
+        return {"symbol": fsym, "error": str(e)}
 
 
 def cmd_stock_pool(args):
@@ -448,7 +516,7 @@ def cmd_sync_cache(args):
 
 def cmd_data_source_status(args):
     """Return status of available data sources."""
-    result = {"primary": None, "available": [], "akshare": False, "tushare": False}
+    result = {"primary": None, "available": [], "akshare": False, "tushare": False, "yfinance": False}
     try:
         from tushare_provider import is_available as ts_ok
         if ts_ok():
@@ -462,7 +530,19 @@ def cmd_data_source_status(args):
         result["available"].append("akshare")
     except ImportError:
         pass
+    try:
+        from yfinance_provider import is_available as yf_ok
+        if yf_ok():
+            result["yfinance"] = True
+            result["available"].append("yfinance")
+    except ImportError:
+        pass
     result["primary"] = result["available"][0] if result["available"] else None
+    result["markets"] = {
+        "CN": result["tushare"] or result["akshare"],
+        "US": result["yfinance"],
+        "HK": result["yfinance"],
+    }
     return result
 
 

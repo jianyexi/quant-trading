@@ -298,7 +298,22 @@ export default function Backtest() {
                 <label className="block text-sm text-[#94a3b8] mb-1.5">股票代码</label>
                 <input type="text" value={config.symbol}
                   onChange={(e) => updateConfig('symbol', e.target.value)}
+                  placeholder="600519.SH / AAPL / 0700.HK"
                   className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#3b82f6]" />
+                <div className="flex gap-1 mt-1 flex-wrap">
+                  {[
+                    { sym: '600519.SH', label: '茅台' },
+                    { sym: 'AAPL', label: 'Apple' },
+                    { sym: 'MSFT', label: 'MSFT' },
+                    { sym: '0700.HK', label: '腾讯' },
+                    { sym: '9988.HK', label: '阿里' },
+                  ].map((s) => (
+                    <button key={s.sym} onClick={() => updateConfig('symbol', s.sym)}
+                      className="text-xs px-1.5 py-0.5 rounded bg-[#334155] text-[#94a3b8] hover:bg-[#475569] hover:text-[#f8fafc] transition-colors cursor-pointer">
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
               </div>
               <div>
                 <label className="block text-sm text-[#94a3b8] mb-1.5">开始日期</label>

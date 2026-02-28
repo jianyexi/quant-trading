@@ -29,7 +29,7 @@ COPY scripts/ /app/scripts/
 COPY ml_models/ /app/ml_models/
 
 # Install Python deps for ML/market data
-RUN pip3 install --break-system-packages tushare akshare lightgbm scikit-learn pandas numpy flask 2>/dev/null || true
+RUN pip3 install --break-system-packages tushare akshare yfinance lightgbm scikit-learn pandas numpy flask 2>/dev/null || true
 
 # Ensure logs dir and entrypoint executable
 RUN mkdir -p /app/logs && chmod +x /app/scripts/docker-entrypoint.sh
