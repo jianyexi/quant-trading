@@ -550,8 +550,8 @@ export default function Backtest() {
                     {result.per_symbol_results.map((sr: PerSymbolResult) => (
                       <tr key={sr.symbol} className="border-b border-[#334155]/50 hover:bg-[#334155]/30">
                         <td className="py-2 px-3 text-[#3b82f6] font-mono font-medium">{sr.symbol}</td>
-                        <td className="py-2 px-3 text-[#f8fafc] font-mono">¥{sr.initial_capital?.toLocaleString()}</td>
-                        <td className="py-2 px-3 text-[#f8fafc] font-mono">¥{sr.final_value?.toLocaleString()}</td>
+                        <td className="py-2 px-3 text-[#f8fafc] font-mono">¥{Math.round(sr.initial_capital ?? 0).toLocaleString()}</td>
+                        <td className="py-2 px-3 text-[#f8fafc] font-mono">¥{(sr.final_value ?? 0).toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                         <td className={`py-2 px-3 font-mono font-bold ${(sr.total_return_percent ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {(sr.total_return_percent ?? 0) >= 0 ? '+' : ''}{(sr.total_return_percent ?? 0).toFixed(2)}%
                         </td>
