@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   factorRegistryManage,
   type FactorRegistry,
@@ -116,25 +116,17 @@ export default function RegistryTab({
 
   const tm = useTaskManager(STORAGE_KEY);
 
-  // Refresh registry when task completes
-  if (tm.task?.status === 'Completed' && tm.output) {
-    // onRefresh called once via effect-like check
-  }
+  // Refresh registry when lifecycle management task completes
+  const prevStatus = useRef(tm.task?.status);
+  useEffect(() => {
+    if (prevStatus.current !== 'Completed' && tm.task?.status === 'Completed') {
+      onRefresh();
+    }
+    prevStatus.current = tm.task?.status;
+  }, [tm.task?.status, onRefresh]);
 
   const handleManage = () => tm.submit(async () => {
-    const result = await factorRegistryManage({ n_bars: 3000 });
-    // Schedule refresh after task completes
-    const checkInterval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/tasks/${result.task_id}`);
-        const t = await res.json();
-        if (t.status === 'Completed' || t.status === 'Failed') {
-          clearInterval(checkInterval);
-          if (t.status === 'Completed') onRefresh();
-        }
-      } catch { /* ignore */ }
-    }, 3000);
-    return result;
+    return await factorRegistryManage({ n_bars: 3000 });
   });
 
   const factors = Object.entries(registry?.factors ?? {});

@@ -41,7 +41,7 @@ export function useTaskManager(storageKey: string) {
       sessionStorage.removeItem(storageKey);
       setError(task.error || '任务失败');
     }
-  }, [task?.status, storageKey]);
+  }, [task, storageKey]);
 
   /** Submit a task. `apiFn` should return `{ task_id: string }`. */
   const submit = useCallback(async (apiFn: () => Promise<{ task_id: string }>) => {

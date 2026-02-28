@@ -2,21 +2,16 @@
 const DEFAULT_SYMBOLS= '600519,000858,300750,600036,601318,002415,000651,600276';
 
 export default function DataSourceConfig({
-  dataSource, setDataSource,
   symbols, setSymbols,
   startDate, setStartDate,
   endDate, setEndDate,
-  nBars, setNBars,
 }: {
-  dataSource: string; setDataSource: (v: string) => void;
+  dataSource?: string; setDataSource?: (v: string) => void;
   symbols: string; setSymbols: (v: string) => void;
   startDate: string; setStartDate: (v: string) => void;
   endDate: string; setEndDate: (v: string) => void;
-  nBars: number; setNBars: (v: number) => void;
+  nBars?: number; setNBars?: (v: number) => void;
 }) {
-  // Suppress unused warnings — kept for API compatibility
-  void setDataSource; void nBars; void setNBars;
-  void dataSource;
 
   return (
     <div className="rounded-lg border border-[#334155] bg-[#0f172a] p-4 mb-4">

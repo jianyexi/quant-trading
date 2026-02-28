@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { StrategyConfig, StrategyParam } from '../types';
 import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, type ModelInfo, type RetrainOptions } from '../api/client';
 import { useTaskManager } from '../hooks/useTaskManager';
@@ -132,23 +132,31 @@ export default function StrategyConfigPage() {
   const activeStrategy = STRATEGIES.find((s) => s.name === selectedStrategy)!;
 
   // Load config from server on mount
+  const mountedRef = useRef(false);
   useEffect(() => {
+    if (mountedRef.current) return;
+    mountedRef.current = true;
     loadFromServer();
     fetchModelInfo();
-  }, []);
+  });
 
   // React to retrain task completion/failure
+  const prevTaskStatus = useRef(retrainTm.task?.status);
   useEffect(() => {
+    const status = retrainTm.task?.status;
+    if (status === prevTaskStatus.current && !retrainTm.progress) return;
+    prevTaskStatus.current = status;
+
     if (!retrainTm.task) return;
-    if (retrainTm.task.status === 'Completed') {
+    if (status === 'Completed') {
       setStatus({ text: '模型训练完成！', type: 'success' });
       fetchModelInfo();
-    } else if (retrainTm.task.status === 'Failed') {
+    } else if (status === 'Failed') {
       setStatus({ text: retrainTm.error || '训练失败，请检查日志', type: 'error' });
     } else if (retrainTm.progress) {
       setStatus({ text: retrainTm.progress, type: 'info' });
     }
-  }, [retrainTm.task?.status, retrainTm.progress]);
+  }, [retrainTm.task, retrainTm.progress, retrainTm.error]);
 
   const showStatus = (text: string, type: 'info' | 'success' | 'error' = 'info') => {
     setStatus({ text, type });

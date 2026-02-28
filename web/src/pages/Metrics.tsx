@@ -111,8 +111,8 @@ export default function MetricsPage() {
           }];
           return next.slice(-60); // keep last 60 data points
         });
-      } catch (e: any) {
-        setError(e.message);
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : 'Failed to fetch metrics');
       }
     };
     load();

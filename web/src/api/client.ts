@@ -761,11 +761,11 @@ export async function getUnreadCount(): Promise<{ unread_count: number }> {
 }
 
 export async function markNotificationRead(id: string): Promise<void> {
-  await fetch(`${API_BASE}/notifications/${id}/read`, { method: 'POST' });
+  await fetchJson(`/notifications/${id}/read`, { method: 'POST' });
 }
 
 export async function markAllNotificationsRead(): Promise<void> {
-  await fetch(`${API_BASE}/notifications/read-all`, { method: 'POST' });
+  await fetchJson('/notifications/read-all', { method: 'POST' });
 }
 
 export async function getNotificationConfig(): Promise<NotificationConfig> {
@@ -773,7 +773,7 @@ export async function getNotificationConfig(): Promise<NotificationConfig> {
 }
 
 export async function saveNotificationConfig(cfg: NotificationConfig): Promise<void> {
-  await fetch(`${API_BASE}/notifications/config`, {
+  await fetchJson('/notifications/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg),

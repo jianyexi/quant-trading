@@ -65,7 +65,7 @@ function HealthGauge({ score }: { score: number }) {
   return (
     <div style={{ textAlign: 'center' }}>
       <svg viewBox="0 0 200 120" width="200" height="120">
-        <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="#e5e7eb" strokeWidth="12" strokeLinecap="round" />
+        <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="#334155" strokeWidth="12" strokeLinecap="round" />
         <path
           d="M 20 100 A 80 80 0 0 1 180 100"
           fill="none"
@@ -75,7 +75,7 @@ function HealthGauge({ score }: { score: number }) {
           strokeDasharray={`${(angle / 180) * 251.2} 251.2`}
         />
         <text x="100" y="85" textAnchor="middle" fontSize="28" fontWeight="bold" fill={color}>{score}</text>
-        <text x="100" y="110" textAnchor="middle" fontSize="14" fill="#6b7280">{label}</text>
+        <text x="100" y="110" textAnchor="middle" fontSize="14" fill="#94a3b8">{label}</text>
       </svg>
     </div>
   );
@@ -83,7 +83,7 @@ function HealthGauge({ score }: { score: number }) {
 
 function PipelineBar({ modules }: { modules: ModuleInfo[] }) {
   const total = modules.reduce((s, m) => s + m.avg_us, 0);
-  if (total === 0) return <div style={{ color: '#9ca3af', fontSize: 14 }}>引擎未运行或无数据</div>;
+  if (total === 0) return <div style={{ color: '#64748b', fontSize: 14 }}>引擎未运行或无数据</div>;
   const colors = ['#3b82f6', '#8b5cf6', '#f59e0b', '#ef4444'];
   return (
     <div>
@@ -101,7 +101,7 @@ function PipelineBar({ modules }: { modules: ModuleInfo[] }) {
           />
         ))}
       </div>
-      <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#6b7280', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#94a3b8', flexWrap: 'wrap' }}>
         {modules.map((m, i) => (
           <span key={m.name} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <span style={{ width: 10, height: 10, borderRadius: 2, background: colors[i % colors.length], display: 'inline-block' }} />
@@ -123,8 +123,8 @@ export default function Latency() {
       const d = await getLatency();
       setData(d);
       setError('');
-    } catch (e: any) {
-      setError(e.message || 'Failed to fetch latency data');
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to fetch latency data');
     }
   }, []);
 
@@ -135,48 +135,47 @@ export default function Latency() {
   }, [refresh, refreshInterval]);
 
   return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>⏱ 延迟分析 & 瓶颈检测</h1>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{ fontSize: 13, color: '#6b7280' }}>刷新间隔:</span>
+    <div className="p-6 max-w-[1100px] mx-auto">
+      <div className="flex justify-between items-center mb-5">
+        <h1 className="text-[22px] font-bold text-[#f8fafc]">⏱ 延迟分析 & 瓶颈检测</h1>
+        <div className="flex gap-2 items-center">
+          <span className="text-[13px] text-[#64748b]">刷新间隔:</span>
           {[2, 3, 5, 10].map(s => (
             <button
               key={s}
               onClick={() => setRefreshInterval(s)}
-              style={{
-                padding: '4px 10px', fontSize: 12, borderRadius: 4, cursor: 'pointer',
-                background: refreshInterval === s ? '#3b82f6' : '#f3f4f6',
-                color: refreshInterval === s ? '#fff' : '#374151',
-                border: 'none',
-              }}
+              className={`px-2.5 py-1 text-xs rounded ${
+                refreshInterval === s
+                  ? 'bg-[#3b82f6] text-white'
+                  : 'bg-[#334155] text-[#94a3b8] hover:bg-[#475569]'
+              }`}
             >{s}s</button>
           ))}
-          <button onClick={refresh} style={{ padding: '4px 12px', fontSize: 12, borderRadius: 4, cursor: 'pointer', background: '#e0e7ff', border: 'none', color: '#4338ca' }}>
+          <button onClick={refresh} className="px-3 py-1 text-xs rounded bg-[#334155] text-[#94a3b8] hover:bg-[#475569]">
             🔄
           </button>
         </div>
       </div>
 
-      {error && <div style={{ background: '#fef2f2', color: '#dc2626', padding: 12, borderRadius: 6, marginBottom: 16 }}>{error}</div>}
+      {error && <div className="bg-red-500/10 text-red-400 p-3 rounded-lg mb-4 text-sm">{error}</div>}
 
       {!data ? (
-        <div style={{ color: '#9ca3af' }}>加载中...</div>
+        <div className="text-[#64748b]">加载中...</div>
       ) : (
         <>
           {/* Health + Pipeline Overview */}
-          <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: 20, marginBottom: 24 }}>
-            <div style={{ background: '#fff', borderRadius: 8, padding: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-              <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 4 }}>系统健康度</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: 20 }} className="mb-6">
+            <div className="bg-[#1e293b] rounded-lg p-4 border border-[#334155]">
+              <div className="text-xs text-[#64748b] mb-1">系统健康度</div>
               <HealthGauge score={data.health_score} />
-              <div style={{ textAlign: 'center', fontSize: 12, color: '#9ca3af', marginTop: 4 }}>
+              <div className="text-center text-xs text-[#64748b] mt-1">
                 Pipeline: {formatUs(data.pipeline_total_us)}
               </div>
             </div>
-            <div style={{ background: '#fff', borderRadius: 8, padding: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-              <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 12 }}>流水线延迟占比</div>
+            <div className="bg-[#1e293b] rounded-lg p-4 border border-[#334155]">
+              <div className="text-xs text-[#64748b] mb-3">流水线延迟占比</div>
               <PipelineBar modules={data.modules} />
-              <div style={{ marginTop: 16, fontSize: 12, color: '#9ca3af' }}>
+              <div className="mt-4 text-xs text-[#64748b]">
                 总延迟 = 数据获取 + 策略计算 + 风控检查 + 订单提交（单次 Pass）
               </div>
             </div>
@@ -184,56 +183,51 @@ export default function Latency() {
 
           {/* Bottleneck Alert */}
           {data.bottleneck && (
-            <div style={{
-              background: data.bottleneck.avg_us > 100_000 ? '#fef2f2' : '#fffbeb',
-              border: `1px solid ${data.bottleneck.avg_us > 100_000 ? '#fecaca' : '#fde68a'}`,
-              borderRadius: 8, padding: 16, marginBottom: 24,
-            }}>
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>
+            <div className={`rounded-lg p-4 mb-6 border ${
+              data.bottleneck.avg_us > 100_000
+                ? 'bg-red-500/10 border-red-500/30'
+                : 'bg-yellow-500/10 border-yellow-500/30'
+            }`}>
+              <div className="font-semibold text-[#f8fafc] mb-1">
                 🔍 瓶颈模块: {data.bottleneck.module} — {formatUs(data.bottleneck.avg_us)} ({data.bottleneck.pct.toFixed(1)}%)
               </div>
-              <div style={{ fontSize: 13, color: '#6b7280' }}>{data.bottleneck.suggestion}</div>
+              <div className="text-sm text-[#94a3b8]">{data.bottleneck.suggestion}</div>
             </div>
           )}
 
           {/* Per-module cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16, marginBottom: 24 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }} className="mb-6">
             {data.modules.map(m => {
               const color = statusColor(m.avg_us, m.name);
               const isBottleneck = data.bottleneck?.module === m.name;
               return (
-                <div key={m.name} style={{
-                  background: '#fff', borderRadius: 8, padding: 16,
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-                  borderLeft: `4px solid ${color}`,
-                  ...(isBottleneck ? { outline: '2px solid #f59e0b' } : {}),
-                }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, display: 'flex', justifyContent: 'space-between' }}>
+                <div key={m.name} className={`bg-[#1e293b] rounded-lg p-4 border border-[#334155] ${isBottleneck ? 'ring-2 ring-yellow-500/50' : ''}`}
+                  style={{ borderLeft: `4px solid ${color}` }}>
+                  <div className="text-sm font-semibold text-[#f8fafc] mb-2 flex justify-between">
                     <span>{m.name.split('(')[0].trim()}</span>
-                    {isBottleneck && <span style={{ fontSize: 11, background: '#fef3c7', color: '#92400e', padding: '2px 6px', borderRadius: 4 }}>瓶颈</span>}
+                    {isBottleneck && <span className="text-[11px] bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded">瓶颈</span>}
                   </div>
-                  <div style={{ fontSize: 12, color: '#6b7280' }}>{m.name.match(/\((.+)\)/)?.[1]}</div>
-                  <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  <div className="text-xs text-[#64748b]">{m.name.match(/\((.+)\)/)?.[1]}</div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
                     <div>
-                      <div style={{ fontSize: 11, color: '#9ca3af' }}>最近</div>
-                      <div style={{ fontSize: 16, fontWeight: 700, color }}>{formatUs(m.last_us)}</div>
+                      <div className="text-[11px] text-[#64748b]">最近</div>
+                      <div className="text-base font-bold" style={{ color }}>{formatUs(m.last_us)}</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: 11, color: '#9ca3af' }}>平均</div>
-                      <div style={{ fontSize: 16, fontWeight: 700, color }}>{formatUs(m.avg_us)}</div>
+                      <div className="text-[11px] text-[#64748b]">平均</div>
+                      <div className="text-base font-bold" style={{ color }}>{formatUs(m.avg_us)}</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: 11, color: '#9ca3af' }}>总调用</div>
-                      <div style={{ fontSize: 14, fontWeight: 600 }}>{m.total_calls.toLocaleString()}</div>
+                      <div className="text-[11px] text-[#64748b]">总调用</div>
+                      <div className="text-sm font-semibold text-[#cbd5e1]">{m.total_calls.toLocaleString()}</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: 11, color: '#9ca3af' }}>占比</div>
-                      <div style={{ fontSize: 14, fontWeight: 600 }}>{m.pct_of_pipeline.toFixed(1)}%</div>
+                      <div className="text-[11px] text-[#64748b]">占比</div>
+                      <div className="text-sm font-semibold text-[#cbd5e1]">{m.pct_of_pipeline.toFixed(1)}%</div>
                     </div>
                   </div>
-                  {/* Mini bar */}
-                  <div style={{ marginTop: 10, height: 6, background: '#f3f4f6', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${Math.min(m.pct_of_pipeline, 100)}%`, background: color, borderRadius: 3, transition: 'width 0.5s ease' }} />
+                  <div className="mt-2.5 h-1.5 bg-[#334155] rounded-full overflow-hidden">
+                    <div className="h-full rounded-full transition-all duration-500" style={{ width: `${Math.min(m.pct_of_pipeline, 100)}%`, background: color }} />
                   </div>
                 </div>
               );
@@ -241,29 +235,29 @@ export default function Latency() {
           </div>
 
           {/* Throughput Summary */}
-          <div style={{ background: '#fff', borderRadius: 8, padding: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: 24 }}>
-            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>📊 吞吐量统计</div>
+          <div className="bg-[#1e293b] rounded-lg p-4 border border-[#334155] mb-6">
+            <div className="text-[15px] font-semibold text-[#f8fafc] mb-3">📊 吞吐量统计</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12 }}>
               {[
-                { label: '处理K线', value: data.throughput.total_bars.toLocaleString() },
-                { label: '产生信号', value: data.throughput.total_signals.toLocaleString() },
-                { label: '提交订单', value: data.throughput.total_orders.toLocaleString() },
-                { label: '成交', value: data.throughput.total_fills.toLocaleString() },
+                { label: '处理K线', value: data.throughput.total_bars.toLocaleString(), color: undefined },
+                { label: '产生信号', value: data.throughput.total_signals.toLocaleString(), color: undefined },
+                { label: '提交订单', value: data.throughput.total_orders.toLocaleString(), color: undefined },
+                { label: '成交', value: data.throughput.total_fills.toLocaleString(), color: undefined },
                 { label: '拒绝', value: data.throughput.total_rejected.toLocaleString(), color: data.throughput.total_rejected > 0 ? '#ef4444' : undefined },
-                { label: '信号率', value: `${(data.throughput.signal_ratio * 100).toFixed(1)}%` },
-                { label: '成交率', value: `${(data.throughput.fill_ratio * 100).toFixed(1)}%` },
+                { label: '信号率', value: `${(data.throughput.signal_ratio * 100).toFixed(1)}%`, color: undefined },
+                { label: '成交率', value: `${(data.throughput.fill_ratio * 100).toFixed(1)}%`, color: undefined },
               ].map(item => (
-                <div key={item.label} style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 11, color: '#9ca3af' }}>{item.label}</div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: (item as any).color || '#111' }}>{item.value}</div>
+                <div key={item.label} className="text-center">
+                  <div className="text-[11px] text-[#64748b]">{item.label}</div>
+                  <div className="text-lg font-bold" style={{ color: item.color || '#f8fafc' }}>{item.value}</div>
                 </div>
               ))}
             </div>
           </div>
 
           {/* Thresholds Reference */}
-          <div style={{ background: '#f9fafb', borderRadius: 8, padding: 16, fontSize: 12, color: '#6b7280' }}>
-            <div style={{ fontWeight: 600, marginBottom: 8, color: '#374151' }}>阈值参考</div>
+          <div className="bg-[#0f172a] rounded-lg p-4 text-xs text-[#64748b] border border-[#334155]">
+            <div className="font-semibold mb-2 text-[#94a3b8]">阈值参考</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 4 }}>
               <div>🟢 数据获取: &lt;500ms正常 | 🟡 500ms~2s警告 | 🔴 &gt;2s严重</div>
               <div>🟢 策略计算: &lt;10ms正常 | 🟡 10ms~100ms警告 | 🔴 &gt;100ms严重</div>
@@ -274,7 +268,7 @@ export default function Latency() {
 
           {/* Engine status */}
           {!data.engine_running && (
-            <div style={{ marginTop: 16, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>
+            <div className="mt-4 text-center text-[#64748b] text-sm">
               ⚠️ 引擎未运行 — 启动自动交易后将显示实时延迟数据
             </div>
           )}
