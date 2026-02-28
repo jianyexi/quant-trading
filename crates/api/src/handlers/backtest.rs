@@ -66,6 +66,7 @@ pub async fn run_backtest(
 
     let engine = BacktestEngine::new(bt_config);
 
+    let mut active_inference_mode = String::new();
     let mut strategy: Box<dyn quant_core::traits::Strategy> = match req.strategy.as_str() {
         "sma_cross" | "DualMaCrossover" => Box::new(DualMaCrossover::new(5, 20)),
         "rsi_reversal" | "RsiMeanReversion" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
@@ -77,7 +78,9 @@ pub async fn run_backtest(
                 inference_mode: quant_strategy::ml_factor::MlInferenceMode::from_str(mode),
                 ..Default::default()
             };
-            Box::new(MlFactorStrategy::new(ml_cfg))
+            let ml_strategy = MlFactorStrategy::new(ml_cfg);
+            active_inference_mode = format!("{}", ml_strategy.active_mode());
+            Box::new(ml_strategy)
         }
         _ => Box::new(DualMaCrossover::new(5, 20)),
     };
@@ -188,6 +191,7 @@ pub async fn run_backtest(
         },
         "data_source": data_source,
         "period": period,
+        "active_inference_mode": active_inference_mode,
         "status": "completed"
     })))
 }

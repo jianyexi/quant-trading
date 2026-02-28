@@ -29,7 +29,10 @@ COPY scripts/ /app/scripts/
 COPY ml_models/ /app/ml_models/
 
 # Install Python deps for ML/market data
-RUN pip3 install --break-system-packages tushare akshare lightgbm scikit-learn pandas numpy 2>/dev/null || true
+RUN pip3 install --break-system-packages tushare akshare lightgbm scikit-learn pandas numpy flask 2>/dev/null || true
+
+# Ensure logs dir and entrypoint executable
+RUN mkdir -p /app/logs && chmod +x /app/scripts/docker-entrypoint.sh
 
 WORKDIR /app
 EXPOSE 8080
@@ -37,4 +40,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -sf http://localhost:8080/api/health || exit 1
 
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 CMD ["quant", "--config", "config/default.toml", "serve"]

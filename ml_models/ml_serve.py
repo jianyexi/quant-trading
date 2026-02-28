@@ -103,6 +103,21 @@ def load_model(model_path, device):
         load_catboost_model(model_path)
     elif model_path.endswith(".pt") or model_path.endswith(".pth"):
         load_pytorch_model(model_path, device)
+    elif model_path.endswith(".model"):
+        # Auto-detect: peek at file content to determine format
+        try:
+            with open(model_path, "r") as f:
+                header = f.readline().strip()
+            if header == "tree":
+                print(f"  Auto-detected LightGBM text format for {model_path}")
+                load_lightgbm_model(model_path)
+            else:
+                print(f"  ⚠️ Unknown .model format (header: {header}), trying LightGBM")
+                load_lightgbm_model(model_path)
+        except Exception:
+            print(f"  ⚠️ Cannot read {model_path}, using dummy model")
+            MODEL = None
+            MODEL_TYPE = "dummy"
     else:
         print(f"  ⚠️ Unknown model format: {model_path}")
         print("  Using dummy model (returns 0.5 for all predictions)")
