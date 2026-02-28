@@ -117,7 +117,7 @@ fn task_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(handlers::list_tasks))
         .route("/running", get(handlers::list_running_tasks))
-        .route("/:id", get(handlers::get_task))
+        .route("/:id", get(handlers::get_task).delete(handlers::cancel_task))
 }
 
 fn journal_routes() -> Router<AppState> {

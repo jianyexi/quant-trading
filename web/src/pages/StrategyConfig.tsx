@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { StrategyConfig, StrategyParam } from '../types';
-import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, type ModelInfo, type RetrainOptions } from '../api/client';
+import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, cancelTask, type ModelInfo, type RetrainOptions } from '../api/client';
 import { useTaskPoller } from '../hooks/useTaskPoller';
 import { Save, Upload, Play, RotateCcw, Brain, Loader2, CheckCircle, AlertCircle, Zap, Database } from 'lucide-react';
 
@@ -121,8 +121,18 @@ export default function StrategyConfigPage() {
   const [trainHorizon, setTrainHorizon] = useState(5);
   const [trainThreshold, setTrainThreshold] = useState(0.01);
 
-  const { task: retrainTask, startPolling: startRetrainPolling } = useTaskPoller();
+  const { task: retrainTask, startPolling: startRetrainPolling, reset: resetRetrainTask } = useTaskPoller();
   const retraining = retrainTask?.status === 'Running';
+
+  const handleCancelRetrain = async () => {
+    const taskId = sessionStorage.getItem('task_retrain');
+    if (taskId) {
+      try { await cancelTask(taskId); } catch { /* ignore */ }
+      sessionStorage.removeItem('task_retrain');
+    }
+    resetRetrainTask();
+    showStatus('训练已取消', 'info');
+  };
 
   const activeStrategy = STRATEGIES.find((s) => s.name === selectedStrategy)!;
 
@@ -551,6 +561,14 @@ export default function StrategyConfigPage() {
             {retraining ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
             {retraining ? '训练中…' : '开始训练'}
           </button>
+          {retraining && (
+            <button
+              onClick={handleCancelRetrain}
+              className="flex items-center gap-2 px-4 py-2.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 font-medium rounded-lg text-sm transition-colors"
+            >
+              ✕ 取消训练
+            </button>
+          )}
           <span className="text-xs text-[#64748b]">
             已选: {selectedAlgos.map(a => ALGO_LABELS[a]?.label).join(', ') || '无'}
           </span>

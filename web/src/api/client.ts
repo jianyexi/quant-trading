@@ -831,3 +831,9 @@ export async function listTasks(): Promise<{ tasks: TaskRecord[] }> {
 export async function listRunningTasks(): Promise<{ tasks: TaskRecord[] }> {
   return fetchJson('/tasks/running');
 }
+
+export async function cancelTask(taskId: string): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/tasks/${taskId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`Cancel failed: ${res.status}`);
+  return res.json();
+}

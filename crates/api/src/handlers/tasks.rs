@@ -33,3 +33,18 @@ pub async fn get_task(
         None => (StatusCode::NOT_FOUND, Json(json!({"error": "Task not found"}))),
     }
 }
+
+/// Cancel a running task or delete a finished task
+pub async fn cancel_task(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> (StatusCode, Json<Value>) {
+    // Try to cancel if running, otherwise delete the record
+    if state.task_store.cancel(&id) {
+        (StatusCode::OK, Json(json!({"status": "cancelled"})))
+    } else if state.task_store.delete(&id) {
+        (StatusCode::OK, Json(json!({"status": "deleted"})))
+    } else {
+        (StatusCode::NOT_FOUND, Json(json!({"error": "Task not found"})))
+    }
+}

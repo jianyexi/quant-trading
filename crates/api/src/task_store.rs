@@ -131,6 +131,38 @@ impl TaskStore {
         );
     }
 
+    /// Cancel a running task (mark as failed with cancellation reason).
+    pub fn cancel(&self, id: &str) -> bool {
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE tasks SET status = 'failed', error = 'Cancelled by user', updated_at = ?1 WHERE id = ?2 AND status = 'running'",
+            params![now, id],
+        ).unwrap_or(0);
+        rows > 0
+    }
+
+    /// Delete a task record entirely.
+    pub fn delete(&self, id: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute("DELETE FROM tasks WHERE id = ?1", params![id]).unwrap_or(0);
+        rows > 0
+    }
+
+    /// Mark stale running tasks as failed (e.g. from server crash).
+    pub fn cleanup_stale(&self, max_age_minutes: i64) {
+        let cutoff = (Utc::now() - chrono::Duration::minutes(max_age_minutes)).to_rfc3339();
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let rows = conn.execute(
+            "UPDATE tasks SET status = 'failed', error = 'Stale: server restarted', updated_at = ?1 WHERE status = 'running' AND updated_at < ?2",
+            params![now, cutoff],
+        ).unwrap_or(0);
+        if rows > 0 {
+            tracing::warn!("🧹 Cleaned up {} stale running tasks", rows);
+        }
+    }
+
     /// Get a single task by ID.
     pub fn get(&self, id: &str) -> Option<TaskRecord> {
         let conn = self.conn.lock().unwrap();

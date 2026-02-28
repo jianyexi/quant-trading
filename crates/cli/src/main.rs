@@ -1763,6 +1763,8 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
             tracing::warn!("Failed to open tasks.db, using in-memory: {e}");
             quant_api::TaskStore::open(":memory:").expect("in-memory TaskStore")
         });
+    // Clean up stale running tasks from previous server crash
+    task_store.cleanup_stale(30);
 
     let state = AppState {
         config: std::sync::Arc::new(config.clone()),
