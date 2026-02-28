@@ -1,2 +1,6 @@
 # Force LF line endings for shell scripts (needed for Docker)
 *.sh text eol=lf
+
+# Force LF for LightGBM model files (CRLF breaks C++ parser / tree_sizes offsets)
+*.lgb.txt text eol=lf
+*.model text eol=lf

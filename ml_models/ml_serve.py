@@ -147,9 +147,42 @@ def load_onnx_model(model_path, device):
         print(f"     Output: {out.name} shape={out.shape} type={out.type}")
 
 
+def _probe_lightgbm_model(model_path):
+    """Test-load LightGBM model in a child process to survive C++ abort()."""
+    import multiprocessing
+    def _try_load(path, q):
+        try:
+            import lightgbm as lgb
+            m = lgb.Booster(model_file=path)
+            q.put(("ok", m.num_feature()))
+        except Exception as e:
+            q.put(("error", str(e)))
+
+    q = multiprocessing.Queue()
+    p = multiprocessing.Process(target=_try_load, args=(model_path, q))
+    p.start()
+    p.join(timeout=15)
+    if p.exitcode != 0:
+        return False, f"child process crashed (exit={p.exitcode})"
+    try:
+        status, info = q.get_nowait()
+        return status == "ok", info
+    except Exception:
+        return False, "no result from child"
+
+
 def load_lightgbm_model(model_path):
     global MODEL, MODEL_TYPE
     import lightgbm as lgb
+
+    # Probe in subprocess first — LightGBM C++ abort() kills the process
+    ok, info = _probe_lightgbm_model(model_path)
+    if not ok:
+        print(f"  ⚠️ LightGBM model probe failed: {info}")
+        print("  Using dummy model (returns 0.5 for all predictions)")
+        MODEL = None
+        MODEL_TYPE = "dummy"
+        return
 
     try:
         MODEL = lgb.Booster(model_file=model_path)

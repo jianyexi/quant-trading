@@ -11,6 +11,11 @@ if [ -f /app/ml_models/ml_serve.py ]; then
     done
 
     if [ -n "$MODEL_FILE" ]; then
+        # Fix CRLF line endings (Windows git checkout adds \r, crashes LightGBM C++ parser)
+        if grep -qP '\r' "/app/$MODEL_FILE" 2>/dev/null; then
+            echo "🧠 Fixing CRLF line endings in $MODEL_FILE..."
+            sed -i 's/\r$//' "/app/$MODEL_FILE"
+        fi
         echo "🧠 Starting ML inference sidecar (model: $MODEL_FILE)..."
         cd /app && python3 ml_models/ml_serve.py \
             --host 0.0.0.0 --port 18091 --tcp-port 18094 \
