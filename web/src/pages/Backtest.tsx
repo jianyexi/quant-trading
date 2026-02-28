@@ -52,6 +52,8 @@ interface BacktestResultData {
   symbol: string;
   start: string;
   end: string;
+  actual_start?: string;
+  actual_end?: string;
   initial_capital: number;
   final_value: number;
   total_return_percent: number;
@@ -388,10 +390,18 @@ export default function Backtest() {
           {/* Summary */}
           <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-4">
             <div className="flex items-center justify-between text-sm">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 <span className="text-[#94a3b8]">
-                  {result.strategy} · {result.symbol} · {result.start} ~ {result.end}
+                  {result.strategy} · {result.symbol}
                 </span>
+                <span className="text-[#f8fafc] font-mono text-xs">
+                  {result.actual_start || result.start} ~ {result.actual_end || result.end}
+                </span>
+                {result.actual_start && result.actual_end && (result.actual_start !== result.start || result.actual_end !== result.end) && (
+                  <span className="px-2 py-0.5 rounded text-xs bg-yellow-500/15 text-yellow-400" title={`请求: ${result.start} ~ ${result.end}`}>
+                    ⚠️ 实际数据范围与请求不同
+                  </span>
+                )}
                 {result.data_source != null && (
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${
                     result.data_source.startsWith('akshare') ? 'bg-green-500/15 text-green-400' : 'bg-yellow-500/15 text-yellow-400'

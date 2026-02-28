@@ -76,7 +76,11 @@ fn run_backtest_task(
         return;
     }
 
-    ts.set_progress(tid, &format!("📊 Data loaded ({} bars). Initializing strategy...", klines.len()));
+    // Track actual data date range (may differ from requested range)
+    let actual_start = klines.first().unwrap().datetime.format("%Y-%m-%d").to_string();
+    let actual_end = klines.last().unwrap().datetime.format("%Y-%m-%d").to_string();
+
+    ts.set_progress(tid, &format!("📊 Data loaded ({} bars, {} ~ {}). Initializing strategy...", klines.len(), actual_start, actual_end));
 
     // Stage 2: Build strategy
     let mut active_inference_mode = String::new();
@@ -193,6 +197,8 @@ fn run_backtest_task(
         "symbol": req.symbol,
         "start": req.start,
         "end": req.end,
+        "actual_start": actual_start,
+        "actual_end": actual_end,
         "initial_capital": capital,
         "final_value": (result.final_portfolio.total_value * 100.0).round() / 100.0,
         "total_return_percent": (m.total_return * 10000.0).round() / 100.0,
