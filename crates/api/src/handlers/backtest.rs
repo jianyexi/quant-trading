@@ -59,6 +59,9 @@ pub async fn run_backtest(
         max_holding_days: 30,
         daily_loss_limit: 0.03,
         max_drawdown_limit: 0.15,
+        use_atr_sizing: true,
+        atr_period: 14,
+        risk_per_trade: 0.02,
     };
 
     let engine = BacktestEngine::new(bt_config);
@@ -198,4 +201,68 @@ pub async fn get_backtest_results(
         "status": "not_found",
         "error": "Backtest results are not persisted. Please run a new backtest."
     }))
+}
+
+pub async fn walk_forward(
+    State(_state): State<AppState>,
+    Json(req): Json<BacktestRequest>,
+) -> (StatusCode, Json<Value>) {
+    use quant_backtest::engine::BacktestConfig;
+    use quant_backtest::walk_forward::walk_forward_validate;
+    use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy};
+    use quant_strategy::ml_factor::MlFactorStrategy;
+
+    let capital = req.capital.unwrap_or(1_000_000.0);
+    let symbol = &req.symbol;
+    let strategy_name = &req.strategy;
+
+    let (klines, _data_source) = match fetch_real_klines_with_period(symbol, &req.start, &req.end, "daily") {
+        Ok(k) if !k.is_empty() => (k, "akshare".to_string()),
+        _ => {
+            let gen = generate_backtest_klines(symbol, &req.start, &req.end);
+            if gen.is_empty() {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": "No kline data for date range"})));
+            }
+            (gen, "synthetic".to_string())
+        }
+    };
+
+    let bt_config = BacktestConfig {
+        initial_capital: capital,
+        commission_rate: 0.001,
+        stamp_tax_rate: 0.001,
+        slippage_ticks: 1,
+        position_size_pct: 0.3,
+        max_concentration: 0.30,
+        stop_loss_pct: 0.08,
+        max_holding_days: 30,
+        daily_loss_limit: 0.03,
+        max_drawdown_limit: 0.15,
+        use_atr_sizing: true,
+        atr_period: 14,
+        risk_per_trade: 0.02,
+    };
+
+    let n_folds = 5;
+    let factory: Box<dyn Fn() -> Box<dyn quant_core::traits::Strategy> + Send> = match strategy_name.as_str() {
+        "dual_ma" | "sma_cross" => Box::new(|| Box::new(DualMaCrossover::new(5, 20))),
+        "rsi" | "rsi_reversal" => Box::new(|| Box::new(RsiMeanReversion::new(14, 70.0, 30.0))),
+        "macd" | "macd_trend" => Box::new(|| Box::new(MacdMomentum::new(12, 26, 9))),
+        "multi_factor" => Box::new(|| Box::new(MultiFactorStrategy::with_defaults())),
+        "ml_factor" => Box::new(|| Box::new(MlFactorStrategy::with_defaults())),
+        other => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Unknown strategy: {}", other)})));
+        }
+    };
+
+    let result = walk_forward_validate(
+        strategy_name,
+        factory.as_ref(),
+        &klines,
+        &bt_config,
+        n_folds,
+        0.7,
+    );
+
+    (StatusCode::OK, Json(json!(result)))
 }

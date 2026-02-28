@@ -117,6 +117,27 @@ enum BacktestAction {
         #[arg(long, default_value_t = 1_000_000.0)]
         capital: f64,
     },
+    /// Run walk-forward validation
+    WalkForward {
+        /// Strategy name
+        #[arg(short, long)]
+        strategy: String,
+        /// Stock symbol
+        #[arg(long)]
+        symbol: String,
+        /// Start date (YYYY-MM-DD)
+        #[arg(long)]
+        start: String,
+        /// End date (YYYY-MM-DD)
+        #[arg(long)]
+        end: String,
+        /// Number of folds
+        #[arg(long, default_value_t = 5)]
+        folds: usize,
+        /// Initial capital
+        #[arg(long, default_value_t = 1_000_000.0)]
+        capital: f64,
+    },
     /// View backtest report
     Report {
         /// Backtest run ID
@@ -308,6 +329,16 @@ async fn main() -> anyhow::Result<()> {
                 capital,
             } => {
                 cmd_backtest_run(&strategy, &symbol, &start, &end, capital);
+            }
+            BacktestAction::WalkForward {
+                strategy,
+                symbol,
+                start,
+                end,
+                folds,
+                capital,
+            } => {
+                cmd_walk_forward(&strategy, &symbol, &start, &end, folds, capital);
             }
             BacktestAction::Report { id } => {
                 cmd_backtest_report(&id);
@@ -528,12 +559,15 @@ fn cmd_backtest_run(strategy: &str, symbol: &str, start: &str, end: &str, capita
         commission_rate: 0.00025,  // 万分之2.5
         stamp_tax_rate: 0.001,    // 千分之一 (卖出)
         slippage_ticks: 1,
-        position_size_pct: 0.3,   // 每次建仓30%
+        position_size_pct: 0.3,   // 每次建仓上限30%
         max_concentration: 0.30,
         stop_loss_pct: 0.08,      // 8%止损
         max_holding_days: 30,
         daily_loss_limit: 0.03,   // 日亏损限制3%
         max_drawdown_limit: 0.15, // 最大回撤15%暂停
+        use_atr_sizing: true,     // ATR波动率调仓
+        atr_period: 14,
+        risk_per_trade: 0.02,     // 每笔风险2%
     };
 
     let engine = BacktestEngine::new(bt_config);
@@ -604,6 +638,76 @@ fn cmd_backtest_run(strategy: &str, symbol: &str, start: &str, end: &str, capita
         println!("  📉 Equity Curve:");
         println!("    Start: ¥{:.2}  →  Min: ¥{:.2}  →  Max: ¥{:.2}  →  End: ¥{:.2}",
             start_eq, min_eq, max_eq, end_eq);
+    }
+}
+
+fn cmd_walk_forward(strategy: &str, symbol: &str, start: &str, end: &str, n_folds: usize, capital: f64) {
+    use quant_backtest::walk_forward::{walk_forward_validate, format_walk_forward_report};
+
+    println!("🔄 Walk-Forward Validation");
+    println!("  Strategy: {strategy}");
+    println!("  Symbol:   {symbol}");
+    println!("  Period:   {start} → {end}");
+    println!("  Folds:    {n_folds}");
+    println!();
+
+    let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d")
+        .unwrap_or(NaiveDate::from_ymd_opt(2023, 1, 1).unwrap());
+    let end_date = NaiveDate::parse_from_str(end, "%Y-%m-%d")
+        .unwrap_or(NaiveDate::from_ymd_opt(2024, 12, 31).unwrap());
+
+    let klines = generate_realistic_klines(symbol, start_date, end_date);
+    if klines.is_empty() {
+        println!("  ❌ No data for {symbol}");
+        return;
+    }
+    println!("  ⏳ Processing {} daily bars across {} folds ...", klines.len(), n_folds);
+
+    let bt_config = BacktestConfig {
+        initial_capital: capital,
+        commission_rate: 0.00025,
+        stamp_tax_rate: 0.001,
+        slippage_ticks: 1,
+        position_size_pct: 0.3,
+        max_concentration: 0.30,
+        stop_loss_pct: 0.08,
+        max_holding_days: 30,
+        daily_loss_limit: 0.03,
+        max_drawdown_limit: 0.15,
+        use_atr_sizing: true,
+        atr_period: 14,
+        risk_per_trade: 0.02,
+    };
+
+    let strategy_name = strategy.to_string();
+    let factory: Box<dyn Fn() -> Box<dyn quant_core::traits::Strategy>> = match strategy {
+        "sma_cross" => Box::new(|| Box::new(DualMaCrossover::new(5, 20))),
+        "rsi_reversal" => Box::new(|| Box::new(RsiMeanReversion::new(14, 70.0, 30.0))),
+        "macd_trend" => Box::new(|| Box::new(MacdMomentum::new(12, 26, 9))),
+        "multi_factor" => Box::new(|| Box::new(MultiFactorStrategy::with_defaults())),
+        "ml_factor" => Box::new(|| Box::new(MlFactorStrategy::with_defaults())),
+        other => {
+            println!("  ❌ Unknown strategy: {other}");
+            return;
+        }
+    };
+
+    let result = walk_forward_validate(
+        &strategy_name,
+        factory.as_ref(),
+        &klines,
+        &bt_config,
+        n_folds,
+        0.7,
+    );
+
+    println!("{}", format_walk_forward_report(&result));
+
+    // Interpretation
+    if result.degradation_ratio > 0.0 && result.degradation_ratio < 0.5 {
+        println!("  ⚠️  Degradation ratio < 0.5 → strategy may be overfit to training data");
+    } else if result.degradation_ratio >= 0.5 {
+        println!("  ✅ Degradation ratio ≥ 0.5 → reasonable out-of-sample performance");
     }
 }
 

@@ -131,12 +131,24 @@ pub struct BacktestConfig {
     /// Max portfolio drawdown from peak (e.g. 0.15 = 15%). 0 = disabled.
     #[serde(default)]
     pub max_drawdown_limit: f64,
+    /// Enable ATR-based position sizing (inverse volatility). Default true.
+    #[serde(default = "default_true")]
+    pub use_atr_sizing: bool,
+    /// ATR lookback period for volatility sizing. Default 14.
+    #[serde(default = "default_atr_period")]
+    pub atr_period: usize,
+    /// Target risk per trade as fraction of portfolio (e.g. 0.02 = 2%). Default 0.02.
+    #[serde(default = "default_risk_per_trade")]
+    pub risk_per_trade: f64,
 }
 
 fn default_position_size_pct() -> f64 { 0.10 }
 fn default_max_concentration() -> f64 { 0.30 }
 fn default_stop_loss_pct() -> f64 { 0.08 }
 fn default_max_holding_days() -> u32 { 30 }
+fn default_true() -> bool { true }
+fn default_atr_period() -> usize { 14 }
+fn default_risk_per_trade() -> f64 { 0.02 }
 
 pub struct BacktestResult {
     pub config: BacktestConfig,
@@ -223,6 +235,9 @@ impl BacktestEngine {
 
         // Pending signal from previous bar (signal on bar N → fill at bar N+1 open)
         let mut pending_signal: Option<Signal> = None;
+        // ATR tracking: rolling true range for volatility-based position sizing
+        let mut true_ranges: Vec<f64> = Vec::new();
+        let mut prev_close: f64 = 0.0;
         // Daily PnL tracking
         let mut day_start_value = self.config.initial_capital;
         let mut current_day: Option<chrono::NaiveDate> = None;
@@ -342,7 +357,22 @@ impl BacktestEngine {
                     if should_trade {
                         let quantity = match side {
                             OrderSide::Buy => {
-                                let allocation = portfolio.total_value * self.config.position_size_pct;
+                                // ATR-based position sizing: risk_per_trade / ATR determines shares
+                                // Fallback to fixed % if ATR not available or disabled
+                                let atr_pct = if self.config.use_atr_sizing && true_ranges.len() >= self.config.atr_period {
+                                    let atr: f64 = true_ranges[true_ranges.len() - self.config.atr_period..]
+                                        .iter().sum::<f64>() / self.config.atr_period as f64;
+                                    let atr_ratio = atr / kline.open;
+                                    // Scale: higher vol → smaller position
+                                    // position_size = risk_per_trade / atr_ratio, capped by position_size_pct
+                                    let vol_scaled = (self.config.risk_per_trade / atr_ratio.max(0.001))
+                                        .min(self.config.position_size_pct);
+                                    vol_scaled
+                                } else {
+                                    self.config.position_size_pct
+                                };
+
+                                let allocation = portfolio.total_value * atr_pct;
                                 let budget = allocation.min(portfolio.cash);
                                 let existing_value = portfolio
                                     .positions
@@ -524,6 +554,20 @@ impl BacktestEngine {
                 .map(|p| p.current_price * p.quantity)
                 .sum();
             portfolio.total_value = portfolio.cash + positions_value;
+
+            // Update ATR (true range) ring buffer
+            let tr = if prev_close > 0.0 {
+                (kline.high - kline.low)
+                    .max((kline.high - prev_close).abs())
+                    .max((kline.low - prev_close).abs())
+            } else {
+                kline.high - kline.low
+            };
+            true_ranges.push(tr);
+            if true_ranges.len() > self.config.atr_period + 10 {
+                true_ranges.remove(0);
+            }
+            prev_close = kline.close;
 
             // Track drawdown
             if portfolio.total_value > peak_value {
