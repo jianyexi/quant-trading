@@ -40,7 +40,7 @@ pub async fn trade_start(
     Json(req): Json<TradeStartRequest>,
 ) -> (StatusCode, Json<Value>) {
     use quant_broker::engine::{EngineConfig, TradingEngine};
-    use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum};
+    use quant_strategy::factory::{create_strategy, StrategyOptions};
 
     let mut engine_guard = state.engine.lock().await;
 
@@ -165,23 +165,11 @@ pub async fn trade_start(
     let sentiment_store = state.sentiment_store.clone();
     let inference_mode_str = req.inference_mode.unwrap_or_else(|| "embedded".into());
     engine.start(move || -> Box<dyn quant_core::traits::Strategy> {
-        match strat_name.as_str() {
-            "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
-            "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
-            "multi_factor" => Box::new(quant_strategy::builtin::MultiFactorStrategy::with_defaults()),
-            "sentiment_aware" => Box::new(quant_strategy::sentiment::SentimentAwareStrategy::with_defaults(
-                Box::new(quant_strategy::builtin::MultiFactorStrategy::with_defaults()),
-                sentiment_store.clone(),
-            )),
-            "ml_factor" => {
-                let ml_cfg = quant_strategy::ml_factor::MlFactorConfig {
-                    inference_mode: quant_strategy::ml_factor::MlInferenceMode::from_str(&inference_mode_str),
-                    ..Default::default()
-                };
-                Box::new(quant_strategy::ml_factor::MlFactorStrategy::new(ml_cfg))
-            }
-            _ => Box::new(DualMaCrossover::new(5, 20)),
-        }
+        create_strategy(&strat_name, StrategyOptions {
+            inference_mode: Some(inference_mode_str.clone()),
+            sentiment_store: Some(sentiment_store.clone()),
+        }).map(|c| c.strategy)
+         .unwrap_or_else(|_| Box::new(quant_strategy::builtin::DualMaCrossover::new(5, 20)))
     }).await;
 
     *engine_guard = Some(engine);

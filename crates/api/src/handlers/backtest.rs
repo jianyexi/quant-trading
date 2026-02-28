@@ -45,8 +45,7 @@ fn run_backtest_task(
     period: &str,
 ) {
     use quant_backtest::engine::{BacktestConfig, BacktestEngine};
-    use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy, MultiFactorConfig};
-    use quant_strategy::ml_factor::{MlFactorStrategy, MlFactorConfig};
+    use quant_strategy::factory::{create_strategy, StrategyOptions};
 
     // Stage 1: Fetch data
     ts.set_progress(tid, "📊 Fetching market data...");
@@ -130,24 +129,18 @@ fn run_backtest_task(
     ts.set_progress(tid, &format!("📊 Data loaded ({} bars, {} ~ {}). Initializing strategy...", klines.len(), actual_start, actual_end));
 
     // Stage 2: Build strategy
-    let mut active_inference_mode = String::new();
-    let mut strategy: Box<dyn quant_core::traits::Strategy> = match req.strategy.as_str() {
-        "sma_cross" | "DualMaCrossover" => Box::new(DualMaCrossover::new(5, 20)),
-        "rsi_reversal" | "RsiMeanReversion" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
-        "macd_trend" | "MacdMomentum" => Box::new(MacdMomentum::new(12, 26, 9)),
-        "multi_factor" | "MultiFactorModel" => Box::new(MultiFactorStrategy::new(MultiFactorConfig::default())),
-        "ml_factor" | "MlFactor" => {
-            let mode = req.inference_mode.as_deref().unwrap_or("embedded");
-            let ml_cfg = MlFactorConfig {
-                inference_mode: quant_strategy::ml_factor::MlInferenceMode::from_str(mode),
-                ..Default::default()
-            };
-            let ml_strategy = MlFactorStrategy::new(ml_cfg);
-            active_inference_mode = format!("{}", ml_strategy.active_mode());
-            Box::new(ml_strategy)
+    let created = match create_strategy(&req.strategy, StrategyOptions {
+        inference_mode: req.inference_mode.clone(),
+        ..Default::default()
+    }) {
+        Ok(c) => c,
+        Err(e) => {
+            ts.fail(tid, &e);
+            return;
         }
-        _ => Box::new(DualMaCrossover::new(5, 20)),
     };
+    let mut strategy = created.strategy;
+    let active_inference_mode = created.active_inference_mode;
 
     // Stage 3: Run backtest
     ts.set_progress(tid, &format!("🚀 Running backtest on {} bars...", klines.len()));
@@ -320,8 +313,7 @@ pub async fn walk_forward(
 ) -> (StatusCode, Json<Value>) {
     use quant_backtest::engine::BacktestConfig;
     use quant_backtest::walk_forward::walk_forward_validate;
-    use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy};
-    use quant_strategy::ml_factor::MlFactorStrategy;
+    use quant_strategy::factory::{create_strategy, StrategyOptions};
 
     let capital = req.capital.unwrap_or(1_000_000.0);
     let symbol = &req.symbol;
@@ -358,16 +350,15 @@ pub async fn walk_forward(
     };
 
     let n_folds = 5;
-    let factory: Box<dyn Fn() -> Box<dyn quant_core::traits::Strategy> + Send> = match strategy_name.as_str() {
-        "dual_ma" | "sma_cross" => Box::new(|| Box::new(DualMaCrossover::new(5, 20))),
-        "rsi" | "rsi_reversal" => Box::new(|| Box::new(RsiMeanReversion::new(14, 70.0, 30.0))),
-        "macd" | "macd_trend" => Box::new(|| Box::new(MacdMomentum::new(12, 26, 9))),
-        "multi_factor" => Box::new(|| Box::new(MultiFactorStrategy::with_defaults())),
-        "ml_factor" => Box::new(|| Box::new(MlFactorStrategy::with_defaults())),
-        other => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Unknown strategy: {}", other)})));
-        }
-    };
+    let sname = strategy_name.clone();
+    let inference_mode = req.inference_mode.clone();
+    let factory: Box<dyn Fn() -> Box<dyn quant_core::traits::Strategy> + Send> = Box::new(move || {
+        create_strategy(&sname, StrategyOptions {
+            inference_mode: inference_mode.clone(),
+            ..Default::default()
+        }).map(|c| c.strategy)
+         .unwrap_or_else(|_| Box::new(quant_strategy::builtin::DualMaCrossover::new(5, 20)))
+    });
 
     let result = walk_forward_validate(
         strategy_name,

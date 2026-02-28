@@ -16,11 +16,11 @@ use quant_llm::{
     tools::{get_all_tools, ToolExecutor},
 };
 use quant_broker::engine::{EngineConfig, TradingEngine};
-use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy};
+use quant_strategy::builtin::DualMaCrossover;
 use quant_strategy::indicators::{SMA, RSI};
 use quant_strategy::screener::{ScreenerConfig, StockScreener};
-use quant_strategy::sentiment::{SentimentStore, SentimentAwareStrategy};
-use quant_strategy::ml_factor::MlFactorStrategy;
+use quant_strategy::sentiment::SentimentStore;
+use quant_strategy::factory::{create_strategy, StrategyOptions};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser)]
@@ -536,19 +536,10 @@ fn cmd_backtest_run(strategy: &str, symbol: &str, start: &str, end: &str, capita
     println!("  ⏳ Processing {} daily bars ...", klines.len());
 
     // Create strategy instance
-    let mut strat: Box<dyn quant_core::traits::Strategy> = match strategy {
-        "sma_cross" => Box::new(DualMaCrossover::new(5, 20)),
-        "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
-        "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
-        "multi_factor" => Box::new(MultiFactorStrategy::with_defaults()),
-        "sentiment_aware" => Box::new(SentimentAwareStrategy::with_defaults(
-            Box::new(MultiFactorStrategy::with_defaults()),
-            SentimentStore::new(),
-        )),
-        "ml_factor" => Box::new(MlFactorStrategy::with_defaults()),
-        other => {
-            println!("  ❌ Unknown strategy: {other}");
-            println!("  Available: sma_cross, rsi_reversal, macd_trend, multi_factor, sentiment_aware, ml_factor");
+    let mut strat: Box<dyn quant_core::traits::Strategy> = match create_strategy(strategy, StrategyOptions::default()) {
+        Ok(c) => c.strategy,
+        Err(e) => {
+            println!("  ❌ {e}");
             return;
         }
     };
@@ -680,17 +671,12 @@ fn cmd_walk_forward(strategy: &str, symbol: &str, start: &str, end: &str, n_fold
     };
 
     let strategy_name = strategy.to_string();
-    let factory: Box<dyn Fn() -> Box<dyn quant_core::traits::Strategy>> = match strategy {
-        "sma_cross" => Box::new(|| Box::new(DualMaCrossover::new(5, 20))),
-        "rsi_reversal" => Box::new(|| Box::new(RsiMeanReversion::new(14, 70.0, 30.0))),
-        "macd_trend" => Box::new(|| Box::new(MacdMomentum::new(12, 26, 9))),
-        "multi_factor" => Box::new(|| Box::new(MultiFactorStrategy::with_defaults())),
-        "ml_factor" => Box::new(|| Box::new(MlFactorStrategy::with_defaults())),
-        other => {
-            println!("  ❌ Unknown strategy: {other}");
-            return;
-        }
-    };
+    let sname = strategy_name.clone();
+    let factory: Box<dyn Fn() -> Box<dyn quant_core::traits::Strategy>> = Box::new(move || {
+        create_strategy(&sname, StrategyOptions::default())
+            .map(|c| c.strategy)
+            .unwrap_or_else(|_| Box::new(DualMaCrossover::new(5, 20)))
+    });
 
     let result = walk_forward_validate(
         &strategy_name,
@@ -1195,7 +1181,6 @@ async fn cmd_trade_paper(strategy: &str, symbol: &str, config: &AppConfig) {
 // ── Auto Trading Command ────────────────────────────────────────────
 
 async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, position_size: f64, config: &AppConfig) {
-    use quant_strategy::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy};
 
     let symbols: Vec<String> = symbols_str.split(',').map(|s| s.trim().to_string()).collect();
 
@@ -1235,17 +1220,9 @@ async fn cmd_trade_auto(strategy: &str, symbols_str: &str, interval: u64, positi
     let strategy_name = strategy.to_string();
     let mut engine = TradingEngine::new(engine_config);
     engine.start(move || -> Box<dyn quant_core::traits::Strategy> {
-        match strategy_name.as_str() {
-            "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
-            "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
-            "multi_factor" => Box::new(MultiFactorStrategy::with_defaults()),
-            "sentiment_aware" => Box::new(SentimentAwareStrategy::with_defaults(
-                Box::new(MultiFactorStrategy::with_defaults()),
-                SentimentStore::new(),
-            )),
-            "ml_factor" => Box::new(MlFactorStrategy::with_defaults()),
-            _ => Box::new(DualMaCrossover::new(5, 20)),
-        }
+        create_strategy(&strategy_name, StrategyOptions::default())
+            .map(|c| c.strategy)
+            .unwrap_or_else(|_| Box::new(DualMaCrossover::new(5, 20)))
     }).await;
 
     println!("  ✅ Engine running. Press Ctrl+C to stop or type 'status'/'stop'.");
@@ -1398,17 +1375,9 @@ async fn cmd_trade_qmt(strategy: &str, symbols_str: &str, interval: u64, positio
     let strategy_name = strategy.to_string();
     let mut engine = TradingEngine::new_with_broker(engine_config, qmt_broker);
     engine.start(move || -> Box<dyn quant_core::traits::Strategy> {
-        match strategy_name.as_str() {
-            "rsi_reversal" => Box::new(RsiMeanReversion::new(14, 70.0, 30.0)),
-            "macd_trend" => Box::new(MacdMomentum::new(12, 26, 9)),
-            "multi_factor" => Box::new(MultiFactorStrategy::with_defaults()),
-            "sentiment_aware" => Box::new(SentimentAwareStrategy::with_defaults(
-                Box::new(MultiFactorStrategy::with_defaults()),
-                SentimentStore::new(),
-            )),
-            "ml_factor" => Box::new(MlFactorStrategy::with_defaults()),
-            _ => Box::new(DualMaCrossover::new(5, 20)),
-        }
+        create_strategy(&strategy_name, StrategyOptions::default())
+            .map(|c| c.strategy)
+            .unwrap_or_else(|_| Box::new(DualMaCrossover::new(5, 20)))
     }).await;
 
     println!("  🔴 LIVE engine running. Type 'status' or 'stop'.");

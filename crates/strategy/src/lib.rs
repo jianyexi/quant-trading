@@ -4,6 +4,7 @@ pub mod signals;
 pub mod builtin;
 pub mod screener;
 pub mod sentiment;
+pub mod factory;
 #[cfg(feature = "collector")]
 pub mod collector;
 
