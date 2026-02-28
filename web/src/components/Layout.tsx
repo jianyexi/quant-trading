@@ -22,7 +22,7 @@ export default function Layout() {
   const location = useLocation();
 
   useEffect(() => {
-    const poll = () => getUnreadCount().then(d => setUnread(d.unread_count)).catch(() => {});
+    const poll = () => getUnreadCount().then(d => setUnread(d?.unread_count ?? 0)).catch(() => {});
     poll();
     const id = setInterval(poll, 15000);
     return () => clearInterval(id);

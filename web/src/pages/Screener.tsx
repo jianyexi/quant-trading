@@ -146,7 +146,7 @@ export default function Screener() {
       )}
 
       {/* Results Table */}
-      {result && result.candidates.length > 0 && (
+      {result && result.candidates?.length > 0 && (
         <div className="bg-[#1e293b] rounded-xl border border-[#334155] overflow-hidden">
           <div className="px-5 py-3 border-b border-[#334155]">
             <h2 className="text-lg font-semibold text-[#f8fafc]">🏆 推荐股票</h2>
@@ -169,7 +169,7 @@ export default function Screener() {
               </tr>
             </thead>
             <tbody>
-              {result.candidates.map((c, i) => (
+              {(result.candidates ?? []).map((c, i) => (
                 <>
                   <tr key={c.symbol} className="border-b border-[#334155]/50 hover:bg-[#334155]/30 transition-colors">
                     <td className="px-4 py-3 text-[#f8fafc] font-bold">{i + 1}</td>
@@ -222,7 +222,7 @@ export default function Screener() {
         </div>
       )}
 
-      {result && result.candidates.length === 0 && (
+      {result && (result.candidates?.length ?? 0) === 0 && (
         <div className="bg-[#1e293b] rounded-xl p-8 border border-[#334155] text-center text-[#94a3b8]">
           没有找到满足条件的股票，请降低策略共识要求。
         </div>
