@@ -151,10 +151,16 @@ def load_lightgbm_model(model_path):
     global MODEL, MODEL_TYPE
     import lightgbm as lgb
 
-    MODEL = lgb.Booster(model_file=model_path)
-    MODEL_TYPE = "lightgbm"
-    print(f"  ✅ LightGBM model loaded: {model_path}")
-    print(f"     Features: {MODEL.num_feature()}")
+    try:
+        MODEL = lgb.Booster(model_file=model_path)
+        MODEL_TYPE = "lightgbm"
+        print(f"  ✅ LightGBM model loaded: {model_path}")
+        print(f"     Features: {MODEL.num_feature()}")
+    except Exception as e:
+        print(f"  ⚠️ LightGBM model load failed: {e}")
+        print("  Using dummy model (returns 0.5 for all predictions)")
+        MODEL = None
+        MODEL_TYPE = "dummy"
 
 
 def load_xgboost_model(model_path):

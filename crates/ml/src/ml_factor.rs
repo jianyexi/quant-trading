@@ -716,19 +716,27 @@ impl MlFactorStrategy {
                     }
                 }
                 MlInferenceMode::Embedded => {
-                    match LightGBMModel::load(&cfg.model_path) {
-                        Ok(model) => {
-                            tracing::info!(
-                                "🧠 ML inference: Embedded LightGBM ({} trees) from {}",
-                                model.num_trees(), cfg.model_path
-                            );
-                            return (None, None, Some(model), MlInferenceMode::Embedded);
-                        }
-                        Err(e) => {
-                            if cfg.inference_mode == MlInferenceMode::Embedded {
-                                tracing::warn!("🧠 Embedded model load failed: {}", e);
+                    // Try configured path first, then fallback paths
+                    let paths = [
+                        cfg.model_path.clone(),
+                        "ml_models/factor_model.lgb.txt".to_string(),
+                        "ml_models/factor_model.model".to_string(),
+                    ];
+                    let mut loaded = false;
+                    for path in &paths {
+                        match LightGBMModel::load(path) {
+                            Ok(model) => {
+                                tracing::info!(
+                                    "🧠 ML inference: Embedded LightGBM ({} trees) from {}",
+                                    model.num_trees(), path
+                                );
+                                return (None, None, Some(model), MlInferenceMode::Embedded);
                             }
+                            Err(_) => {}
                         }
+                    }
+                    if !loaded && cfg.inference_mode == MlInferenceMode::Embedded {
+                        tracing::warn!("🧠 Embedded model load failed from all paths: {:?}", paths);
                     }
                 }
                 MlInferenceMode::TcpMq => {
