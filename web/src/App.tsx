@@ -17,6 +17,7 @@ import Notifications from './pages/Notifications';
 import Metrics from './pages/Metrics';
 import Reports from './pages/Reports';
 import Latency from './pages/Latency';
+import Pipeline from './pages/Pipeline';
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
           <Route path="market" element={<MarketData />} />
           <Route path="strategy" element={<StrategyConfig />} />
           <Route path="backtest" element={<Backtest />} />
+          <Route path="pipeline" element={<Pipeline />} />
           <Route path="screener" element={<Screener />} />
           <Route path="autotrade" element={<AutoTrade />} />
           <Route path="risk" element={<RiskManagement />} />
