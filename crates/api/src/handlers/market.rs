@@ -501,7 +501,10 @@ pub async fn sync_data(
     Json(req): Json<SyncDataRequest>,
 ) -> Json<Value> {
     let ts = state.task_store.clone();
-    let task_id = ts.create("data_sync");
+    let params_json = serde_json::to_string(&json!({
+        "symbols": req.symbols, "start_date": req.start_date, "end_date": req.end_date,
+    })).unwrap_or_default();
+    let task_id = ts.create_with_params("data_sync", Some(&params_json));
     ts.set_progress(&task_id, &format!("Syncing {} symbols...", req.symbols.len()));
 
     let symbols_str = req.symbols.join(",");
@@ -510,18 +513,22 @@ pub async fn sync_data(
     let tid = task_id.clone();
 
     tokio::task::spawn_blocking(move || {
-        // Use market_data.py sync_cache command
-        let result = std::process::Command::new("python3")
-            .args(["scripts/market_data.py", "sync_cache", &symbols_str, &start, &end])
+        let python = match super::find_python() {
+            Some(p) => p,
+            None => { ts.fail(&tid, "Python not found"); return; }
+        };
+        let result = std::process::Command::new(&python)
+            .args(["scripts/market_cache.py", "warm_symbols", &symbols_str, &start, &end])
             .output();
         match result {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let combined = if stderr.is_empty() { stdout } else { format!("{}\n{}", stdout, stderr) };
                 if output.status.success() {
-                    ts.complete(&tid, &stdout);
+                    ts.complete(&tid, &combined);
                 } else {
-                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    ts.fail(&tid, &format!("exit {}: {}", output.status, stderr));
+                    ts.fail(&tid, &format!("exit {}: {}", output.status, combined));
                 }
             }
             Err(e) => ts.fail(&tid, &format!("spawn error: {}", e)),

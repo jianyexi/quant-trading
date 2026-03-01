@@ -7,6 +7,8 @@ import {
   mlRetrain,
   runBacktest,
   getBacktestResults,
+  getCacheStatus,
+  syncData,
 } from '../api/client';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
@@ -45,8 +47,8 @@ interface BacktestConfig {
 
 /* ── Constants ─────────────────────────────────────────────────────── */
 
-const STEP_LABELS = ['因子挖掘', 'ML 训练', '策略回测'] as const;
-const STEP_ICONS = ['🔬', '🧠', '📊'] as const;
+const STEP_LABELS = ['数据准备', '因子挖掘', 'ML 训练', '策略回测'] as const;
+const STEP_ICONS = ['📡', '🔬', '🧠', '📊'] as const;
 
 const STRATEGIES = [
   { value: 'ml_factor', label: 'ML因子 (推荐)' },
@@ -152,12 +154,18 @@ export default function Pipeline() {
     period: 'daily',
   });
 
-  // Step statuses
-  const [stepStatus, setStepStatus] = useState<StepStatus[]>(['idle', 'idle', 'idle']);
+  // Step statuses (4 steps now)
+  const [stepStatus, setStepStatus] = useState<StepStatus[]>(['idle', 'idle', 'idle', 'idle']);
 
-  // Task managers for step 1 (mining) and step 2 (training)
+  // Task managers: step 0 (data sync), step 1 (mining), step 2 (training)
+  const tmSync = useTaskManager('pipeline_sync');
   const tmMine = useTaskManager('pipeline_mine');
   const tmTrain = useTaskManager('pipeline_train');
+
+  // Cache status for Step 0
+  interface CacheInfo { symbol: string; bar_count: number; min_date: string; max_date: string }
+  const [cacheInfo, setCacheInfo] = useState<CacheInfo[]>([]);
+  const [cacheLoading, setCacheLoading] = useState(false);
 
   // Step 3 uses backtest polling
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -168,10 +176,10 @@ export default function Pipeline() {
   const autoRef = useRef(false);
 
   // Which steps to include in pipeline
-  const [enableStep, setEnableStep] = useState([true, true, true]);
+  const [enableStep, setEnableStep] = useState([true, true, true, true]);
 
   // Logs for each step
-  const [stepLogs, setStepLogs] = useState<string[]>(['', '', '']);
+  const [stepLogs, setStepLogs] = useState<string[]>(['', '', '', '']);
 
   const updateStatus = (idx: number, s: StepStatus) => {
     setStepStatus(prev => { const n = [...prev]; n[idx] = s; return n; });
@@ -180,11 +188,46 @@ export default function Pipeline() {
     setStepLogs(prev => { const n = [...prev]; n[idx] = (n[idx] ? n[idx] + '\n' : '') + msg; return n; });
   };
 
+  /* ── Step 0: Data Fetch / Cache Check ──────────────────────────── */
+
+  const checkCache = useCallback(async () => {
+    setCacheLoading(true);
+    try {
+      const res = await getCacheStatus();
+      setCacheInfo(res.symbols || []);
+    } catch { /* ignore */ }
+    setCacheLoading(false);
+  }, []);
+
+  // Check cache on mount and when symbols change
+  useEffect(() => { checkCache(); }, [checkCache]);
+
+  const runDataSync = useCallback(async () => {
+    updateStatus(0, 'running');
+    setStepLogs(prev => { const n = [...prev]; n[0] = ''; return n; });
+
+    const syms = shared.symbols.split(',').map(s => s.trim()).filter(Boolean);
+    await tmSync.submit(() => syncData(syms, shared.start_date, shared.end_date));
+  }, [shared, tmSync]);
+
+  // Watch sync task completion
+  useEffect(() => {
+    if (tmSync.task?.status === 'Completed') {
+      updateStatus(0, 'done');
+      appendLog(0, '✅ 数据准备完成');
+      checkCache(); // Refresh cache info
+    } else if (tmSync.task?.status === 'Failed') {
+      updateStatus(0, 'error');
+      appendLog(0, '❌ 数据同步失败: ' + (tmSync.error || ''));
+      autoRef.current = false;
+    }
+  }, [tmSync.task?.status, tmSync.error, checkCache]);
+
   /* ── Step 1: Factor Mining ──────────────────────────────────────── */
 
   const runMining = useCallback(async () => {
-    updateStatus(0, 'running');
-    setStepLogs(prev => { const n = [...prev]; n[0] = ''; return n; });
+    updateStatus(1, 'running');
+    setStepLogs(prev => { const n = [...prev]; n[1] = ''; return n; });
 
     const params = {
       data_source: shared.data_source,
@@ -214,11 +257,11 @@ export default function Pipeline() {
   // Watch mining task completion
   useEffect(() => {
     if (tmMine.task?.status === 'Completed') {
-      updateStatus(0, 'done');
-      appendLog(0, '✅ 因子挖掘完成');
+      updateStatus(1, 'done');
+      appendLog(1, '✅ 因子挖掘完成');
     } else if (tmMine.task?.status === 'Failed') {
-      updateStatus(0, 'error');
-      appendLog(0, '❌ 因子挖掘失败: ' + (tmMine.error || ''));
+      updateStatus(1, 'error');
+      appendLog(1, '❌ 因子挖掘失败: ' + (tmMine.error || ''));
       autoRef.current = false;
     }
   }, [tmMine.task?.status, tmMine.error]);
@@ -226,8 +269,8 @@ export default function Pipeline() {
   /* ── Step 2: ML Training ────────────────────────────────────────── */
 
   const runTraining = useCallback(async () => {
-    updateStatus(1, 'running');
-    setStepLogs(prev => { const n = [...prev]; n[1] = ''; return n; });
+    updateStatus(2, 'running');
+    setStepLogs(prev => { const n = [...prev]; n[2] = ''; return n; });
 
     await tmTrain.submit(() => mlRetrain({
       algorithms: train.algorithms,
@@ -243,11 +286,11 @@ export default function Pipeline() {
   // Watch training task completion
   useEffect(() => {
     if (tmTrain.task?.status === 'Completed') {
-      updateStatus(1, 'done');
-      appendLog(1, '✅ 模型训练完成');
+      updateStatus(2, 'done');
+      appendLog(2, '✅ 模型训练完成');
     } else if (tmTrain.task?.status === 'Failed') {
-      updateStatus(1, 'error');
-      appendLog(1, '❌ 模型训练失败: ' + (tmTrain.error || ''));
+      updateStatus(2, 'error');
+      appendLog(2, '❌ 模型训练失败: ' + (tmTrain.error || ''));
       autoRef.current = false;
     }
   }, [tmTrain.task?.status, tmTrain.error]);
@@ -255,10 +298,10 @@ export default function Pipeline() {
   /* ── Step 3: Backtest ───────────────────────────────────────────── */
 
   const runBacktestStep = useCallback(async () => {
-    updateStatus(2, 'running');
+    updateStatus(3, 'running');
     setBtResult(null);
     setBtError('');
-    setStepLogs(prev => { const n = [...prev]; n[2] = ''; return n; });
+    setStepLogs(prev => { const n = [...prev]; n[3] = ''; return n; });
 
     try {
       const syms = shared.symbols.split(',').map(s => s.trim()).filter(Boolean);
@@ -284,19 +327,19 @@ export default function Pipeline() {
           if (r.status === 'completed' || r.status === 'Completed') {
             if (btPollRef.current) clearInterval(btPollRef.current);
             setBtResult(r);
-            updateStatus(2, 'done');
-            appendLog(2, '✅ 回测完成');
+            updateStatus(3, 'done');
+            appendLog(3, '✅ 回测完成');
           } else if (r.status === 'failed' || r.status === 'Failed') {
             if (btPollRef.current) clearInterval(btPollRef.current);
             setBtError(r.error || '回测失败');
-            updateStatus(2, 'error');
+            updateStatus(3, 'error');
             autoRef.current = false;
           }
         } catch { /* continue polling */ }
       }, 1500);
     } catch (e: any) {
       setBtError(e.message || '回测请求失败');
-      updateStatus(2, 'error');
+      updateStatus(3, 'error');
       autoRef.current = false;
     }
   }, [shared, bt]);
@@ -311,53 +354,71 @@ export default function Pipeline() {
   useEffect(() => {
     if (!autoRef.current) return;
 
-    // Step 1 done → start step 2 (or skip)
+    // Step 0 done → start step 1 (or skip)
     if (stepStatus[0] === 'done' && stepStatus[1] === 'idle') {
       if (enableStep[1]) {
-        runTraining();
+        runMining();
       } else {
         updateStatus(1, 'skipped');
+      }
+    }
+
+    // Step 0 skipped → start step 1
+    if (stepStatus[0] === 'skipped' && stepStatus[1] === 'idle') {
+      if (enableStep[1]) {
+        runMining();
+      } else {
+        updateStatus(1, 'skipped');
+      }
+    }
+
+    // Step 1 done → start step 2 (or skip)
+    if (stepStatus[1] === 'done' && stepStatus[2] === 'idle') {
+      if (enableStep[2]) {
+        runTraining();
+      } else {
+        updateStatus(2, 'skipped');
+      }
+    }
+
+    // Step 1 skipped → start step 2
+    if (stepStatus[1] === 'skipped' && stepStatus[2] === 'idle') {
+      if (enableStep[2]) {
+        runTraining();
+      } else {
+        updateStatus(2, 'skipped');
       }
     }
 
     // Step 2 done/skipped → start step 3 (or skip)
-    if ((stepStatus[1] === 'done' || stepStatus[1] === 'skipped') && stepStatus[2] === 'idle') {
-      if (enableStep[2]) {
+    if ((stepStatus[2] === 'done' || stepStatus[2] === 'skipped') && stepStatus[3] === 'idle') {
+      if (enableStep[3]) {
         runBacktestStep();
       } else {
-        updateStatus(2, 'skipped');
+        updateStatus(3, 'skipped');
         autoRef.current = false;
       }
     }
 
-    // Step 0 skipped → start step 2
-    if (stepStatus[0] === 'skipped' && stepStatus[1] === 'idle') {
-      if (enableStep[1]) {
-        runTraining();
-      } else {
-        updateStatus(1, 'skipped');
-      }
-    }
-
     // All done
-    if (stepStatus[2] === 'done' || stepStatus[2] === 'skipped') {
+    if (stepStatus[3] === 'done' || stepStatus[3] === 'skipped') {
       autoRef.current = false;
     }
-  }, [stepStatus, enableStep, runTraining, runBacktestStep]);
+  }, [stepStatus, enableStep, runMining, runTraining, runBacktestStep]);
 
   const runFullPipeline = useCallback(() => {
-    setStepStatus(['idle', 'idle', 'idle']);
-    setStepLogs(['', '', '']);
+    setStepStatus(['idle', 'idle', 'idle', 'idle']);
+    setStepLogs(['', '', '', '']);
     setBtResult(null);
     setBtError('');
     autoRef.current = true;
 
     if (enableStep[0]) {
-      runMining();
+      runDataSync();
     } else {
       updateStatus(0, 'skipped');
     }
-  }, [enableStep, runMining]);
+  }, [enableStep, runDataSync]);
 
   const isAnyRunning = stepStatus.some(s => s === 'running');
 
@@ -424,7 +485,7 @@ export default function Pipeline() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-[#f8fafc]">🚀 量化流水线</h1>
-          <p className="text-sm text-[#94a3b8] mt-1">因子挖掘 → ML训练 → 策略回测，一键运行</p>
+          <p className="text-sm text-[#94a3b8] mt-1">数据准备 → 因子挖掘 → ML训练 → 策略回测，一键运行</p>
         </div>
         <button
           onClick={runFullPipeline}
@@ -480,16 +541,67 @@ export default function Pipeline() {
         </div>
       </div>
 
-      {/* Three step panels */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* Four step panels */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-4">
 
-        {/* ── Step 1: Factor Mining ──────────────────────────────── */}
+        {/* ── Step 0: Data Fetch ─────────────────────────────────── */}
         <div className={`rounded-xl border p-4 ${stepStatus[0] === 'running' ? 'border-[#3b82f6]' : 'border-[#334155]'} bg-[#1e293b]`}>
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-bold text-[#f8fafc]">🔬 Step 1: 因子挖掘</h3>
+            <h3 className="text-sm font-bold text-[#f8fafc]">📡 Step 0: 数据准备</h3>
             <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
               <input type="checkbox" checked={enableStep[0]}
                 onChange={e => setEnableStep(p => { const n = [...p]; n[0] = e.target.checked; return n; })} />
+              启用
+            </label>
+          </div>
+          <div className="space-y-3">
+            {/* Cache status display */}
+            <div className="text-xs text-[#94a3b8]">
+              {cacheLoading ? (
+                <span>⏳ 检查缓存...</span>
+              ) : cacheInfo.length > 0 ? (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-medium text-[#f8fafc]">缓存状态</span>
+                    <button onClick={checkCache} className="text-[#3b82f6] hover:underline text-xs">🔄 刷新</button>
+                  </div>
+                  {(() => {
+                    const syms = shared.symbols.split(',').map(s => s.trim()).filter(Boolean);
+                    return syms.map(sym => {
+                      const info = cacheInfo.find(c => c.symbol === sym || c.symbol === sym.split('.')[0]);
+                      return (
+                        <div key={sym} className="flex items-center justify-between py-0.5">
+                          <span className="font-mono">{sym}</span>
+                          {info ? (
+                            <span className="text-[#22c55e]">✓ {info.bar_count}条 {info.min_date}~{info.max_date}</span>
+                          ) : (
+                            <span className="text-[#f59e0b]">⚠ 无缓存</span>
+                          )}
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              ) : (
+                <span className="text-[#f59e0b]">⚠ 无缓存数据，请先同步</span>
+              )}
+            </div>
+            <button onClick={runDataSync} disabled={isAnyRunning || !enableStep[0]}
+              className={`w-full ${btnPrimary} ${isAnyRunning || !enableStep[0] ? 'bg-[#334155] text-[#64748b]' : 'bg-[#0891b2] text-white hover:bg-[#0e7490]'}`}>
+              📡 同步数据
+            </button>
+          </div>
+          <TaskOutput running={tmSync.running} error={tmSync.error} output={stepLogs[0] || tmSync.output}
+            progress={tmSync.progress} runningText="数据同步中..." />
+        </div>
+
+        {/* ── Step 1: Factor Mining ──────────────────────────────── */}
+        <div className={`rounded-xl border p-4 ${stepStatus[1] === 'running' ? 'border-[#3b82f6]' : 'border-[#334155]'} bg-[#1e293b]`}>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-bold text-[#f8fafc]">🔬 Step 1: 因子挖掘</h3>
+            <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
+              <input type="checkbox" checked={enableStep[1]}
+                onChange={e => setEnableStep(p => { const n = [...p]; n[1] = e.target.checked; return n; })} />
               启用
             </label>
           </div>
@@ -538,22 +650,22 @@ export default function Pipeline() {
                 </InputField>
               </div>
             )}
-            <button onClick={runMining} disabled={isAnyRunning || !enableStep[0]}
-              className={`w-full ${btnPrimary} ${isAnyRunning || !enableStep[0] ? 'bg-[#334155] text-[#64748b]' : 'bg-[#0f766e] text-white hover:bg-[#0d9488]'}`}>
+            <button onClick={runMining} disabled={isAnyRunning || !enableStep[1]}
+              className={`w-full ${btnPrimary} ${isAnyRunning || !enableStep[1] ? 'bg-[#334155] text-[#64748b]' : 'bg-[#0f766e] text-white hover:bg-[#0d9488]'}`}>
               🔬 运行因子挖掘
             </button>
           </div>
-          <TaskOutput running={tmMine.running} error={tmMine.error} output={stepLogs[0] || tmMine.output}
+          <TaskOutput running={tmMine.running} error={tmMine.error} output={stepLogs[1] || tmMine.output}
             progress={tmMine.progress} runningText="因子挖掘中..." />
         </div>
 
         {/* ── Step 2: ML Training ───────────────────────────────── */}
-        <div className={`rounded-xl border p-4 ${stepStatus[1] === 'running' ? 'border-[#3b82f6]' : 'border-[#334155]'} bg-[#1e293b]`}>
+        <div className={`rounded-xl border p-4 ${stepStatus[2] === 'running' ? 'border-[#3b82f6]' : 'border-[#334155]'} bg-[#1e293b]`}>
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-bold text-[#f8fafc]">🧠 Step 2: ML 训练</h3>
             <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
-              <input type="checkbox" checked={enableStep[1]}
-                onChange={e => setEnableStep(p => { const n = [...p]; n[1] = e.target.checked; return n; })} />
+              <input type="checkbox" checked={enableStep[2]}
+                onChange={e => setEnableStep(p => { const n = [...p]; n[2] = e.target.checked; return n; })} />
               启用
             </label>
           </div>
@@ -572,22 +684,22 @@ export default function Pipeline() {
               <input type="number" step="0.01" className={inputCls} value={train.threshold}
                 onChange={e => setTrain(p => ({ ...p, threshold: +e.target.value }))} />
             </InputField>
-            <button onClick={runTraining} disabled={isAnyRunning || !enableStep[1]}
-              className={`w-full ${btnPrimary} ${isAnyRunning || !enableStep[1] ? 'bg-[#334155] text-[#64748b]' : 'bg-[#7c3aed] text-white hover:bg-[#6d28d9]'}`}>
+            <button onClick={runTraining} disabled={isAnyRunning || !enableStep[2]}
+              className={`w-full ${btnPrimary} ${isAnyRunning || !enableStep[2] ? 'bg-[#334155] text-[#64748b]' : 'bg-[#7c3aed] text-white hover:bg-[#6d28d9]'}`}>
               🧠 运行训练
             </button>
           </div>
-          <TaskOutput running={tmTrain.running} error={tmTrain.error} output={stepLogs[1] || tmTrain.output}
+          <TaskOutput running={tmTrain.running} error={tmTrain.error} output={stepLogs[2] || tmTrain.output}
             progress={tmTrain.progress} runningText="模型训练中..." />
         </div>
 
         {/* ── Step 3: Backtest ──────────────────────────────────── */}
-        <div className={`rounded-xl border p-4 ${stepStatus[2] === 'running' ? 'border-[#3b82f6]' : 'border-[#334155]'} bg-[#1e293b]`}>
+        <div className={`rounded-xl border p-4 ${stepStatus[3] === 'running' ? 'border-[#3b82f6]' : 'border-[#334155]'} bg-[#1e293b]`}>
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-bold text-[#f8fafc]">📊 Step 3: 策略回测</h3>
             <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
-              <input type="checkbox" checked={enableStep[2]}
-                onChange={e => setEnableStep(p => { const n = [...p]; n[2] = e.target.checked; return n; })} />
+              <input type="checkbox" checked={enableStep[3]}
+                onChange={e => setEnableStep(p => { const n = [...p]; n[3] = e.target.checked; return n; })} />
               启用
             </label>
           </div>
@@ -613,18 +725,18 @@ export default function Pipeline() {
                 </select>
               </InputField>
             </div>
-            <button onClick={runBacktestStep} disabled={isAnyRunning || !enableStep[2]}
-              className={`w-full ${btnPrimary} ${isAnyRunning || !enableStep[2] ? 'bg-[#334155] text-[#64748b]' : 'bg-[#ea580c] text-white hover:bg-[#c2410c]'}`}>
+            <button onClick={runBacktestStep} disabled={isAnyRunning || !enableStep[3]}
+              className={`w-full ${btnPrimary} ${isAnyRunning || !enableStep[3] ? 'bg-[#334155] text-[#64748b]' : 'bg-[#ea580c] text-white hover:bg-[#c2410c]'}`}>
               📊 运行回测
             </button>
           </div>
-          {stepStatus[2] === 'running' && (
+          {stepStatus[3] === 'running' && (
             <div className="text-xs text-[#94a3b8] mt-3">⏳ 回测运行中...</div>
           )}
           {btError && (
             <div className="rounded-lg bg-red-500/10 border border-red-500/30 p-3 text-sm text-red-400 mt-3">{btError}</div>
           )}
-          {stepLogs[2] && <div className="text-xs text-[#22c55e] mt-2">{stepLogs[2]}</div>}
+          {stepLogs[3] && <div className="text-xs text-[#22c55e] mt-2">{stepLogs[3]}</div>}
         </div>
       </div>
 

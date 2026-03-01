@@ -4,6 +4,7 @@ import { listTasks, cancelTask, type TaskRecord } from '../api/client';
 // ── Constants ─────────────────────────────────────────────────────
 
 const TASK_TYPE_LABELS: Record<string, string> = {
+  data_sync: '数据同步',
   factor_mine_parametric: '参数化因子挖掘',
   factor_mine_gp: 'GP因子挖掘',
   factor_registry_manage: '因子注册管理',

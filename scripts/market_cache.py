@@ -665,6 +665,39 @@ if __name__ == "__main__":
             time.sleep(0.3)  # Throttle
         print("\n✅ Warm-up complete. Run 'market_cache.py status' to verify.")
 
+    elif cmd == "warm_symbols":
+        # Pre-cache specific symbols (called by API sync_data endpoint)
+        if len(sys.argv) < 3:
+            print("Usage: market_cache.py warm_symbols <sym1,sym2,...> [start] [end]")
+            sys.exit(1)
+        stocks = [s.strip().split(".")[0] for s in sys.argv[2].split(",") if s.strip()]
+        start = sys.argv[3] if len(sys.argv) > 3 else "2020-01-01"
+        end = sys.argv[4] if len(sys.argv) > 4 else datetime.now().strftime("%Y-%m-%d")
+        import json as _json
+        results = {"total": len(stocks), "ok": 0, "skipped": 0, "failed": 0, "details": []}
+        print(f"📡 Syncing {len(stocks)} symbols: {start} ~ {end}")
+        for i, sym in enumerate(stocks):
+            print(f"  [{i+1}/{len(stocks)}] {sym}...", end=" ", flush=True)
+            try:
+                was_cached = cache._is_fully_cached(sym, start, end)
+                df = cache.get_or_fetch(sym, start, end)
+                n = len(df) if df is not None else 0
+                status = "cached" if was_cached else ("ok" if n > 0 else "empty")
+                results["details"].append({"symbol": sym, "bars": n, "status": status})
+                if n > 0:
+                    results["ok"] += 1
+                    print(f"{'cached' if was_cached else 'fetched'} ({n} bars)")
+                else:
+                    results["skipped"] += 1
+                    print("empty")
+            except Exception as e:
+                results["failed"] += 1
+                results["details"].append({"symbol": sym, "bars": 0, "status": "error", "error": str(e)})
+                print(f"FAIL: {e}")
+            time.sleep(0.2)
+        print(f"\n📊 Summary: {results['ok']} OK, {results['skipped']} empty, {results['failed']} failed")
+        print(_json.dumps(results, ensure_ascii=False))
+
     elif cmd == "invalidate":
         sym = sys.argv[2] if len(sys.argv) > 2 else None
         cache.invalidate(sym)

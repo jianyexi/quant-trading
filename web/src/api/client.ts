@@ -57,6 +57,22 @@ export async function getKline(symbol: string, start?: string, end?: string, lim
   return fetchJson(`/market/kline/${symbol}?${params}`);
 }
 
+export async function getCacheStatus(): Promise<{ symbols: Array<{ symbol: string; bar_count: number; min_date: string; max_date: string }>; total_symbols?: number; total_bars?: number; error?: string }> {
+  return fetchJson('/market/cache-status');
+}
+
+export async function syncData(symbols: string[], start_date: string, end_date: string): Promise<{ task_id: string }> {
+  return fetchJson('/market/sync-data', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbols, start_date, end_date }),
+  });
+}
+
+export async function getDataSourceStatus(): Promise<{ primary: string | null; available: string[]; error?: string }> {
+  return fetchJson('/market/data-source');
+}
+
 export async function getQuote(symbol: string) {
   return fetchJson(`/market/quote/${symbol}`);
 }
