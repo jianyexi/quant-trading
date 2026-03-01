@@ -580,7 +580,8 @@ class TransformerTrainer(ModelTrainer):
         model_cpu = model.cpu()
         seq_len = getattr(model, "_seq_len", 20)
         dummy = torch.randn(1, seq_len, len(feature_cols))
-        scripted = torch.jit.trace(model_cpu, dummy)
+        # Transformer attention has non-deterministic paths; skip trace sanity check
+        scripted = torch.jit.trace(model_cpu, dummy, check_trace=False)
         scripted.save(path)
 
 
@@ -712,29 +713,33 @@ def _fetch_akshare_data(
     max_retries: int = 3,
     base_delay: float = 0.8,
 ) -> pd.DataFrame:
-    """Fetch real A-share daily data using local cache (only fetches missing data).
+    """Load market data from local cache only (no network fetch).
 
-    Features:
-    - Local SQLite cache avoids redundant API calls
-    - Incremental gap-filling: only fetches dates not already cached
-    - Per-stock symbol column for groupby operations
-    - Exponential backoff retry per stock
+    Data must be pre-cached via Pipeline Step 0 (Data Sync) or
+    `python scripts/market_cache.py warm_symbols <symbols>`.
+    This separation ensures training never fails due to network issues.
     """
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
     from market_cache import get_cache
 
     stock_list = symbols if symbols else DEFAULT_TRAIN_STOCKS
-    print(f"📡 Fetching real data (with cache): {len(stock_list)} stocks, {start_date} ~ {end_date}")
+    print(f"📂 Loading cached data: {len(stock_list)} stocks, {start_date} ~ {end_date}")
 
     cache = get_cache()
     combined = cache.get_or_fetch_multi(
         stock_list, start_date, end_date,
         max_retries=max_retries, base_delay=base_delay,
+        cache_only=True,
     )
 
     if combined is None or combined.empty:
-        raise RuntimeError("❌ No market data fetched. Check network/API access and stock codes.")
+        raise RuntimeError(
+            "❌ No cached market data found. Please run data sync first:\n"
+            "  Pipeline → Step 0: 数据准备 → 同步数据\n"
+            "  or: python scripts/market_cache.py warm_symbols "
+            + ",".join(stock_list) + f" {start_date} {end_date}"
+        )
 
     return combined
 

@@ -80,6 +80,7 @@ class MarketCache:
         max_retries: int = 3,
         base_delay: float = 0.8,
         market: str = "CN",
+        cache_only: bool = False,
     ) -> pd.DataFrame:
         """Get klines from cache, fetching missing ranges.
 
@@ -91,11 +92,14 @@ class MarketCache:
             max_retries: Retry count for API calls
             base_delay: Base delay between retries (exponential backoff)
             market: "CN" (default), "US", or "HK"
+            cache_only: If True, only read from cache, never fetch from network
 
         Returns:
             DataFrame with columns [open, high, low, close, volume], date index
         """
         if period != "daily":
+            if cache_only:
+                return pd.DataFrame()
             if market in ("US", "HK"):
                 return self._fetch_yfinance_direct(symbol, start_date, end_date, market)
             return self._fetch_raw(symbol, start_date, end_date, period)
@@ -110,7 +114,7 @@ class MarketCache:
         meta = self._get_meta(cache_key)
         gaps = self._find_gaps(cache_key, start, end, meta)
 
-        if gaps:
+        if gaps and not cache_only:
             self._fill_gaps(cache_key, gaps, max_retries, base_delay, market=market, raw_symbol=symbol)
 
         # Return from cache
@@ -125,6 +129,7 @@ class MarketCache:
         base_delay: float = 0.8,
         verbose: bool = True,
         min_bars: int = 30,
+        cache_only: bool = False,
     ) -> pd.DataFrame:
         """Fetch multiple stocks, returning a combined DataFrame with 'symbol' column.
         
@@ -144,7 +149,7 @@ class MarketCache:
             try:
                 # Check if fully cached before fetching
                 was_cached = self._is_fully_cached(code, start_date, end_date)
-                df = self.get_or_fetch(code, start_date, end_date, max_retries=max_retries, base_delay=base_delay)
+                df = self.get_or_fetch(code, start_date, end_date, max_retries=max_retries, base_delay=base_delay, cache_only=cache_only)
 
                 if df is None or df.empty or len(df) < min_bars:
                     if verbose:

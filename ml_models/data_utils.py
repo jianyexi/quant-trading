@@ -29,24 +29,25 @@ def fetch_akshare_data(
     start_date: str = "2023-01-01",
     end_date: str = "2024-12-31",
 ) -> pd.DataFrame:
-    """Fetch real A-share daily OHLCV data, using local cache to avoid re-fetching.
+    """Load market data from local cache only (no network fetch).
     
-    Resilient: if some stocks fail to fetch, returns whatever data is available.
-    Only raises if absolutely no data can be obtained.
+    Data must be pre-cached via Pipeline Step 0 (Data Sync) or
+    `python scripts/market_cache.py warm_symbols <symbols>`.
+    Falls back to reading any cached data if exact range is missing.
     """
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
     from market_cache import get_cache
 
     stock_list = symbols if symbols else DEFAULT_STOCKS
-    print(f"📡 Fetching real data: {len(stock_list)} stocks, {start_date} ~ {end_date}")
+    print(f"📂 Loading cached data: {len(stock_list)} stocks, {start_date} ~ {end_date}")
 
     cache = get_cache()
-    combined = cache.get_or_fetch_multi(stock_list, start_date, end_date, min_bars=30)
+    combined = cache.get_or_fetch_multi(stock_list, start_date, end_date, min_bars=30, cache_only=True)
 
     if combined is None or combined.empty:
-        # Last resort: try to read any cached data for these symbols, ignoring date range
-        print("⚠️  Network fetch failed. Trying to use any cached data as fallback...")
+        # Fallback: read any cached data for these symbols, ignoring date range
+        print("⚠️  No exact-range cached data. Trying any cached data as fallback...")
         fallback_dfs = []
         for sym in stock_list:
             code = sym.split(".")[0]
@@ -63,9 +64,10 @@ def fetch_akshare_data(
             print(f"📦 Fallback: using {len(combined)} cached bars from {len(fallback_dfs)} stocks")
         else:
             raise RuntimeError(
-                "❌ No market data available. All providers failed and no cached data exists.\n"
-                "   Fix: Run 'python scripts/market_cache.py --warm' to pre-cache data,\n"
-                "   or set TUSHARE_TOKEN for reliable data access."
+                "❌ No cached market data found. Please run data sync first:\n"
+                "   Pipeline → Step 0: 数据准备 → 同步数据\n"
+                "   or: python scripts/market_cache.py warm_symbols "
+                + ",".join(stock_list) + f" {start_date} {end_date}"
             )
 
     return combined
@@ -76,19 +78,36 @@ def fetch_akshare_multi(
     start_date: str = "2023-01-01",
     end_date: str = "2024-12-31",
 ) -> Dict[str, pd.DataFrame]:
-    """Fetch per-stock DataFrames for cross-stock mining, using local cache."""
+    """Load per-stock DataFrames from local cache only (no network fetch)."""
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
     from market_cache import get_cache
 
     stock_list = symbols if symbols else DEFAULT_STOCKS
-    print(f"📡 Fetching per-stock data: {len(stock_list)} stocks, {start_date} ~ {end_date}")
+    print(f"📂 Loading per-stock cached data: {len(stock_list)} stocks, {start_date} ~ {end_date}")
 
     cache = get_cache()
-    result = cache.get_or_fetch_multi_dict(stock_list, start_date, end_date)
+    result = {}
+    for i, sym in enumerate(stock_list):
+        code = sym.split(".")[0]
+        print(f"  [{i+1}/{len(stock_list)}] {code}...", end=" ", flush=True)
+        try:
+            df = cache.get_or_fetch(code, start_date, end_date, cache_only=True)
+            if df is not None and len(df) >= 30:
+                result[code] = df
+                print(f"OK ({len(df)} bars)")
+            else:
+                print(f"skip ({0 if df is None else len(df)} bars)")
+        except Exception as e:
+            print(f"ERROR: {e}")
 
     if not result:
-        raise RuntimeError("❌ No per-stock data fetched. Check network/API access and stock codes.")
+        raise RuntimeError(
+            "❌ No cached per-stock data found. Please run data sync first:\n"
+            "   Pipeline → Step 0: 数据准备 → 同步数据\n"
+            "   or: python scripts/market_cache.py warm_symbols "
+            + ",".join(stock_list) + f" {start_date} {end_date}"
+        )
 
     return result
 
