@@ -32,7 +32,7 @@ export function useTaskPoller(intervalMs = 2000) {
   const startPolling = useCallback((taskId: string) => {
     stopPolling();
     taskIdRef.current = taskId;
-    setTask({ id: taskId, task_type: '', status: 'Running', created_at: '', updated_at: '', progress: null, result: null, error: null });
+    setTask({ id: taskId, task_type: '', status: 'Running', created_at: '', updated_at: '', progress: null, result: null, error: null, parameters: null });
     poll(taskId);
     timerRef.current = setInterval(() => poll(taskId), intervalMs);
   }, [intervalMs, poll, stopPolling]);

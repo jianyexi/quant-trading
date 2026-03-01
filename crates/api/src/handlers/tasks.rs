@@ -1,17 +1,31 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::state::AppState;
 
-/// List recent tasks (newest first)
+#[derive(Debug, Deserialize)]
+pub struct ListTasksQuery {
+    pub task_type: Option<String>,
+    pub status: Option<String>,
+    pub limit: Option<u32>,
+}
+
+/// List recent tasks (newest first), with optional filtering
 pub async fn list_tasks(
     State(state): State<AppState>,
+    Query(q): Query<ListTasksQuery>,
 ) -> Json<Value> {
-    let tasks = state.task_store.list(50);
+    let limit = q.limit.unwrap_or(100);
+    let tasks = state.task_store.list_filtered(
+        limit,
+        q.task_type.as_deref(),
+        q.status.as_deref(),
+    );
     Json(json!({ "tasks": tasks }))
 }
 

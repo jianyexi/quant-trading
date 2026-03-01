@@ -40,7 +40,13 @@ pub async fn factor_mine_parametric(
     let end_date = body_val.get("end_date").and_then(|v| v.as_str()).unwrap_or("2024-12-31").to_string();
 
     let ts = state.task_store.clone();
-    let task_id = ts.create("factor_mine_parametric");
+    let params_json = serde_json::to_string(&json!({
+        "n_bars": n_bars, "horizon": horizon, "ic_threshold": ic_threshold,
+        "top_n": top_n, "retrain": retrain, "cross_stock": cross_stock,
+        "data_source": data_source, "symbols": symbols,
+        "start_date": start_date, "end_date": end_date,
+    })).unwrap_or_default();
+    let task_id = ts.create_with_params("factor_mine_parametric", Some(&params_json));
     let tid = task_id.clone();
 
     tokio::task::spawn_blocking(move || {
@@ -91,7 +97,13 @@ pub async fn factor_mine_gp(
     let end_date = body_val.get("end_date").and_then(|v| v.as_str()).unwrap_or("2024-12-31").to_string();
 
     let ts = state.task_store.clone();
-    let task_id = ts.create("factor_mine_gp");
+    let params_json = serde_json::to_string(&json!({
+        "n_bars": n_bars, "pop_size": pop_size, "generations": generations,
+        "max_depth": max_depth, "horizon": horizon, "retrain": retrain,
+        "data_source": data_source, "symbols": symbols,
+        "start_date": start_date, "end_date": end_date,
+    })).unwrap_or_default();
+    let task_id = ts.create_with_params("factor_mine_gp", Some(&params_json));
     let tid = task_id.clone();
 
     tokio::task::spawn_blocking(move || {

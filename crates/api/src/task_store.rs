@@ -52,6 +52,8 @@ pub struct TaskRecord {
     pub progress: Option<String>,
     pub result: Option<String>,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<String>,
 }
 
 // ── Task Store ─────────────────────────────────────────────────────
@@ -81,22 +83,33 @@ impl TaskStore {
                 updated_at TEXT NOT NULL,
                 progress TEXT,
                 result TEXT,
-                error TEXT
+                error TEXT,
+                parameters TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-            CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);"
+            CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);
+            CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(task_type);"
         )?;
+        // Migrate: add parameters column if missing (existing DBs)
+        let _ = conn.execute_batch(
+            "ALTER TABLE tasks ADD COLUMN parameters TEXT;"
+        );
         Ok(())
     }
 
     /// Create a new task. Returns the task ID.
     pub fn create(&self, task_type: &str) -> String {
+        self.create_with_params(task_type, None)
+    }
+
+    /// Create a new task with input parameters stored as JSON. Returns the task ID.
+    pub fn create_with_params(&self, task_type: &str, parameters: Option<&str>) -> String {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
-            "INSERT INTO tasks (id, task_type, status, created_at, updated_at) VALUES (?1, ?2, 'running', ?3, ?3)",
-            params![id, task_type, now],
+            "INSERT INTO tasks (id, task_type, status, created_at, updated_at, parameters) VALUES (?1, ?2, 'running', ?3, ?3, ?4)",
+            params![id, task_type, now, parameters],
         );
         id
     }
@@ -167,7 +180,7 @@ impl TaskStore {
     pub fn get(&self, id: &str) -> Option<TaskRecord> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, task_type, status, created_at, updated_at, progress, result, error FROM tasks WHERE id = ?1",
+            "SELECT id, task_type, status, created_at, updated_at, progress, result, error, parameters FROM tasks WHERE id = ?1",
             params![id],
             |row| Ok(TaskRecord {
                 id: row.get(0)?,
@@ -178,18 +191,32 @@ impl TaskStore {
                 progress: row.get(5)?,
                 result: row.get(6)?,
                 error: row.get(7)?,
+                parameters: row.get(8)?,
             }),
         ).ok()
     }
 
-    /// List recent tasks, newest first.
-    pub fn list(&self, limit: u32) -> Vec<TaskRecord> {
+    /// List recent tasks, newest first. Optionally filter by task_type and/or status.
+    pub fn list_filtered(&self, limit: u32, task_type: Option<&str>, status: Option<&str>) -> Vec<TaskRecord> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, task_type, status, created_at, updated_at, progress, result, error
-             FROM tasks ORDER BY created_at DESC LIMIT ?1"
-        ).unwrap();
-        stmt.query_map(params![limit], |row| Ok(TaskRecord {
+        let mut sql = String::from(
+            "SELECT id, task_type, status, created_at, updated_at, progress, result, error, parameters FROM tasks WHERE 1=1"
+        );
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        if let Some(tt) = task_type {
+            param_values.push(Box::new(tt.to_string()));
+            sql.push_str(&format!(" AND task_type = ?{}", param_values.len()));
+        }
+        if let Some(st) = status {
+            param_values.push(Box::new(st.to_string()));
+            sql.push_str(&format!(" AND status = ?{}", param_values.len()));
+        }
+        param_values.push(Box::new(limit));
+        sql.push_str(&format!(" ORDER BY created_at DESC LIMIT ?{}", param_values.len()));
+
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql).unwrap();
+        stmt.query_map(params_ref.as_slice(), |row| Ok(TaskRecord {
             id: row.get(0)?,
             task_type: row.get(1)?,
             status: TaskStatus::from_str(&row.get::<_, String>(2)?),
@@ -198,14 +225,20 @@ impl TaskStore {
             progress: row.get(5)?,
             result: row.get(6)?,
             error: row.get(7)?,
+            parameters: row.get(8)?,
         })).unwrap().filter_map(|r| r.ok()).collect()
+    }
+
+    /// List recent tasks, newest first.
+    pub fn list(&self, limit: u32) -> Vec<TaskRecord> {
+        self.list_filtered(limit, None, None)
     }
 
     /// List tasks that are currently running.
     pub fn list_running(&self) -> Vec<TaskRecord> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, task_type, status, created_at, updated_at, progress, result, error
+            "SELECT id, task_type, status, created_at, updated_at, progress, result, error, parameters
              FROM tasks WHERE status = 'running' ORDER BY created_at DESC"
         ).unwrap();
         stmt.query_map([], |row| Ok(TaskRecord {
@@ -217,6 +250,7 @@ impl TaskStore {
             progress: row.get(5)?,
             result: row.get(6)?,
             error: row.get(7)?,
+            parameters: row.get(8)?,
         })).unwrap().filter_map(|r| r.ok()).collect()
     }
 }

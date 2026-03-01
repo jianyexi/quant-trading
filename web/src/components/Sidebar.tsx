@@ -18,6 +18,7 @@ import {
   FileBarChart,
   Timer,
   Workflow,
+  History,
 } from 'lucide-react';
 
 const navItems = [
@@ -25,6 +26,7 @@ const navItems = [
   { to: '/market', label: 'Market Data', icon: TrendingUp },
   { to: '/strategy', label: 'Strategy', icon: Settings },
   { to: '/pipeline', label: '量化流水线', icon: Workflow },
+  { to: '/history', label: '任务历史', icon: History },
   { to: '/backtest', label: 'Backtest', icon: FlaskConical },
   { to: '/screener', label: '智能选股', icon: Search },
   { to: '/autotrade', label: '自动交易', icon: Bot },

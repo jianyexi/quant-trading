@@ -819,14 +819,24 @@ export interface TaskRecord {
   progress: string | null;
   result: string | null;
   error: string | null;
+  parameters: string | null;
 }
 
 export async function getTask(taskId: string): Promise<TaskRecord> {
   return fetchJson(`/tasks/${taskId}`);
 }
 
-export async function listTasks(): Promise<{ tasks: TaskRecord[] }> {
-  return fetchJson('/tasks');
+export async function listTasks(opts?: {
+  task_type?: string;
+  status?: string;
+  limit?: number;
+}): Promise<{ tasks: TaskRecord[] }> {
+  const params = new URLSearchParams();
+  if (opts?.task_type) params.set('task_type', opts.task_type);
+  if (opts?.status) params.set('status', opts.status);
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return fetchJson(`/tasks${qs ? '?' + qs : ''}`);
 }
 
 export async function listRunningTasks(): Promise<{ tasks: TaskRecord[] }> {

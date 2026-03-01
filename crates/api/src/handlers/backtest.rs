@@ -38,7 +38,13 @@ pub async fn run_backtest(
     debug!(symbols=?all_symbols, "Backtest started");
 
     let ts = state.task_store.clone();
-    let task_id = ts.create("backtest");
+    let params_json = serde_json::to_string(&json!({
+        "strategy": req.strategy, "symbols": all_symbols,
+        "start": req.start, "end": req.end,
+        "capital": capital, "period": period,
+        "inference_mode": req.inference_mode,
+    })).unwrap_or_default();
+    let task_id = ts.create_with_params("backtest", Some(&params_json));
     let tid = task_id.clone();
 
     let ts2 = Arc::clone(&ts);

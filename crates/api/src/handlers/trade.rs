@@ -353,7 +353,12 @@ pub async fn ml_retrain(
         .unwrap_or(0.01).to_string();
 
     let ts = state.task_store.clone();
-    let task_id = ts.create("ml_retrain");
+    let params_json = serde_json::to_string(&json!({
+        "algorithms": algorithms, "data_source": data_source,
+        "symbols": symbols, "start_date": start_date,
+        "end_date": end_date, "horizon": horizon, "threshold": threshold,
+    })).unwrap_or_default();
+    let task_id = ts.create_with_params("ml_retrain", Some(&params_json));
     let tid = task_id.clone();
 
     tokio::task::spawn_blocking(move || {

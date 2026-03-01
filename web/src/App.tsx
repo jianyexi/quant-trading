@@ -18,6 +18,7 @@ import Metrics from './pages/Metrics';
 import Reports from './pages/Reports';
 import Latency from './pages/Latency';
 import Pipeline from './pages/Pipeline';
+import History from './pages/History';
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
           <Route path="strategy" element={<StrategyConfig />} />
           <Route path="backtest" element={<Backtest />} />
           <Route path="pipeline" element={<Pipeline />} />
+          <Route path="history" element={<History />} />
           <Route path="screener" element={<Screener />} />
           <Route path="autotrade" element={<AutoTrade />} />
           <Route path="risk" element={<RiskManagement />} />
