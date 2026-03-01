@@ -93,33 +93,53 @@ export default function ManualTab() {
 
   // Parse task output when completed
   useEffect(() => {
-    if (tm.output) {
+    if (!tm.output) return;
+    const tryExtract = (text: string): ManualFactorResult | null => {
+      // Try direct parse first
       try {
-        // tm.output may be wrapped in {stdout, stderr} from run_python_script
-        let parsed = JSON.parse(tm.output);
-        if (parsed.stdout) {
-          parsed = JSON.parse(parsed.stdout);
+        const obj = JSON.parse(text);
+        if (obj.metrics) return obj as ManualFactorResult;
+      } catch { /* not pure JSON */ }
+      // Search for JSON object in the text (stdout may have logging lines before the JSON)
+      const lines = text.split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (line.startsWith('{') && line.endsWith('}')) {
+          try {
+            const obj = JSON.parse(line);
+            if (obj.metrics) return obj as ManualFactorResult;
+          } catch { /* continue */ }
         }
-        if (parsed.error) {
-          setResult(null);
-        } else {
-          setResult(parsed as ManualFactorResult);
-          // Add to history
-          if (parsed.metrics) {
-            const entry: ExperimentEntry = {
-              name: parsed.name || name,
-              expression: parsed.expression || expression,
-              metrics: parsed.metrics,
-              timestamp: new Date().toISOString(),
-            };
-            const updated = [entry, ...history.filter(h => h.expression !== entry.expression)].slice(0, 50);
-            setHistory(updated);
-            saveHistory(updated);
-          }
-        }
-      } catch {
-        // not JSON, ignore
       }
+      // Last resort: find first { to last } substring
+      const start = text.indexOf('{"name"');
+      if (start >= 0) {
+        // Find matching closing brace by counting
+        let depth = 0;
+        for (let i = start; i < text.length; i++) {
+          if (text[i] === '{') depth++;
+          else if (text[i] === '}') { depth--; if (depth === 0) {
+            try {
+              const obj = JSON.parse(text.substring(start, i + 1));
+              if (obj.metrics) return obj as ManualFactorResult;
+            } catch { /* continue */ }
+          }}
+        }
+      }
+      return null;
+    };
+    const parsed = tryExtract(tm.output);
+    if (parsed) {
+      setResult(parsed);
+      const entry: ExperimentEntry = {
+        name: parsed.name || name,
+        expression: parsed.expression || expression,
+        metrics: parsed.metrics,
+        timestamp: new Date().toISOString(),
+      };
+      const updated = [entry, ...history.filter(h => h.expression !== entry.expression)].slice(0, 50);
+      setHistory(updated);
+      saveHistory(updated);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tm.output]);
