@@ -11,6 +11,12 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
+# Ensure cargo is in PATH (rustup default location)
+$cargoPath = Join-Path $env:USERPROFILE ".cargo\bin"
+if ((Test-Path $cargoPath) -and ($env:PATH -notlike "*$cargoPath*")) {
+    $env:PATH = "$cargoPath;$env:PATH"
+}
+
 if (-not $SkipBuild) {
     Write-Host "[BUILD] Building frontend..." -ForegroundColor Cyan
     Push-Location web

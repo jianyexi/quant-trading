@@ -7,6 +7,12 @@
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
+# Ensure cargo is in PATH (rustup default location)
+$cargoPath = Join-Path $env:USERPROFILE ".cargo\bin"
+if ((Test-Path $cargoPath) -and ($env:PATH -notlike "*$cargoPath*")) {
+    $env:PATH = "$cargoPath;$env:PATH"
+}
+
 Write-Host "[DEV] Starting QuantTrader development servers..." -ForegroundColor Cyan
 Write-Host "   Backend:  http://localhost:8080  (Rust API)" -ForegroundColor DarkGray
 Write-Host "   Frontend: http://localhost:3000  (Vite HMR)" -ForegroundColor DarkGray
