@@ -39,6 +39,7 @@ pub struct CollectedResearch {
     pub summary: String,
     pub source: String,
     pub relevance: String,
+    #[serde(default)]
     pub collected_at: String,
 }
 
@@ -351,23 +352,24 @@ pub fn build_knowledge_base() -> ResearchKnowledgeBase {
 /// Generate LLM prompt for collecting latest DL factor model research.
 pub fn build_collection_prompt(topic: &str) -> String {
     format!(
-        r#"你是一位量化金融深度学习领域的资深研究员。请针对以下主题，搜集并整理最新的研究成果：
+        r#"你是一位量化金融深度学习领域的资深研究员。请根据你的专业知识，针对以下主题整理相关的研究成果和前沿方向：
 
 主题：{topic}
 
-请按以下格式输出（JSON数组），每条研究包含：
-- title: 研究标题
-- summary: 100-200字核心要点总结（中文）
-- source: 来源（论文/机构/平台）
-- relevance: 与量化多因子策略的关联度评估（高/中/低）
+请严格按照以下JSON数组格式输出，每条研究包含这4个字段：
+- title: 研究标题（字符串）
+- summary: 100-200字核心要点总结，中文（字符串）
+- source: 来源，如论文名称、会议、期刊、或研究机构（字符串）
+- relevance: 与量化多因子策略的关联度评估，只能是"高"、"中"、"低"之一（字符串）
 
-重点关注：
-1. 2024-2025年发表的最新论文和预印本
-2. Transformer、GNN、VAE、强化学习在因子挖掘中的应用
-3. 中国A股市场的实证研究
-4. 可落地的工程化方案
+重点方向：
+1. Transformer、GNN、VAE、强化学习在因子挖掘和股票预测中的应用
+2. 中国A股市场的深度学习量化策略
+3. 可落地的工程化方案和开源框架
 
-请输出3-5条最有价值的研究成果。输出纯JSON数组，不要添加markdown格式或其他说明。"#,
+请输出3-5条最有价值的研究成果。
+
+重要：直接输出JSON数组，第一个字符必须是[，最后一个字符必须是]。不要添加```、markdown格式、或任何其他说明文字。"#,
         topic = topic
     )
 }

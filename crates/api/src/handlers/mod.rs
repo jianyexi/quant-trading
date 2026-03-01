@@ -842,27 +842,44 @@ pub async fn research_dl_collect(
 
     match llm.chat(&messages, None).await {
         Ok(resp) => {
-            let content = resp.choices.first()
+            let raw_content = resp.choices.first()
                 .and_then(|c| c.message.content.as_ref())
                 .cloned()
                 .unwrap_or_default();
 
-            let collected: Vec<quant_strategy::dl_models::CollectedResearch> =
-                serde_json::from_str(&content).unwrap_or_else(|_| {
+            // Strip markdown code fences (```json ... ```) that LLMs often wrap around JSON
+            let content = raw_content.trim();
+            let content = if content.starts_with("```") {
+                let s = content.strip_prefix("```json").or_else(|| content.strip_prefix("```")).unwrap_or(content);
+                s.strip_suffix("```").unwrap_or(s).trim()
+            } else {
+                content
+            };
+
+            let mut collected: Vec<quant_strategy::dl_models::CollectedResearch> =
+                serde_json::from_str(content).unwrap_or_else(|_| {
                     vec![quant_strategy::dl_models::CollectedResearch {
                         title: format!("LLM研究摘要: {}", topic),
-                        summary: content.clone(),
+                        summary: raw_content.clone(),
                         source: "LLM自动收集".into(),
                         relevance: "高".into(),
-                        collected_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+                        collected_at: String::new(),
                     }]
                 });
+
+            // Fill in collected_at timestamp for items from LLM
+            let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+            for item in &mut collected {
+                if item.collected_at.is_empty() {
+                    item.collected_at = now.clone();
+                }
+            }
 
             (StatusCode::OK, Json(json!({
                 "status": "ok",
                 "topic": topic,
                 "collected": collected,
-                "raw_response": content,
+                "raw_response": raw_content,
             })))
         }
         Err(e) => {
