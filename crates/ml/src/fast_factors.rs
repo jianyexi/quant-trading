@@ -1,4 +1,4 @@
-// Incremental Factor Engine: O(1) per-bar computation of all 24 ML factors.
+// Incremental Factor Engine: O(1) per-bar computation of all 30 ML factors.
 //
 // Instead of recomputing from a 60-bar window each time (batch mode),
 // this engine maintains rolling state for each feature and updates
@@ -251,7 +251,7 @@ impl RingMinMax {
 
 // ── Incremental Factor Engine ───────────────────────────────────────
 
-/// Maintains rolling state for all 24 ML factors.
+/// Maintains rolling state for all 30 ML factors.
 /// Each `update()` call is O(1) amortized.
 pub struct IncrementalFactorEngine {
     // Close/return tracking
@@ -278,6 +278,7 @@ pub struct IncrementalFactorEngine {
     // Volume
     vol_ma5: RingSum,
     vol_ma20: RingSum,
+    vol_std_20: RingStdDev,
     prev_volume: f64,
 
     // Price position (20-bar high/low)
@@ -286,6 +287,13 @@ pub struct IncrementalFactorEngine {
 
     // Bollinger
     bb_20: RingStdDev,
+
+    // ATR tracking
+    atr_5: RingSum,
+    atr_20: RingSum,
+
+    // Price std dev over 60 bars (for price_zscore_60d)
+    close_std_60: RingStdDev,
 
     // Count of bars received
     bar_count: usize,
@@ -319,10 +327,14 @@ impl IncrementalFactorEngine {
             signal_ema: IncrEMA::new(9),
             vol_ma5: RingSum::new(5),
             vol_ma20: RingSum::new(20),
+            vol_std_20: RingStdDev::new(20),
             prev_volume: 0.0,
             high_20: RingMinMax::new(20),
             low_20: RingMinMax::new(20),
             bb_20: RingStdDev::new(20),
+            atr_5: RingSum::new(5),
+            atr_20: RingSum::new(20),
+            close_std_60: RingStdDev::new(60),
             bar_count: 0,
             prev_close: 0.0,
             last_open: 0.0,
@@ -370,11 +382,27 @@ impl IncrementalFactorEngine {
 
         self.vol_ma5.push(v);
         self.vol_ma20.push(v);
+        self.vol_std_20.push(v);
 
         self.high_20.push(h);
         self.low_20.push(l);
 
         self.bb_20.push(c);
+        self.close_std_60.push(c);
+
+        // True Range for ATR
+        let true_range = {
+            let hl = h - l;
+            if self.bar_count > 0 {
+                let hc = (h - self.prev_close).abs();
+                let lc = (l - self.prev_close).abs();
+                hl.max(hc).max(lc)
+            } else {
+                hl
+            }
+        };
+        self.atr_5.push(true_range);
+        self.atr_20.push(true_range);
 
         self.bar_count += 1;
 
@@ -489,6 +517,36 @@ impl IncrementalFactorEngine {
             ((c - o) / o) as f32
         } else { 0.0 };
 
+        // ── Volatility regime features ────────────────────────────
+        let vol_change_rate = if volatility_20d > f32::EPSILON {
+            volatility_5d / volatility_20d
+        } else { 1.0 };
+
+        let atr5_val = self.atr_5.mean();
+        let atr20_val = self.atr_20.mean();
+        let atr_ratio = if atr20_val > f64::EPSILON {
+            (atr5_val / atr20_val) as f32
+        } else { 1.0 };
+
+        let vol_std_20_val = self.vol_std_20.std_dev();
+        let volume_zscore = if vol_std_20_val > f64::EPSILON {
+            ((v - vol_ma20_val) / vol_std_20_val) as f32
+        } else { 0.0 };
+
+        // ── Cross-sectional proxy features ────────────────────────
+        let ret_zscore = if volatility_20d > f32::EPSILON {
+            ret_1d / volatility_20d
+        } else { 0.0 };
+
+        let std_60d = self.close_std_60.std_dev();
+        let price_zscore_60d = if std_60d > f64::EPSILON {
+            ((c - ma60_val) / std_60d) as f32
+        } else { 0.0 };
+
+        let range_width_20d = if ma20_val > f64::EPSILON {
+            (range_20 / ma20_val) as f32
+        } else { 0.0 };
+
         Some([
             ret_1d, ret_5d, ret_10d, ret_20d,
             volatility_5d, volatility_20d,
@@ -503,6 +561,10 @@ impl IncrementalFactorEngine {
             bollinger_pctb,
             body_ratio,
             close_to_open,
+            // Volatility regime
+            vol_change_rate, atr_ratio, volume_zscore,
+            // Cross-sectional proxy
+            ret_zscore, price_zscore_60d, range_width_20d,
         ])
     }
 

@@ -21,7 +21,7 @@ use crate::lgb_inference::LightGBMModel;
 // ── Feature Engineering ─────────────────────────────────────────────
 
 /// Number of features produced by compute_features
-pub const NUM_FEATURES: usize = 24;
+pub const NUM_FEATURES: usize = 30;
 
 /// Feature names in the same order as the feature vector
 pub const FEATURE_NAMES: [&str; NUM_FEATURES] = [
@@ -38,6 +38,10 @@ pub const FEATURE_NAMES: [&str; NUM_FEATURES] = [
     "bollinger_pctb",
     "body_ratio",
     "close_to_open",
+    // Volatility regime
+    "vol_change_rate", "atr_ratio", "volume_zscore",
+    // Cross-sectional proxy
+    "ret_zscore", "price_zscore_60d", "range_width_20d",
 ];
 
 /// Computes feature vector from a window of Kline bars.
@@ -127,6 +131,40 @@ pub fn compute_features(bars: &[Kline]) -> Option<[f32; NUM_FEATURES]> {
     // Close to open
     let close_to_open = safe_div(c - o, o);
 
+    // ── Volatility regime features ────────────────────────────────
+    // Vol change rate: short-term vol / long-term vol (>1 = vol expanding)
+    let vol_change_rate = if volatility_20d > f64::EPSILON { volatility_5d / volatility_20d } else { 1.0 };
+
+    // ATR ratio: ATR(5) / ATR(20) — true-range acceleration
+    let atr_ratio = {
+        let tr = |i: usize| -> f64 {
+            let hl = highs[i] - lows[i];
+            let hc = if i > 0 { (highs[i] - closes[i - 1]).abs() } else { hl };
+            let lc = if i > 0 { (lows[i] - closes[i - 1]).abs() } else { hl };
+            hl.max(hc).max(lc)
+        };
+        let atr5: f64 = (n - 5..n).map(|i| tr(i)).sum::<f64>() / 5.0;
+        let atr20: f64 = (n - 20..n).map(|i| tr(i)).sum::<f64>() / 20.0;
+        if atr20 > f64::EPSILON { atr5 / atr20 } else { 1.0 }
+    };
+
+    // Volume z-score: how many std devs above/below 20d mean volume
+    let vol_std20 = std_dev(&volumes[n - 20..n]);
+    let volume_zscore = if vol_std20 > f64::EPSILON {
+        (volumes[n - 1] - vol_ma20) / vol_std20
+    } else { 0.0 };
+
+    // ── Cross-sectional proxy features ────────────────────────────
+    // Risk-adjusted return: today's return / recent volatility
+    let ret_zscore = if volatility_20d > f64::EPSILON { ret_1d / volatility_20d } else { 0.0 };
+
+    // Price z-score: how far from 60d mean in std dev units
+    let std_60d = std_dev(&closes[n - 60..n]);
+    let price_zscore_60d = if std_60d > f64::EPSILON { (c - ma60) / std_60d } else { 0.0 };
+
+    // Range width: 20d price range / 20d average price (relative range)
+    let range_width_20d = safe_div(range_20, ma20);
+
     Some([
         ret_1d as f32, ret_5d as f32, ret_10d as f32, ret_20d as f32,
         volatility_5d as f32, volatility_20d as f32,
@@ -141,6 +179,10 @@ pub fn compute_features(bars: &[Kline]) -> Option<[f32; NUM_FEATURES]> {
         bollinger_pctb as f32,
         body_ratio as f32,
         close_to_open as f32,
+        // Volatility regime
+        vol_change_rate as f32, atr_ratio as f32, volume_zscore as f32,
+        // Cross-sectional proxy
+        ret_zscore as f32, price_zscore_60d as f32, range_width_20d as f32,
     ])
 }
 

@@ -100,6 +100,31 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     bb_lower = bb_mid - 2 * bb_std
     feat["bollinger_pctb"] = (c - bb_lower) / (bb_upper - bb_lower).replace(0, np.nan)
 
+    # === Body ratio & close-to-open ===
+    feat["body_ratio"] = (c - o).abs() / total_range.replace(0, np.nan)
+    feat["close_to_open"] = (c - o) / o
+
+    # === Volatility regime features ===
+    # Vol change rate: short-term vol / long-term vol (>1 = vol expanding)
+    feat["vol_change_rate"] = feat["volatility_5d"] / feat["volatility_20d"].replace(0, np.nan)
+    # ATR ratio: ATR(5) / ATR(20) — captures true-range acceleration
+    tr = pd.concat([h - l, (h - c.shift(1)).abs(), (l - c.shift(1)).abs()], axis=1).max(axis=1)
+    atr5 = tr.rolling(5).mean()
+    atr20 = tr.rolling(20).mean()
+    feat["atr_ratio"] = atr5 / atr20.replace(0, np.nan)
+    # Volume z-score: how many std devs above/below 20d mean volume
+    vol_std20 = v.rolling(20).std()
+    feat["volume_zscore"] = (v - vol_ma20) / vol_std20.replace(0, np.nan)
+
+    # === Cross-sectional proxy features ===
+    # Risk-adjusted return: today's return / recent volatility
+    feat["ret_zscore"] = feat["ret_1d"] / feat["volatility_20d"].replace(0, np.nan)
+    # Price z-score: how far from 60d mean in std dev units
+    std_60d = c.rolling(60).std()
+    feat["price_zscore_60d"] = (c - ma60) / std_60d.replace(0, np.nan)
+    # Relative range width: 20d range / 20d average price
+    feat["range_width_20d"] = range_20 / ma20.replace(0, np.nan)
+
     return feat
 
 
