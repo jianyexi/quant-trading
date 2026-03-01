@@ -8,16 +8,18 @@ import {
 import OverviewTab from './OverviewTab';
 import ParametricTab from './ParametricTab';
 import GPTab from './GPTab';
+import ManualTab from './ManualTab';
 import RegistryTab from './RegistryTab';
 import ExportTab from './ExportTab';
 
 /* ── Tab types ───────────────────────────────────────────────────── */
-type Tab = 'overview' | 'parametric' | 'gp' | 'registry' | 'export';
+type Tab = 'overview' | 'parametric' | 'gp' | 'manual' | 'registry' | 'export';
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'overview', label: '总览', icon: '📊' },
   { id: 'parametric', label: '参数化搜索', icon: '🔍' },
   { id: 'gp', label: 'GP进化', icon: '🧬' },
+  { id: 'manual', label: '手动探索', icon: '✏️' },
   { id: 'registry', label: '因子注册表', icon: '📋' },
   { id: 'export', label: '导出集成', icon: '📦' },
 ];
@@ -80,6 +82,7 @@ export default function FactorMining() {
       <div className={activeTab === 'overview' ? '' : 'hidden'}><OverviewTab registry={registry} results={results} /></div>
       <div className={activeTab === 'parametric' ? '' : 'hidden'}><ParametricTab /></div>
       <div className={activeTab === 'gp' ? '' : 'hidden'}><GPTab /></div>
+      <div className={activeTab === 'manual' ? '' : 'hidden'}><ManualTab /></div>
       <div className={activeTab === 'registry' ? '' : 'hidden'}><RegistryTab registry={registry} onRefresh={loadData} /></div>
       <div className={activeTab === 'export' ? '' : 'hidden'}><ExportTab results={results} /></div>
     </div>

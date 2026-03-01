@@ -279,3 +279,102 @@ pub async fn factor_results() -> Json<Value> {
         },
     }))
 }
+
+/// Run manual factor evaluation (async task)
+pub async fn evaluate_manual_factor(
+    State(state): State<AppState>,
+    body: Option<Json<Value>>,
+) -> (StatusCode, Json<Value>) {
+    let body_val = body.map(|b| b.0).unwrap_or(json!({}));
+    let expression = body_val.get("expression").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let name = body_val.get("name").and_then(|v| v.as_str()).unwrap_or("manual_factor").to_string();
+    let horizon = body_val.get("horizon").and_then(|v| v.as_i64()).unwrap_or(5);
+    let symbols = body_val.get("symbols").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let start_date = body_val.get("start_date").and_then(|v| v.as_str()).unwrap_or("2022-01-01").to_string();
+    let end_date = body_val.get("end_date").and_then(|v| v.as_str()).unwrap_or("2024-12-31").to_string();
+
+    if expression.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "expression is required"})));
+    }
+
+    let ts = state.task_store.clone();
+    let params_json = serde_json::to_string(&json!({
+        "name": name, "expression": expression, "horizon": horizon,
+        "symbols": symbols, "start_date": start_date, "end_date": end_date,
+    })).unwrap_or_default();
+    let task_id = ts.create_with_params("evaluate_manual_factor", Some(&params_json));
+    let tid = task_id.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let script = std::path::Path::new("ml_models/manual_factor_eval.py");
+        if !script.exists() {
+            ts.fail(&tid, "manual_factor_eval.py not found");
+            return;
+        }
+        let python = match find_python() {
+            Some(p) => p,
+            None => { ts.fail(&tid, "Python not found"); return; }
+        };
+
+        let mut args = vec![
+            "ml_models/manual_factor_eval.py".to_string(),
+            "--expression".into(), expression,
+            "--name".into(), name,
+            "--horizon".into(), horizon.to_string(),
+        ];
+        push_data_args(&mut args, &symbols, &start_date, &end_date);
+
+        match run_python_script(&python, &args) {
+            Ok(val) => ts.complete(&tid, &val.to_string()),
+            Err(e) => ts.fail(&tid, &e),
+        }
+    });
+
+    (StatusCode::ACCEPTED, Json(json!({ "task_id": task_id, "status": "running" })))
+}
+
+/// Save a manually evaluated factor to registry
+pub async fn save_manual_factor(
+    body: Option<Json<Value>>,
+) -> (StatusCode, Json<Value>) {
+    let body_val = body.map(|b| b.0).unwrap_or(json!({}));
+    let name = body_val.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let expression = body_val.get("expression").and_then(|v| v.as_str()).unwrap_or("");
+    let metrics = body_val.get("metrics").cloned().unwrap_or(json!({}));
+
+    if name.is_empty() || expression.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "name and expression required"})));
+    }
+
+    let registry_path = std::path::Path::new("ml_models/factor_registry.json");
+    let mut registry: Value = if registry_path.exists() {
+        std::fs::read_to_string(registry_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(json!({}))
+    } else {
+        json!({})
+    };
+
+    let factor_id = format!("manual_{}", name);
+    let entry = json!({
+        "expression": expression,
+        "state": "candidate",
+        "source": "manual",
+        "ic_mean": metrics.get("ic_mean"),
+        "ir": metrics.get("ir"),
+        "ic_pos_rate": metrics.get("ic_pos_rate"),
+        "turnover": metrics.get("turnover"),
+        "decay": metrics.get("decay"),
+        "created_at": chrono::Utc::now().to_rfc3339(),
+    });
+
+    registry.as_object_mut()
+        .unwrap_or(&mut serde_json::Map::new())
+        .insert(factor_id.clone(), entry);
+
+    match std::fs::write(registry_path, serde_json::to_string_pretty(&registry).unwrap_or_default()) {
+        Ok(_) => (StatusCode::OK, Json(json!({"status": "saved", "factor_id": factor_id}))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Write failed: {}", e)}))),
+    }
+}

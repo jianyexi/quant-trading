@@ -719,6 +719,55 @@ export async function factorResults(): Promise<FactorResults> {
   return fetchJson('/factor/results');
 }
 
+// ── Manual Factor Evaluation ────────────────────────────────────────
+
+export interface ManualFactorMetrics {
+  ic_mean: number;
+  ic_std: number;
+  ir: number;
+  ic_pos_rate: number;
+  turnover: number;
+  decay: number;
+  n_obs: number;
+  n_stocks?: number;
+  rating?: number;
+}
+
+export interface ManualFactorResult {
+  name: string;
+  expression: string;
+  metrics: ManualFactorMetrics;
+  ic_series: Array<{ period: string; ic: number }>;
+  quintile_returns: Array<{ quintile: number; avg_return: number; count: number }>;
+  per_stock_ic: Record<string, number>;
+  error?: string;
+}
+
+export async function factorEvaluateManual(params: {
+  expression: string;
+  name?: string;
+  symbols?: string;
+  start_date?: string;
+  end_date?: string;
+  horizon?: number;
+}): Promise<TaskSubmitResult> {
+  return fetchJson('/factor/evaluate-manual', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function factorSaveManual(params: {
+  name: string;
+  expression: string;
+  metrics: ManualFactorMetrics;
+}): Promise<{ status: string; factor_id: string }> {
+  return fetchJson('/factor/save-manual', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
 // ── Notifications ───────────────────────────────────────────────────
 
 export interface NotificationItem {

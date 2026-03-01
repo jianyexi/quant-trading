@@ -105,6 +105,8 @@ fn factor_routes() -> Router<AppState> {
     Router::new()
         .route("/mine/parametric", post(handlers::factor_mine_parametric))
         .route("/mine/gp", post(handlers::factor_mine_gp))
+        .route("/evaluate-manual", post(handlers::evaluate_manual_factor))
+        .route("/save-manual", post(handlers::save_manual_factor))
         .route("/registry", get(handlers::factor_registry_get))
         .route("/manage", post(handlers::factor_registry_manage))
         .route("/export", post(handlers::factor_export_promoted))
