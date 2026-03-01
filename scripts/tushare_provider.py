@@ -55,13 +55,25 @@ def _get_api():
     return _ts_api
 
 
+_is_available_cache: Optional[bool] = None
+
+
 def is_available() -> bool:
-    """Check if tushare is available and token is configured."""
+    """Check if tushare is available, token is configured, and API responds.
+
+    Result is cached after first call to avoid repeated network checks.
+    """
+    global _is_available_cache
+    if _is_available_cache is not None:
+        return _is_available_cache
     try:
-        _get_api()
-        return True
-    except (ImportError, ValueError):
-        return False
+        api = _get_api()
+        # Verify token actually works with a lightweight call
+        df = api.trade_cal(exchange="SSE", start_date="20250101", end_date="20250102")
+        _is_available_cache = df is not None
+    except Exception:
+        _is_available_cache = False
+    return _is_available_cache
 
 
 # ── Symbol Helpers ───────────────────────────────────────────────────

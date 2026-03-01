@@ -8,6 +8,7 @@ import {
   runBacktest,
   getBacktestResults,
   getCacheStatus,
+  getDataSourceStatus,
   syncData,
 } from '../api/client';
 
@@ -161,6 +162,7 @@ function PipelineContent() {
   interface CacheInfo { symbol: string; bar_count: number; min_date: string; max_date: string }
   const [cacheInfo, setCacheInfo] = useState<CacheInfo[]>([]);
   const [cacheLoading, setCacheLoading] = useState(false);
+  const [dsStatus, setDsStatus] = useState<{ tushare: boolean; akshare: boolean; yfinance: boolean } | null>(null);
 
   // Step 3 uses backtest polling
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -196,6 +198,9 @@ function PipelineContent() {
 
   // Check cache on mount and when symbols change
   useEffect(() => { checkCache(); }, [checkCache]);
+
+  // Check data source availability on mount
+  useEffect(() => { getDataSourceStatus().then(setDsStatus).catch(() => {}); }, []);
 
   const runDataSync = useCallback(async () => {
     updateStatus(0, 'running');
@@ -571,6 +576,21 @@ function PipelineContent() {
                 <span className="text-[#f59e0b]">⚠ 无缓存数据，请先同步</span>
               )}
             </div>
+            {/* Data source status */}
+            {dsStatus && (
+              <div className="flex items-center gap-3 text-xs text-[#94a3b8]">
+                <span className="text-[#64748b]">数据源:</span>
+                <span className={dsStatus.tushare ? 'text-[#22c55e]' : 'text-[#64748b]'}>
+                  {dsStatus.tushare ? '✓' : '✗'} Tushare
+                </span>
+                <span className={dsStatus.akshare ? 'text-[#22c55e]' : 'text-[#64748b]'}>
+                  {dsStatus.akshare ? '✓' : '✗'} AKShare
+                </span>
+                <span className={dsStatus.yfinance ? 'text-[#22c55e]' : 'text-[#64748b]'}>
+                  {dsStatus.yfinance ? '✓' : '✗'} yfinance
+                </span>
+              </div>
+            )}
             <button onClick={runDataSync} disabled={isAnyRunning || !enableStep[0]}
               className={`w-full ${btnPrimary} ${isAnyRunning || !enableStep[0] ? 'bg-[#334155] text-[#64748b]' : 'bg-[#0891b2] text-white hover:bg-[#0e7490]'}`}>
               📡 同步数据

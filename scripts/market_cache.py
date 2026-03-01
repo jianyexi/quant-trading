@@ -367,8 +367,8 @@ class MarketCache:
                             fetched = True
                         break
                     else:
-                        ts_err = "no tushare token"
-                        break  # No token, skip to akshare
+                        ts_err = "tushare unavailable (token missing or insufficient permissions)"
+                        break  # Skip to akshare
                 except ImportError:
                     ts_err = "tushare not installed"
                     break  # tushare not installed
