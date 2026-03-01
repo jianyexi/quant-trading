@@ -374,6 +374,10 @@ class MarketCache:
                     break  # tushare not installed
                 except Exception as e:
                     ts_err = str(e)
+                    # Permission errors won't be fixed by retrying
+                    if "权限" in str(e) or "permission" in str(e).lower():
+                        ts_err = f"tushare权限不足 (需要120积分): {e}"
+                        break
                     if attempt < max_retries:
                         time.sleep(base_delay * (2 ** (attempt - 1)))
 
