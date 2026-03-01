@@ -672,83 +672,11 @@ def walk_forward_cv_single(
 
 
 # Default stock list for akshare training — 80 stocks across sectors
-DEFAULT_TRAIN_STOCKS = [
-    # 白酒/食品 (Consumer Staples)
-    "600519", "000858", "000568", "600809", "600887", "002304", "603288",
-    "000895", "603369", "002568",
-    # 金融 (Financials)
-    "600036", "601318", "601166", "600030", "601398", "601288",
-    "600000", "601601", "601688", "000776",
-    # 新能源/汽车 (New Energy / Auto)
-    "300750", "002594", "600438", "601012", "002460",
-    "600089", "002074", "300014", "601633",
-    # 医药 (Healthcare)
-    "600276", "000333", "300760", "603259", "300122",
-    "000538", "600196", "002007", "300347",
-    # 科技/电子 (Tech / Electronics)
-    "002415", "603501", "300782", "688981", "002049",
-    "002371", "300433", "601138", "002241",
-    # 消费/家电 (Consumer Discretionary)
-    "000651", "600690", "002032", "601888",
-    "000725", "002572", "603486",
-    # 周期/材料 (Materials / Industrials)
-    "601899", "600031", "600309", "601225", "600585",
-    "600019", "601600", "002466", "600348",
-    # 公用事业/基建 (Utilities / Infra)
-    "600900", "601669", "600048", "601800",
-    "600886", "601985", "003816",
-    # 传媒/互联网 (Media / Internet)
-    "300059", "002230", "603444",
-    "002555", "300413",
-    # 军工 (Defense)
-    "600760", "002179", "600893",
-    "600150", "000768",
-]
-
-
-def _fetch_akshare_data(
-    symbols: Optional[List[str]] = None,
-    start_date: str = "2020-01-01",
-    end_date: str = "2024-12-31",
-    max_retries: int = 3,
-    base_delay: float = 0.8,
-) -> pd.DataFrame:
-    """Load market data from local cache only (no network fetch).
-
-    Data must be pre-cached via Pipeline Step 0 (Data Sync) or
-    `python scripts/market_cache.py warm_symbols <symbols>`.
-    This separation ensures training never fails due to network issues.
-    """
-    import sys as _sys
-    _sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-    from market_cache import get_cache
-
-    stock_list = symbols if symbols else DEFAULT_TRAIN_STOCKS
-    print(f"📂 Loading cached data: {len(stock_list)} stocks, {start_date} ~ {end_date}")
-
-    cache = get_cache()
-    combined = cache.get_or_fetch_multi(
-        stock_list, start_date, end_date,
-        max_retries=max_retries, base_delay=base_delay,
-        cache_only=True,
-    )
-
-    if combined is None or combined.empty:
-        raise RuntimeError(
-            "❌ No cached market data found. Please run data sync first:\n"
-            "  Pipeline → Step 0: 数据准备 → 同步数据\n"
-            "  or: python scripts/market_cache.py warm_symbols "
-            + ",".join(stock_list) + f" {start_date} {end_date}"
-        )
-
-    return combined
-
 
 # ── Full Training Pipeline ──────────────────────────────────────────
 
 def retrain(
     data_path: Optional[str] = None,
-    data_source: str = "synthetic",
     symbols: Optional[List[str]] = None,
     start_date: str = "2020-01-01",
     end_date: str = "2024-12-31",
@@ -760,10 +688,12 @@ def retrain(
     algorithms: Optional[List[str]] = None,
     notify_serve: bool = True,
     serve_url: str = "http://127.0.0.1:18091",
+    # Legacy param — accepted but ignored
+    data_source: str = "cache",
 ) -> dict:
     """
     Full multi-algorithm retrain pipeline:
-      1. Load OHLCV data
+      1. Load OHLCV data (from cache or CSV)
       2. Collect journal labels
       3. Walk-forward CV for each algorithm
       4. Pick best algorithm
@@ -771,28 +701,19 @@ def retrain(
       6. Export + notify
     """
     from sklearn.metrics import roc_auc_score, accuracy_score
+    from data_utils import load_cached_data
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report = {"timestamp": timestamp, "status": "started"}
 
-    # 1. Load data
+    # 1. Load data — CSV file or cache (unified interface)
     if data_path and os.path.exists(data_path):
-        print(f"📂 Loading market data from: {data_path}")
+        print(f"📂 Loading market data from CSV: {data_path}")
         df = pd.read_csv(data_path, index_col=0, parse_dates=True)
-    elif data_source == "akshare":
-        df = _fetch_akshare_data(symbols, start_date, end_date)
     else:
-        raise RuntimeError("❌ No market data provided. Use --data <csv> or --data-source akshare")
+        df = load_cached_data(symbols, start_date, end_date)
     report["data_rows"] = len(df)
-    report["data_source"] = data_source if not data_path else "csv"
-    # Include per-stock fetch statistics in report
-    if hasattr(df, 'attrs') and 'fetch_stats' in df.attrs:
-        stats = df.attrs['fetch_stats']
-        report["fetch_stats"] = stats
-        ok = sum(1 for v in stats.values() if v["status"] == "ok")
-        skip = sum(1 for v in stats.values() if v["status"] == "skip")
-        fail = sum(1 for v in stats.values() if v["status"] == "error")
-        report["fetch_summary"] = {"ok": ok, "skipped": skip, "failed": fail, "total": len(stats)}
+    report["data_source"] = "csv" if data_path else "cache"
 
     # 2. Collect journal labels
     journal_df = collect_journal_labels(journal_path)
@@ -1049,13 +970,13 @@ def _persist_training_run(report: dict, journal_path: str = "data/trade_journal.
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Auto-retrain ML Factor Model (multi-algorithm)")
-    parser.add_argument("--data", default=None, help="Path to OHLCV CSV data")
-    parser.add_argument("--data-source", default="akshare", choices=["akshare"],
-                        help="Data source: akshare (real A-share data)")
+    parser.add_argument("--data", default=None, help="Path to OHLCV CSV data (overrides cache)")
     parser.add_argument("--symbols", default=None,
-                        help="Comma-separated stock codes for akshare (e.g. 600519,000858). Default: top 20 A-shares")
-    parser.add_argument("--start-date", default="2022-01-01", help="Start date for akshare data (YYYY-MM-DD)")
-    parser.add_argument("--end-date", default="2024-12-31", help="End date for akshare data (YYYY-MM-DD)")
+                        help="Comma-separated stock codes (e.g. 600519,000858)")
+    parser.add_argument("--start-date", default="2020-01-01", help="Start date (YYYY-MM-DD)")
+    parser.add_argument("--end-date", default="2024-12-31", help="End date (YYYY-MM-DD)")
+    # Legacy flags — accepted but ignored
+    parser.add_argument("--data-source", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--journal", default="data/trade_journal.db", help="Path to trade journal DB")
     parser.add_argument("--output-dir", default="ml_models", help="Output directory")
     parser.add_argument("--folds", type=int, default=5, help="Walk-forward CV folds")
@@ -1073,7 +994,6 @@ if __name__ == "__main__":
 
     retrain(
         data_path=args.data,
-        data_source=args.data_source,
         symbols=syms,
         start_date=args.start_date,
         end_date=args.end_date,

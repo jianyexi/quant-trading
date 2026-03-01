@@ -20,12 +20,10 @@ interface SharedConfig {
   symbols: string;
   start_date: string;
   end_date: string;
-  data_source: 'akshare' | 'synthetic';
 }
 
 interface MiningConfig {
   method: MiningMethod;
-  n_bars: number;
   horizon: number;
   ic_threshold: number;
   top_n: number;
@@ -128,13 +126,11 @@ export default function Pipeline() {
     symbols: '600519',
     start_date: '2023-01-01',
     end_date: '2024-12-31',
-    data_source: 'akshare',
   });
 
   // Per-step configs
   const [mining, setMining] = useState<MiningConfig>({
     method: 'parametric',
-    n_bars: 3000,
     horizon: 5,
     ic_threshold: 0.02,
     top_n: 30,
@@ -230,11 +226,9 @@ export default function Pipeline() {
     setStepLogs(prev => { const n = [...prev]; n[1] = ''; return n; });
 
     const params = {
-      data_source: shared.data_source,
       symbols: shared.symbols,
       start_date: shared.start_date,
       end_date: shared.end_date,
-      n_bars: mining.n_bars,
       horizon: mining.horizon,
     };
 
@@ -274,7 +268,6 @@ export default function Pipeline() {
 
     await tmTrain.submit(() => mlRetrain({
       algorithms: train.algorithms,
-      data_source: shared.data_source,
       symbols: shared.symbols,
       start_date: shared.start_date,
       end_date: shared.end_date,
@@ -505,7 +498,7 @@ export default function Pipeline() {
       {/* Shared Config Panel */}
       <div className="rounded-xl border border-[#334155] bg-[#1e293b] p-5">
         <h3 className="text-sm font-bold text-[#f8fafc] mb-3">📋 共享配置</h3>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
           <InputField label="股票代码 (逗号分隔)">
             <input className={inputCls} value={shared.symbols}
               onChange={e => setShared(p => ({ ...p, symbols: e.target.value }))} />
@@ -517,13 +510,6 @@ export default function Pipeline() {
           <InputField label="结束日期">
             <input type="date" className={inputCls} value={shared.end_date}
               onChange={e => setShared(p => ({ ...p, end_date: e.target.value }))} />
-          </InputField>
-          <InputField label="数据源">
-            <select className={selectCls} value={shared.data_source}
-              onChange={e => setShared(p => ({ ...p, data_source: e.target.value as any }))}>
-              <option value="akshare">akshare (真实数据)</option>
-              <option value="synthetic">synthetic (模拟)</option>
-            </select>
           </InputField>
         </div>
         <div className="flex gap-2 mt-3">
@@ -614,10 +600,6 @@ export default function Pipeline() {
               </select>
             </InputField>
             <div className="grid grid-cols-2 gap-2">
-              <InputField label="K线数">
-                <input type="number" className={inputCls} value={mining.n_bars}
-                  onChange={e => setMining(p => ({ ...p, n_bars: +e.target.value }))} />
-              </InputField>
               <InputField label="预测周期">
                 <input type="number" className={inputCls} value={mining.horizon}
                   onChange={e => setMining(p => ({ ...p, horizon: +e.target.value }))} />

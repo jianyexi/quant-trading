@@ -8,9 +8,7 @@ use serde_json::{json, Value};
 use super::{find_python, run_python_script};
 use crate::state::AppState;
 
-fn build_data_args(args: &mut Vec<String>, data_source: &str, symbols: &str, start_date: &str, end_date: &str, _n_bars: i64) {
-    // Always use real data (akshare/tushare) — synthetic data is not allowed
-    args.push("--akshare".into());
+fn push_data_args(args: &mut Vec<String>, symbols: &str, start_date: &str, end_date: &str) {
     if !symbols.is_empty() {
         args.push("--symbols".into());
         args.push(symbols.to_string());
@@ -19,7 +17,6 @@ fn build_data_args(args: &mut Vec<String>, data_source: &str, symbols: &str, sta
     args.push(start_date.to_string());
     args.push("--end-date".into());
     args.push(end_date.to_string());
-    let _ = data_source; // always real data
 }
 
 /// Run Phase-1 parameterized factor mining (async task)
@@ -28,23 +25,20 @@ pub async fn factor_mine_parametric(
     body: Option<Json<Value>>,
 ) -> (StatusCode, Json<Value>) {
     let body_val = body.map(|b| b.0).unwrap_or(json!({}));
-    let n_bars = body_val.get("n_bars").and_then(|v| v.as_i64()).unwrap_or(3000);
     let horizon = body_val.get("horizon").and_then(|v| v.as_i64()).unwrap_or(5);
     let ic_threshold = body_val.get("ic_threshold").and_then(|v| v.as_f64()).unwrap_or(0.02);
     let top_n = body_val.get("top_n").and_then(|v| v.as_i64()).unwrap_or(30);
     let retrain = body_val.get("retrain").and_then(|v| v.as_bool()).unwrap_or(false);
     let cross_stock = body_val.get("cross_stock").and_then(|v| v.as_bool()).unwrap_or(false);
-    let data_source = body_val.get("data_source").and_then(|v| v.as_str()).unwrap_or("akshare").to_string();
     let symbols = body_val.get("symbols").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let start_date = body_val.get("start_date").and_then(|v| v.as_str()).unwrap_or("2023-01-01").to_string();
+    let start_date = body_val.get("start_date").and_then(|v| v.as_str()).unwrap_or("2020-01-01").to_string();
     let end_date = body_val.get("end_date").and_then(|v| v.as_str()).unwrap_or("2024-12-31").to_string();
 
     let ts = state.task_store.clone();
     let params_json = serde_json::to_string(&json!({
-        "n_bars": n_bars, "horizon": horizon, "ic_threshold": ic_threshold,
+        "horizon": horizon, "ic_threshold": ic_threshold,
         "top_n": top_n, "retrain": retrain, "cross_stock": cross_stock,
-        "data_source": data_source, "symbols": symbols,
-        "start_date": start_date, "end_date": end_date,
+        "symbols": symbols, "start_date": start_date, "end_date": end_date,
     })).unwrap_or_default();
     let task_id = ts.create_with_params("factor_mine_parametric", Some(&params_json));
     let tid = task_id.clone();
@@ -61,7 +55,7 @@ pub async fn factor_mine_parametric(
         };
 
         let mut args = vec!["ml_models/factor_mining.py".to_string()];
-        build_data_args(&mut args, &data_source, &symbols, &start_date, &end_date, n_bars);
+        push_data_args(&mut args, &symbols, &start_date, &end_date);
         args.extend([
             "--horizon".into(), horizon.to_string(),
             "--ic-threshold".into(), ic_threshold.to_string(),
@@ -85,23 +79,20 @@ pub async fn factor_mine_gp(
     body: Option<Json<Value>>,
 ) -> (StatusCode, Json<Value>) {
     let body_val = body.map(|b| b.0).unwrap_or(json!({}));
-    let n_bars = body_val.get("n_bars").and_then(|v| v.as_i64()).unwrap_or(3000);
     let pop_size = body_val.get("pop_size").and_then(|v| v.as_i64()).unwrap_or(200);
     let generations = body_val.get("generations").and_then(|v| v.as_i64()).unwrap_or(30);
     let max_depth = body_val.get("max_depth").and_then(|v| v.as_i64()).unwrap_or(6);
     let horizon = body_val.get("horizon").and_then(|v| v.as_i64()).unwrap_or(5);
     let retrain = body_val.get("retrain").and_then(|v| v.as_bool()).unwrap_or(false);
-    let data_source = body_val.get("data_source").and_then(|v| v.as_str()).unwrap_or("akshare").to_string();
     let symbols = body_val.get("symbols").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let start_date = body_val.get("start_date").and_then(|v| v.as_str()).unwrap_or("2023-01-01").to_string();
+    let start_date = body_val.get("start_date").and_then(|v| v.as_str()).unwrap_or("2020-01-01").to_string();
     let end_date = body_val.get("end_date").and_then(|v| v.as_str()).unwrap_or("2024-12-31").to_string();
 
     let ts = state.task_store.clone();
     let params_json = serde_json::to_string(&json!({
-        "n_bars": n_bars, "pop_size": pop_size, "generations": generations,
+        "pop_size": pop_size, "generations": generations,
         "max_depth": max_depth, "horizon": horizon, "retrain": retrain,
-        "data_source": data_source, "symbols": symbols,
-        "start_date": start_date, "end_date": end_date,
+        "symbols": symbols, "start_date": start_date, "end_date": end_date,
     })).unwrap_or_default();
     let task_id = ts.create_with_params("factor_mine_gp", Some(&params_json));
     let tid = task_id.clone();
@@ -118,7 +109,7 @@ pub async fn factor_mine_gp(
         };
 
         let mut args = vec!["ml_models/gp_factor_mining.py".to_string()];
-        build_data_args(&mut args, &data_source, &symbols, &start_date, &end_date, n_bars);
+        push_data_args(&mut args, &symbols, &start_date, &end_date);
         args.extend([
             "--pop-size".into(), pop_size.to_string(),
             "--generations".into(), generations.to_string(),

@@ -339,12 +339,10 @@ pub async fn ml_retrain(
     let body_val = body.map(|b| b.0).unwrap_or(json!({}));
     let algorithms = body_val.get("algorithms").and_then(|a| a.as_str())
         .unwrap_or("lgb").to_string();
-    let data_source = body_val.get("data_source").and_then(|a| a.as_str())
-        .unwrap_or("akshare").to_string();
     let symbols = body_val.get("symbols").and_then(|a| a.as_str())
         .unwrap_or("").to_string();
     let start_date = body_val.get("start_date").and_then(|a| a.as_str())
-        .unwrap_or("2022-01-01").to_string();
+        .unwrap_or("2020-01-01").to_string();
     let end_date = body_val.get("end_date").and_then(|a| a.as_str())
         .unwrap_or("2024-12-31").to_string();
     let horizon = body_val.get("horizon").and_then(|a| a.as_i64())
@@ -354,9 +352,9 @@ pub async fn ml_retrain(
 
     let ts = state.task_store.clone();
     let params_json = serde_json::to_string(&json!({
-        "algorithms": algorithms, "data_source": data_source,
-        "symbols": symbols, "start_date": start_date,
-        "end_date": end_date, "horizon": horizon, "threshold": threshold,
+        "algorithms": algorithms, "symbols": symbols,
+        "start_date": start_date, "end_date": end_date,
+        "horizon": horizon, "threshold": threshold,
     })).unwrap_or_default();
     let task_id = ts.create_with_params("ml_retrain", Some(&params_json));
     let tid = task_id.clone();
@@ -384,18 +382,15 @@ pub async fn ml_retrain(
             "--threshold".to_string(), threshold,
         ];
 
-        if data_source == "akshare" {
-            args.push("--data-source".to_string());
-            args.push("akshare".to_string());
-            if !symbols.is_empty() {
-                args.push("--symbols".to_string());
-                args.push(symbols);
-            }
-            args.push("--start-date".to_string());
-            args.push(start_date);
-            args.push("--end-date".to_string());
-            args.push(end_date);
+        // Data args — always pass symbols + date range (data loaded from cache)
+        if !symbols.is_empty() {
+            args.push("--symbols".to_string());
+            args.push(symbols);
         }
+        args.push("--start-date".to_string());
+        args.push(start_date);
+        args.push("--end-date".to_string());
+        args.push(end_date);
 
         ts.set_progress(&tid, "Training started...");
 
