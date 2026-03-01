@@ -29,7 +29,11 @@ def fetch_akshare_data(
     start_date: str = "2023-01-01",
     end_date: str = "2024-12-31",
 ) -> pd.DataFrame:
-    """Fetch real A-share daily OHLCV data, using local cache to avoid re-fetching."""
+    """Fetch real A-share daily OHLCV data, using local cache to avoid re-fetching.
+    
+    Resilient: if some stocks fail to fetch, returns whatever data is available.
+    Only raises if absolutely no data can be obtained.
+    """
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
     from market_cache import get_cache
@@ -38,10 +42,31 @@ def fetch_akshare_data(
     print(f"📡 Fetching real data: {len(stock_list)} stocks, {start_date} ~ {end_date}")
 
     cache = get_cache()
-    combined = cache.get_or_fetch_multi(stock_list, start_date, end_date)
+    combined = cache.get_or_fetch_multi(stock_list, start_date, end_date, min_bars=30)
 
     if combined is None or combined.empty:
-        raise RuntimeError("❌ No market data fetched. Check network/API access and stock codes.")
+        # Last resort: try to read any cached data for these symbols, ignoring date range
+        print("⚠️  Network fetch failed. Trying to use any cached data as fallback...")
+        fallback_dfs = []
+        for sym in stock_list:
+            code = sym.split(".")[0]
+            try:
+                df = cache._read_cache(code, "2000-01-01", "2099-12-31")
+                if df is not None and len(df) >= 30:
+                    df["symbol"] = code
+                    fallback_dfs.append(df)
+                    print(f"  ✓ {code}: {len(df)} bars from cache")
+            except Exception:
+                pass
+        if fallback_dfs:
+            combined = pd.concat(fallback_dfs, axis=0).sort_index()
+            print(f"📦 Fallback: using {len(combined)} cached bars from {len(fallback_dfs)} stocks")
+        else:
+            raise RuntimeError(
+                "❌ No market data available. All providers failed and no cached data exists.\n"
+                "   Fix: Run 'python scripts/market_cache.py --warm' to pre-cache data,\n"
+                "   or set TUSHARE_TOKEN for reliable data access."
+            )
 
     return combined
 

@@ -124,8 +124,14 @@ class MarketCache:
         max_retries: int = 3,
         base_delay: float = 0.8,
         verbose: bool = True,
+        min_bars: int = 30,
     ) -> pd.DataFrame:
-        """Fetch multiple stocks, returning a combined DataFrame with 'symbol' column."""
+        """Fetch multiple stocks, returning a combined DataFrame with 'symbol' column.
+        
+        Args:
+            min_bars: Minimum bars required per symbol (default 30). Set lower to
+                      accept partial cached data when network is unavailable.
+        """
         all_data = []
         n_ok, n_skip, n_fail = 0, 0, 0
         n_cached, n_fetched = 0, 0
@@ -140,7 +146,7 @@ class MarketCache:
                 was_cached = self._is_fully_cached(code, start_date, end_date)
                 df = self.get_or_fetch(code, start_date, end_date, max_retries=max_retries, base_delay=base_delay)
 
-                if df is None or df.empty or len(df) < 200:
+                if df is None or df.empty or len(df) < min_bars:
                     if verbose:
                         print(f"skip ({0 if df is None else len(df)} bars)")
                     n_skip += 1
@@ -614,7 +620,7 @@ if __name__ == "__main__":
     cache = MarketCache()
 
     if len(sys.argv) < 2:
-        print("Usage: market_cache.py <status|fetch|invalidate> [args...]")
+        print("Usage: market_cache.py <status|fetch|invalidate|warm> [args...]")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -637,6 +643,27 @@ if __name__ == "__main__":
             print(df.head())
             print("...")
             print(df.tail())
+
+    elif cmd == "warm":
+        # Pre-cache default stock pool so mining/training never need network
+        start = sys.argv[2] if len(sys.argv) > 2 else "2020-01-01"
+        end = sys.argv[3] if len(sys.argv) > 3 else datetime.now().strftime("%Y-%m-%d")
+        stocks = [
+            "600519", "000858", "600036", "601318", "300750",
+            "002594", "600276", "000333", "000651", "002415",
+            "601899", "600900", "600690", "601888", "603501",
+            "600809", "601166", "600030", "300760", "600438",
+        ]
+        print(f"🔥 Pre-warming cache: {len(stocks)} stocks, {start} ~ {end}")
+        for i, sym in enumerate(stocks):
+            print(f"  [{i+1}/{len(stocks)}] {sym}...", end=" ", flush=True)
+            try:
+                df = cache.get_or_fetch(sym, start, end)
+                print(f"OK ({len(df)} bars)")
+            except Exception as e:
+                print(f"FAIL: {e}")
+            time.sleep(0.3)  # Throttle
+        print("\n✅ Warm-up complete. Run 'market_cache.py status' to verify.")
 
     elif cmd == "invalidate":
         sym = sys.argv[2] if len(sys.argv) > 2 else None
