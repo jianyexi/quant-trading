@@ -519,6 +519,7 @@ pub async fn sync_data(
         };
         let result = std::process::Command::new(&python)
             .args(["scripts/market_cache.py", "warm_symbols", &symbols_str, &start, &end])
+            .env("PYTHONIOENCODING", "utf-8")
             .output();
         match result {
             Ok(output) => {
