@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import MarketData from './pages/MarketData';
@@ -26,7 +26,6 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="market" element={<MarketData />} />
           <Route path="strategy" element={<StrategyConfig />} />
-          <Route path="backtest" element={<Navigate to="/pipeline" replace />} />
           <Route path="pipeline" element={<Pipeline />} />
           <Route path="history" element={<History />} />
           <Route path="screener" element={<Screener />} />
@@ -34,7 +33,6 @@ export default function App() {
           <Route path="risk" element={<RiskManagement />} />
           <Route path="sentiment" element={<Sentiment />} />
           <Route path="dl-models" element={<DLModels />} />
-          <Route path="factor-mining" element={<Navigate to="/pipeline" replace />} />
           <Route path="portfolio" element={<Portfolio />} />
           <Route path="notifications" element={<Notifications />} />
           <Route path="logs" element={<Logs />} />
