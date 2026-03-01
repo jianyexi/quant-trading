@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { useTaskManager } from '../hooks/useTaskManager';
 import { TaskOutput } from '../components/TaskPipeline';
 import {
@@ -585,11 +586,14 @@ export default function Pipeline() {
         <div className={`rounded-xl border p-4 ${stepStatus[1] === 'running' ? 'border-[#3b82f6]' : 'border-[#334155]'} bg-[#1e293b]`}>
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-bold text-[#f8fafc]">🔬 Step 1: 因子挖掘</h3>
-            <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
-              <input type="checkbox" checked={enableStep[1]}
-                onChange={e => setEnableStep(p => { const n = [...p]; n[1] = e.target.checked; return n; })} />
-              启用
-            </label>
+            <div className="flex items-center gap-2">
+              <Link to="/factor-mining" className="text-xs text-[#3b82f6] hover:underline">高级 →</Link>
+              <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
+                <input type="checkbox" checked={enableStep[1]}
+                  onChange={e => setEnableStep(p => { const n = [...p]; n[1] = e.target.checked; return n; })} />
+                启用
+              </label>
+            </div>
           </div>
           <div className="space-y-3">
             <InputField label="挖掘方法">
@@ -645,11 +649,14 @@ export default function Pipeline() {
         <div className={`rounded-xl border p-4 ${stepStatus[2] === 'running' ? 'border-[#3b82f6]' : 'border-[#334155]'} bg-[#1e293b]`}>
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-bold text-[#f8fafc]">🧠 Step 2: ML 训练</h3>
-            <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
-              <input type="checkbox" checked={enableStep[2]}
-                onChange={e => setEnableStep(p => { const n = [...p]; n[2] = e.target.checked; return n; })} />
-              启用
-            </label>
+            <div className="flex items-center gap-2">
+              <Link to="/strategy" className="text-xs text-[#3b82f6] hover:underline">策略配置 →</Link>
+              <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
+                <input type="checkbox" checked={enableStep[2]}
+                  onChange={e => setEnableStep(p => { const n = [...p]; n[2] = e.target.checked; return n; })} />
+                启用
+              </label>
+            </div>
           </div>
           <div className="space-y-3">
             <InputField label="算法">
@@ -679,11 +686,14 @@ export default function Pipeline() {
         <div className={`rounded-xl border p-4 ${stepStatus[3] === 'running' ? 'border-[#3b82f6]' : 'border-[#334155]'} bg-[#1e293b]`}>
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-bold text-[#f8fafc]">📊 Step 3: 策略回测</h3>
-            <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
-              <input type="checkbox" checked={enableStep[3]}
-                onChange={e => setEnableStep(p => { const n = [...p]; n[3] = e.target.checked; return n; })} />
-              启用
-            </label>
+            <div className="flex items-center gap-2">
+              <Link to="/backtest" className="text-xs text-[#3b82f6] hover:underline">详细回测 →</Link>
+              <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
+                <input type="checkbox" checked={enableStep[3]}
+                  onChange={e => setEnableStep(p => { const n = [...p]; n[3] = e.target.checked; return n; })} />
+                启用
+              </label>
+            </div>
           </div>
           <div className="space-y-3">
             <InputField label="策略">

@@ -1,8 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { StrategyConfig, StrategyParam } from '../types';
-import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlRetrain, mlModelInfo, type ModelInfo, type RetrainOptions } from '../api/client';
-import { useTaskManager } from '../hooks/useTaskManager';
-import { Save, Upload, Play, RotateCcw, Brain, Loader2, CheckCircle, AlertCircle, Zap, Database } from 'lucide-react';
+import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlModelInfo, type ModelInfo } from '../api/client';
+import { Save, Upload, Play, RotateCcw, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 
 const STRATEGIES: StrategyConfig[] = [
   {
@@ -98,14 +97,6 @@ function defaultTradingConfig(): TradingConfig {
   };
 }
 
-const ALGO_LABELS: Record<string, { label: string; desc: string; badge: string }> = {
-  lgb: { label: 'LightGBM', desc: '梯度提升树 — 速度快，精度高', badge: 'bg-green-600/20 text-green-400' },
-  xgb: { label: 'XGBoost', desc: '极端梯度提升 — 竞赛冠军模型', badge: 'bg-blue-600/20 text-blue-400' },
-  catboost: { label: 'CatBoost', desc: '类别特征自动处理 — 鲁棒性强', badge: 'bg-purple-600/20 text-purple-400' },
-  lstm: { label: 'LSTM', desc: '长短期记忆网络 — 序列建模', badge: 'bg-orange-600/20 text-orange-400' },
-  transformer: { label: 'Transformer', desc: '注意力机制 — 捕捉长距离依赖', badge: 'bg-red-600/20 text-red-400' },
-};
-
 export default function StrategyConfigPage() {
   const [selectedStrategy, setSelectedStrategy] = useState<string>(STRATEGIES[0].name);
   const [paramValues, setParamValues] = useState<Record<string, Record<string, number>>>(defaultParamValues);
@@ -113,21 +104,6 @@ export default function StrategyConfigPage() {
   const [status, setStatus] = useState<{ text: string; type: 'info' | 'success' | 'error' } | null>(null);
   const [saving, setSaving] = useState(false);
   const [modelInfoData, setModelInfoData] = useState<ModelInfo | null>(null);
-  const [selectedAlgos, setSelectedAlgos] = useState<string[]>(['lgb', 'xgb', 'catboost']);
-  const [trainDataSource, setTrainDataSource] = useState<'synthetic' | 'akshare'>('akshare');
-  const [trainSymbols, setTrainSymbols] = useState('600519,000858,000001,600036,300750,002594,601318,600276,000333,601888,600030,601166,600900,000568,600809,601899,600031,600309,300059,600887,000651,002415,300760,601398,601288,600438,002460,603259,600690,601669');
-  const [trainStartDate, setTrainStartDate] = useState('2020-01-01');
-  const [trainEndDate, setTrainEndDate] = useState('2024-12-31');
-  const [trainHorizon, setTrainHorizon] = useState(5);
-  const [trainThreshold, setTrainThreshold] = useState(0.01);
-
-  const retrainTm = useTaskManager('task_retrain');
-  const retraining = retrainTm.running;
-
-  const handleCancelRetrain = async () => {
-    await retrainTm.cancel();
-    showStatus('训练已取消', 'info');
-  };
 
   const activeStrategy = STRATEGIES.find((s) => s.name === selectedStrategy)!;
 
@@ -139,24 +115,6 @@ export default function StrategyConfigPage() {
     loadFromServer();
     fetchModelInfo();
   });
-
-  // React to retrain task completion/failure
-  const prevTaskStatus = useRef(retrainTm.task?.status);
-  useEffect(() => {
-    const status = retrainTm.task?.status;
-    if (status === prevTaskStatus.current && !retrainTm.progress) return;
-    prevTaskStatus.current = status;
-
-    if (!retrainTm.task) return;
-    if (status === 'Completed') {
-      setStatus({ text: '模型训练完成！', type: 'success' });
-      fetchModelInfo();
-    } else if (status === 'Failed') {
-      setStatus({ text: retrainTm.error || '训练失败，请检查日志', type: 'error' });
-    } else if (retrainTm.progress) {
-      setStatus({ text: retrainTm.progress, type: 'info' });
-    }
-  }, [retrainTm.task, retrainTm.progress, retrainTm.error]);
 
   const showStatus = (text: string, type: 'info' | 'success' | 'error' = 'info') => {
     setStatus({ text, type });
@@ -245,33 +203,6 @@ export default function StrategyConfigPage() {
     } catch {
       showStatus('回测请求失败', 'error');
     }
-  };
-
-  const toggleAlgo = (algo: string) => {
-    setSelectedAlgos(prev =>
-      prev.includes(algo) ? prev.filter(a => a !== algo) : [...prev, algo]
-    );
-  };
-
-  const handleRetrain = async () => {
-    if (selectedAlgos.length === 0) {
-      showStatus('请至少选择一个算法', 'error');
-      return;
-    }
-    const srcLabel = trainDataSource === 'akshare' ? '真实行情' : '模拟数据';
-    showStatus(`模型训练中 (${srcLabel})，请耐心等待…`, 'info');
-    const opts: RetrainOptions = {
-      algorithms: selectedAlgos.join(','),
-      data_source: trainDataSource,
-      horizon: trainHorizon,
-      threshold: trainThreshold,
-    };
-    if (trainDataSource === 'akshare') {
-      opts.symbols = trainSymbols;
-      opts.start_date = trainStartDate;
-      opts.end_date = trainEndDate;
-    }
-    retrainTm.submit(() => mlRetrain(opts));
   };
 
   const currentParams = paramValues[selectedStrategy] ?? {};
@@ -405,225 +336,44 @@ export default function StrategyConfigPage() {
         </div>
       </section>
 
-      {/* ML Model Training Section */}
-      <section className="bg-[#1e293b] rounded-lg border border-[#334155] p-6">
-        <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-          <Brain className="h-5 w-5 text-purple-400" /> ML模型训练
-        </h2>
-
-        {/* Algorithm Selection */}
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-[#94a3b8] mb-2">选择训练算法 (多选竞争，最优AUC获胜)</label>
-          <div className="flex flex-wrap gap-2">
-            {Object.entries(ALGO_LABELS).map(([key, { label, desc, badge }]) => (
-              <button
-                key={key}
-                onClick={() => toggleAlgo(key)}
-                className={`px-3 py-2 rounded-lg text-sm border transition-colors ${
-                  selectedAlgos.includes(key)
-                    ? `${badge} border-current`
-                    : 'bg-[#0f172a] border-[#334155] text-[#64748b] hover:border-[#475569]'
-                }`}
-              >
-                <span className="font-medium">{label}</span>
-                <span className="block text-xs opacity-75 mt-0.5">{desc}</span>
-              </button>
-            ))}
+      {/* Model Info (read-only) */}
+      {report && (
+        <section className="bg-[#1e293b] rounded-lg border border-[#334155] p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold">📊 当前模型状态</h2>
+            <a href="/pipeline" className="text-sm text-[#3b82f6] hover:underline">前往流水线训练 →</a>
           </div>
-        </div>
-
-        {/* Data Source Selection */}
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-[#94a3b8] mb-2 flex items-center gap-1">
-            <Database className="h-4 w-4" /> 训练数据源
-          </label>
-          <div className="flex gap-2 mb-3">
-            <button
-              onClick={() => setTrainDataSource('akshare')}
-              className={`px-4 py-2 rounded-lg text-sm border transition-colors ${
-                trainDataSource === 'akshare'
-                  ? 'bg-cyan-600/20 text-cyan-400 border-cyan-500/50'
-                  : 'bg-[#0f172a] border-[#334155] text-[#64748b] hover:border-[#475569]'
-              }`}
-            >
-              📡 真实行情 (akshare)
-            </button>
-            <button
-              onClick={() => setTrainDataSource('synthetic')}
-              className={`px-4 py-2 rounded-lg text-sm border transition-colors ${
-                trainDataSource === 'synthetic'
-                  ? 'bg-yellow-600/20 text-yellow-400 border-yellow-500/50'
-                  : 'bg-[#0f172a] border-[#334155] text-[#64748b] hover:border-[#475569]'
-              }`}
-            >
-              🧪 模拟数据 (合成GBM)
-            </button>
-          </div>
-
-          {trainDataSource === 'akshare' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-[#0f172a] rounded-lg border border-[#334155] p-4">
-              <div className="md:col-span-2">
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs text-[#64748b]">股票列表 (逗号分隔代码)</label>
-                  <span className="text-xs text-cyan-400">{trainSymbols.split(',').filter(s => s.trim()).length} 只股票</span>
-                </div>
-                <textarea
-                  value={trainSymbols}
-                  onChange={(e) => setTrainSymbols(e.target.value)}
-                  rows={2}
-                  className="w-full bg-[#1e293b] border border-[#334155] rounded px-3 py-1.5 text-sm text-[#f8fafc] focus:border-cyan-500 outline-none resize-none"
-                  placeholder="600519,000858,000001,..."
-                />
-                <div className="flex flex-wrap gap-1.5 mt-1.5">
-                  <button onClick={() => setTrainSymbols('600519,000858,600036,601318,300750,002594,000333,601888,600900,601398')} className="px-2 py-0.5 rounded text-xs bg-[#1e293b] border border-[#334155] text-[#94a3b8] hover:border-cyan-500/50 hover:text-cyan-400 transition-colors">蓝筹10只</button>
-                  <button onClick={() => setTrainSymbols('300750,300760,300059,300122,300782,300015,300274,300498')} className="px-2 py-0.5 rounded text-xs bg-[#1e293b] border border-[#334155] text-[#94a3b8] hover:border-green-500/50 hover:text-green-400 transition-colors">创业板8只</button>
-                  <button onClick={() => setTrainSymbols('688981,688111,688036,688561,688005,688012,688185,688599')} className="px-2 py-0.5 rounded text-xs bg-[#1e293b] border border-[#334155] text-[#94a3b8] hover:border-purple-500/50 hover:text-purple-400 transition-colors">科创板8只</button>
-                  <button onClick={() => setTrainSymbols('600519,000858,000001,600036,300750,002594,601318,600276,000333,601888,600030,601166,600900,000568,600809,601899,600031,600309,300059,600887,000651,002415,300760,601398,601288,600438,002460,603259,600690,601669')} className="px-2 py-0.5 rounded text-xs bg-[#1e293b] border border-[#334155] text-[#94a3b8] hover:border-cyan-500/50 hover:text-cyan-400 transition-colors">多行业30只</button>
-                  <button onClick={() => setTrainSymbols('600519,000858,000568,600809,600887,002304,603288,600036,601318,601166,600030,601398,601288,300750,002594,600438,601012,002460,600276,000333,300760,603259,300122,002415,603501,300782,688981,688111,688036,688561,002049,000651,600690,002032,601888,601899,600031,600309,601225,600585,600900,601669,600048,601800,300059,002230,603444,600760,002179,600893')} className="px-2 py-0.5 rounded text-xs bg-[#1e293b] border border-[#334155] text-[#94a3b8] hover:border-cyan-500/50 hover:text-cyan-400 transition-colors">全行业50只</button>
-                </div>
-              </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            {report.best_algorithm != null && (
               <div>
-                <label className="block text-xs text-[#64748b] mb-1">训练年数</label>
-                <div className="flex gap-1.5">
-                  {[
-                    { years: 2, start: '2023-01-01' },
-                    { years: 3, start: '2022-01-01' },
-                    { years: 5, start: '2020-01-01' },
-                    { years: 7, start: '2018-01-01' },
-                  ].map(({ years, start }) => (
-                    <button
-                      key={years}
-                      onClick={() => { setTrainStartDate(start); setTrainEndDate('2024-12-31'); }}
-                      className={`flex-1 px-2 py-1.5 rounded text-xs border transition-colors ${
-                        trainStartDate === start
-                          ? 'bg-cyan-600/20 text-cyan-400 border-cyan-500/50'
-                          : 'bg-[#1e293b] border-[#334155] text-[#94a3b8] hover:border-[#475569]'
-                      }`}
-                    >
-                      {years}年
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs text-[#64748b] mb-1">自定义日期范围</label>
-                <div className="flex gap-2">
-                  <input type="date" value={trainStartDate} onChange={(e) => setTrainStartDate(e.target.value)}
-                    className="flex-1 bg-[#1e293b] border border-[#334155] rounded px-2 py-1.5 text-xs text-[#f8fafc] focus:border-cyan-500 outline-none" />
-                  <input type="date" value={trainEndDate} onChange={(e) => setTrainEndDate(e.target.value)}
-                    className="flex-1 bg-[#1e293b] border border-[#334155] rounded px-2 py-1.5 text-xs text-[#f8fafc] focus:border-cyan-500 outline-none" />
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs text-[#64748b] mb-1">预测周期 (前瞻天数)</label>
-                <select
-                  value={trainHorizon}
-                  onChange={(e) => setTrainHorizon(Number(e.target.value))}
-                  className="w-full bg-[#1e293b] border border-[#334155] rounded px-3 py-1.5 text-sm text-[#f8fafc] focus:border-cyan-500 outline-none"
-                >
-                  <option value={3}>3天</option>
-                  <option value={5}>5天</option>
-                  <option value={10}>10天</option>
-                  <option value={20}>20天</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs text-[#64748b] mb-1">正样本阈值 (收益率)</label>
-                <select
-                  value={trainThreshold}
-                  onChange={(e) => setTrainThreshold(Number(e.target.value))}
-                  className="w-full bg-[#1e293b] border border-[#334155] rounded px-3 py-1.5 text-sm text-[#f8fafc] focus:border-cyan-500 outline-none"
-                >
-                  <option value={0.005}>0.5%</option>
-                  <option value={0.01}>1.0%</option>
-                  <option value={0.02}>2.0%</option>
-                  <option value={0.03}>3.0%</option>
-                  <option value={0.05}>5.0%</option>
-                </select>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-3 mb-4">
-          <button
-            onClick={handleRetrain}
-            disabled={retraining || selectedAlgos.length === 0}
-            className="flex items-center gap-2 px-5 py-2.5 bg-purple-600 hover:bg-purple-700 disabled:bg-[#334155] disabled:text-[#64748b] text-white font-medium rounded-lg text-sm transition-colors"
-          >
-            {retraining ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-            {retraining ? '训练中…' : '开始训练'}
-          </button>
-          {retraining && (
-            <button
-              onClick={handleCancelRetrain}
-              className="flex items-center gap-2 px-4 py-2.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 font-medium rounded-lg text-sm transition-colors"
-            >
-              ✕ 取消训练
-            </button>
-          )}
-          <span className="text-xs text-[#64748b]">
-            已选: {selectedAlgos.map(a => ALGO_LABELS[a]?.label).join(', ') || '无'}
-          </span>
-        </div>
-
-        {/* Latest Model Report */}
-        {report && (
-          <div className="bg-[#0f172a] rounded-lg border border-[#334155] p-4">
-            <h3 className="text-sm font-semibold text-[#94a3b8] mb-3">📊 最新模型报告</h3>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-              {report.best_algorithm != null && (
-                <div>
-                  <span className="text-[#64748b]">最优算法</span>
-                  <p className="font-bold text-purple-400">{String(report.best_algorithm).toUpperCase()}</p>
-                </div>
-              )}
-              {(report.final_model as Record<string, unknown> | undefined)?.auc != null && (
-                <div>
-                  <span className="text-[#64748b]">AUC</span>
-                  <p className="font-bold text-[#f8fafc]">{String((report.final_model as Record<string, unknown>).auc)}</p>
-                </div>
-              )}
-              {(report.final_model as Record<string, unknown> | undefined)?.accuracy != null && (
-                <div>
-                  <span className="text-[#64748b]">准确率</span>
-                  <p className="font-bold text-[#f8fafc]">{String((report.final_model as Record<string, unknown>).accuracy)}</p>
-                </div>
-              )}
-              {report.n_samples != null && (
-                <div>
-                  <span className="text-[#64748b]">样本数</span>
-                  <p className="font-bold text-[#f8fafc]">{String(report.n_samples)}</p>
-                </div>
-              )}
-            </div>
-            {Array.isArray(report.feature_importance) && (report.feature_importance as Array<{feature: string; importance: number}>).length > 0 && (
-              <div className="mt-3">
-                <h4 className="text-xs text-[#64748b] mb-1">Top 5 特征重要性</h4>
-                <div className="space-y-1">
-                  {(report.feature_importance as Array<{feature: string; importance: number}>).slice(0, 5).map((f, i) => (
-                    <div key={i} className="flex items-center gap-2 text-xs">
-                      <span className="text-[#94a3b8] w-32 truncate">{f.feature}</span>
-                      <div className="flex-1 bg-[#334155] rounded-full h-1.5">
-                        <div
-                          className="bg-purple-500 rounded-full h-1.5"
-                          style={{
-                            width: `${Math.min(100, (f.importance / (report.feature_importance as Array<{feature: string; importance: number}>)[0].importance) * 100)}%`,
-                          }}
-                        />
-                      </div>
-                      <span className="text-[#64748b] w-14 text-right">{f.importance.toFixed(0)}</span>
-                    </div>
-                  ))}
-                </div>
+                <span className="text-[#64748b]">最优算法</span>
+                <p className="font-bold text-purple-400">{String(report.best_algorithm).toUpperCase()}</p>
               </div>
             )}
-            {report.timestamp != null && (
-              <p className="text-xs text-[#64748b] mt-2">{'训练时间: ' + String(report.timestamp)}</p>
+            {(report.final_model as Record<string, unknown> | undefined)?.auc != null && (
+              <div>
+                <span className="text-[#64748b]">AUC</span>
+                <p className="font-bold text-[#f8fafc]">{String((report.final_model as Record<string, unknown>).auc)}</p>
+              </div>
+            )}
+            {(report.final_model as Record<string, unknown> | undefined)?.accuracy != null && (
+              <div>
+                <span className="text-[#64748b]">准确率</span>
+                <p className="font-bold text-[#f8fafc]">{String((report.final_model as Record<string, unknown>).accuracy)}</p>
+              </div>
+            )}
+            {report.n_samples != null && (
+              <div>
+                <span className="text-[#64748b]">样本数</span>
+                <p className="font-bold text-[#f8fafc]">{String(report.n_samples)}</p>
+              </div>
             )}
           </div>
-        )}
-      </section>
+          {report.timestamp != null && (
+            <p className="text-xs text-[#64748b] mt-2">{'训练时间: ' + String(report.timestamp)}</p>
+          )}
+        </section>
+      )}
 
       {/* Status message */}
       {status && (

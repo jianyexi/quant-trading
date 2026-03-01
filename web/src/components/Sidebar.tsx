@@ -4,7 +4,6 @@ import {
   LayoutDashboard,
   TrendingUp,
   Settings,
-  FlaskConical,
   Wallet,
   MessageSquare,
   Search,
@@ -52,9 +51,7 @@ const navigation: NavEntry[] = [
     icon: Dna,
     items: [
       { to: '/pipeline', label: '量化流水线', icon: Workflow },
-      { to: '/factor-mining', label: '因子挖掘', icon: Dna },
       { to: '/dl-models', label: 'DL模型研究', icon: Brain },
-      { to: '/backtest', label: '策略回测', icon: FlaskConical },
       { to: '/history', label: '任务历史', icon: History },
     ],
   },
