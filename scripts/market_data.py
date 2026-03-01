@@ -526,8 +526,22 @@ def cmd_data_source_status(args):
         pass
     try:
         import akshare
-        result["akshare"] = True
-        result["available"].append("akshare")
+        import threading
+        # Actually test connectivity (not just importability)
+        ak_ok = [False]
+        def _ak_test():
+            try:
+                akshare.stock_zh_a_hist(symbol="000001", period="daily",
+                    start_date="20240101", end_date="20240105", adjust="qfq")
+                ak_ok[0] = True
+            except Exception:
+                pass
+        t = threading.Thread(target=_ak_test, daemon=True)
+        t.start()
+        t.join(timeout=5)
+        if ak_ok[0]:
+            result["akshare"] = True
+            result["available"].append("akshare")
     except ImportError:
         pass
     try:

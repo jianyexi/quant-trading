@@ -114,8 +114,12 @@ class MarketCache:
         meta = self._get_meta(cache_key)
         gaps = self._find_gaps(cache_key, start, end, meta)
 
+        unfilled = []
         if gaps and not cache_only:
-            self._fill_gaps(cache_key, gaps, max_retries, base_delay, market=market, raw_symbol=symbol)
+            unfilled = self._fill_gaps(cache_key, gaps, max_retries, base_delay, market=market, raw_symbol=symbol)
+            if unfilled:
+                import sys
+                print(f"[cache] {symbol}: {len(unfilled)} gap(s) unfilled: {unfilled}", file=sys.stderr)
 
         # Return from cache
         return self._read_cache(cache_key, start, end)
@@ -309,13 +313,16 @@ class MarketCache:
         self, symbol: str, gaps: List[Tuple[str, str]],
         max_retries: int, base_delay: float,
         market: str = "CN", raw_symbol: str = "",
-    ):
+    ) -> List[Tuple[str, str]]:
         """Fetch missing date ranges and store in cache.
 
         For CN: tushare (primary) → akshare (fallback).
         For US/HK: yfinance.
+
+        Returns list of (gap_start, gap_end) tuples that could NOT be filled.
         """
         import sys
+        unfilled = []
 
         for gap_start, gap_end in gaps:
             fetched = False
@@ -425,10 +432,13 @@ class MarketCache:
                 if ts_err: reasons.append(f"tushare: {ts_err}")
                 if ak_err: reasons.append(f"akshare: {ak_err}")
                 print(f"[cache] All providers failed for {symbol} ({gap_start}~{gap_end}): {'; '.join(reasons) or 'empty data'}", file=sys.stderr)
+                unfilled.append((gap_start, gap_end))
 
             # Throttle between gap fetches
             if len(gaps) > 1:
                 time.sleep(base_delay)
+
+        return unfilled
 
     def _store_klines_df(self, symbol: str, df: pd.DataFrame):
         """Store a standardized DataFrame (date index, OHLCV columns) into cache."""
@@ -691,6 +701,17 @@ if __name__ == "__main__":
                 was_cached = cache._is_fully_cached(sym, start, end)
                 df = cache.get_or_fetch(sym, start, end)
                 n = len(df) if df is not None else 0
+                # Check if the returned data actually covers the requested range
+                if n > 0 and not was_cached:
+                    meta = cache._get_meta(sym)
+                    remaining_gaps = cache._find_gaps(sym, start, end, meta)
+                    if remaining_gaps:
+                        status = "partial"
+                        gap_info = "; ".join(f"{g[0]}~{g[1]}" for g in remaining_gaps)
+                        results["details"].append({"symbol": sym, "bars": n, "status": status, "missing": gap_info})
+                        results["ok"] += 1
+                        print(f"partial ({n} bars, missing: {gap_info})")
+                        continue
                 status = "cached" if was_cached else ("ok" if n > 0 else "empty")
                 results["details"].append({"symbol": sym, "bars": n, "status": status})
                 if n > 0:

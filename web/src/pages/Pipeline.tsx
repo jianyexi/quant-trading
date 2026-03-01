@@ -559,11 +559,15 @@ function PipelineContent() {
                     const syms = shared.symbols.split(',').map(s => s.trim()).filter(Boolean);
                     return syms.map(sym => {
                       const info = cacheInfo.find(c => c.symbol === sym || c.symbol === sym.split('.')[0]);
+                      const incomplete = info && (info.min_date > shared.start_date || info.max_date < shared.end_date);
                       return (
                         <div key={sym} className="flex items-center justify-between py-0.5">
                           <span className="font-mono">{sym}</span>
                           {info ? (
-                            <span className="text-[#22c55e]">✓ {info.bar_count}条 {info.min_date}~{info.max_date}</span>
+                            <span className={incomplete ? 'text-[#f59e0b]' : 'text-[#22c55e]'}>
+                              {incomplete ? '⚠' : '✓'} {info.bar_count}条 {info.min_date}~{info.max_date}
+                              {incomplete && <span className="text-[#94a3b8] ml-1">(不完整)</span>}
+                            </span>
                           ) : (
                             <span className="text-[#f59e0b]">⚠ 无缓存</span>
                           )}
