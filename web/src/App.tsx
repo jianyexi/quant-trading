@@ -1,9 +1,8 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import MarketData from './pages/MarketData';
 import StrategyConfig from './pages/StrategyConfig';
-import Backtest from './pages/Backtest';
 import Portfolio from './pages/Portfolio';
 import Chat from './pages/Chat';
 import Screener from './pages/Screener';
@@ -12,7 +11,6 @@ import Sentiment from './pages/Sentiment';
 import DLModels from './pages/DLModels';
 import RiskManagement from './pages/RiskManagement';
 import Logs from './pages/Logs';
-import FactorMining from './pages/factor-mining';
 import Notifications from './pages/Notifications';
 import Metrics from './pages/Metrics';
 import Reports from './pages/Reports';
@@ -28,7 +26,7 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="market" element={<MarketData />} />
           <Route path="strategy" element={<StrategyConfig />} />
-          <Route path="backtest" element={<Backtest />} />
+          <Route path="backtest" element={<Navigate to="/pipeline" replace />} />
           <Route path="pipeline" element={<Pipeline />} />
           <Route path="history" element={<History />} />
           <Route path="screener" element={<Screener />} />
@@ -36,7 +34,7 @@ export default function App() {
           <Route path="risk" element={<RiskManagement />} />
           <Route path="sentiment" element={<Sentiment />} />
           <Route path="dl-models" element={<DLModels />} />
-          <Route path="factor-mining" element={<FactorMining />} />
+          <Route path="factor-mining" element={<Navigate to="/pipeline" replace />} />
           <Route path="portfolio" element={<Portfolio />} />
           <Route path="notifications" element={<Notifications />} />
           <Route path="logs" element={<Logs />} />

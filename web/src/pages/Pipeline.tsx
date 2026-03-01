@@ -1,5 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { useTaskManager } from '../hooks/useTaskManager';
 import { TaskOutput } from '../components/TaskPipeline';
 import {
@@ -121,8 +120,7 @@ function StepIndicator({ steps }: { steps: StepStatus[] }) {
 
 /* ── Main Pipeline Page ────────────────────────────────────────────── */
 
-export default function Pipeline() {
-  // Shared config
+function PipelineContent() {
   const [shared, setShared] = useState<SharedConfig>({
     symbols: '600519',
     start_date: '2023-01-01',
@@ -586,14 +584,11 @@ export default function Pipeline() {
         <div className={`rounded-xl border p-4 ${stepStatus[1] === 'running' ? 'border-[#3b82f6]' : 'border-[#334155]'} bg-[#1e293b]`}>
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-bold text-[#f8fafc]">🔬 Step 1: 因子挖掘</h3>
-            <div className="flex items-center gap-2">
-              <Link to="/factor-mining" className="text-xs text-[#3b82f6] hover:underline">高级 →</Link>
-              <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
-                <input type="checkbox" checked={enableStep[1]}
-                  onChange={e => setEnableStep(p => { const n = [...p]; n[1] = e.target.checked; return n; })} />
-                启用
-              </label>
-            </div>
+            <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
+              <input type="checkbox" checked={enableStep[1]}
+                onChange={e => setEnableStep(p => { const n = [...p]; n[1] = e.target.checked; return n; })} />
+              启用
+            </label>
           </div>
           <div className="space-y-3">
             <InputField label="挖掘方法">
@@ -649,14 +644,11 @@ export default function Pipeline() {
         <div className={`rounded-xl border p-4 ${stepStatus[2] === 'running' ? 'border-[#3b82f6]' : 'border-[#334155]'} bg-[#1e293b]`}>
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-bold text-[#f8fafc]">🧠 Step 2: ML 训练</h3>
-            <div className="flex items-center gap-2">
-              <Link to="/strategy" className="text-xs text-[#3b82f6] hover:underline">策略配置 →</Link>
-              <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
-                <input type="checkbox" checked={enableStep[2]}
-                  onChange={e => setEnableStep(p => { const n = [...p]; n[2] = e.target.checked; return n; })} />
-                启用
-              </label>
-            </div>
+            <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
+              <input type="checkbox" checked={enableStep[2]}
+                onChange={e => setEnableStep(p => { const n = [...p]; n[2] = e.target.checked; return n; })} />
+              启用
+            </label>
           </div>
           <div className="space-y-3">
             <InputField label="算法">
@@ -686,14 +678,11 @@ export default function Pipeline() {
         <div className={`rounded-xl border p-4 ${stepStatus[3] === 'running' ? 'border-[#3b82f6]' : 'border-[#334155]'} bg-[#1e293b]`}>
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-bold text-[#f8fafc]">📊 Step 3: 策略回测</h3>
-            <div className="flex items-center gap-2">
-              <Link to="/backtest" className="text-xs text-[#3b82f6] hover:underline">详细回测 →</Link>
-              <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
-                <input type="checkbox" checked={enableStep[3]}
-                  onChange={e => setEnableStep(p => { const n = [...p]; n[3] = e.target.checked; return n; })} />
-                启用
-              </label>
-            </div>
+            <label className="flex items-center gap-1.5 text-xs text-[#94a3b8]">
+              <input type="checkbox" checked={enableStep[3]}
+                onChange={e => setEnableStep(p => { const n = [...p]; n[3] = e.target.checked; return n; })} />
+              启用
+            </label>
           </div>
           <div className="space-y-3">
             <InputField label="策略">
@@ -743,6 +732,61 @@ export default function Pipeline() {
             流水线完成！{enableStep.filter((e, i) => e && stepStatus[i] === 'done').length} 个步骤已执行
           </span>
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Lazy-loaded sub-pages ─────────────────────────────────────────── */
+
+const FactorMining = lazy(() => import('./factor-mining'));
+const BacktestPage = lazy(() => import('./Backtest'));
+
+const Loading = () => (
+  <div className="flex items-center justify-center h-64">
+    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#3b82f6]" />
+  </div>
+);
+
+type PipelineTab = 'pipeline' | 'mining' | 'backtest';
+
+const PIPELINE_TABS: { id: PipelineTab; label: string; icon: string }[] = [
+  { id: 'pipeline', label: '流水线', icon: '🚀' },
+  { id: 'mining', label: '因子挖掘', icon: '🧬' },
+  { id: 'backtest', label: '策略回测', icon: '📊' },
+];
+
+export default function Pipeline() {
+  const [tab, setTab] = useState<PipelineTab>('pipeline');
+
+  return (
+    <div className="space-y-6">
+      {/* Top tab bar */}
+      <div className="flex gap-1 bg-[#1e293b] rounded-xl p-1 border border-[#334155]">
+        {PIPELINE_TABS.map((t) => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={`flex items-center gap-1.5 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+              tab === t.id
+                ? 'bg-[#3b82f6] text-white'
+                : 'text-[#94a3b8] hover:bg-[#334155] hover:text-[#f8fafc]'
+            }`}>
+            <span>{t.icon}</span>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      {tab === 'pipeline' && <PipelineContent />}
+      {tab === 'mining' && (
+        <Suspense fallback={<Loading />}>
+          <FactorMining />
+        </Suspense>
+      )}
+      {tab === 'backtest' && (
+        <Suspense fallback={<Loading />}>
+          <BacktestPage />
+        </Suspense>
       )}
     </div>
   );
