@@ -213,15 +213,32 @@ function PipelineContent() {
   // Watch sync task completion
   useEffect(() => {
     if (tmSync.task?.status === 'Completed') {
-      updateStatus(0, 'done');
-      appendLog(0, '✅ 数据准备完成');
       checkCache(); // Refresh cache info
+      // Parse sync output for partial/failed details
+      const raw = tmSync.output || '';
+      const hasPartial = raw.includes('"partial"') || raw.includes('partial (');
+      const hasFailed = raw.includes('"error"') || raw.includes('FAIL:');
+      if (hasPartial || hasFailed) {
+        updateStatus(0, 'done');
+        // Extract failure reasons from stderr lines
+        const reasons: string[] = [];
+        for (const line of raw.split('\n')) {
+          const m = line.match(/All providers failed for (\S+) \(([^)]+)\): (.+)/);
+          if (m) reasons.push(`${m[1]} ${m[2]}: ${m[3]}`);
+        }
+        const summary = hasPartial ? '⚠️ 数据同步部分完成 (部分区间无法获取)' : '⚠️ 部分股票同步失败';
+        const detail = reasons.length > 0 ? '\n\n未填充区间:\n' + reasons.map(r => '  • ' + r).join('\n') : '';
+        setStepLogs(prev => { const n = [...prev]; n[0] = summary + detail; return n; });
+      } else {
+        updateStatus(0, 'done');
+        setStepLogs(prev => { const n = [...prev]; n[0] = '✅ 数据准备完成'; return n; });
+      }
     } else if (tmSync.task?.status === 'Failed') {
       updateStatus(0, 'error');
-      appendLog(0, '❌ 数据同步失败: ' + (tmSync.error || ''));
+      setStepLogs(prev => { const n = [...prev]; n[0] = '❌ 数据同步失败: ' + (tmSync.error || ''); return n; });
       autoRef.current = false;
     }
-  }, [tmSync.task?.status, tmSync.error, checkCache]);
+  }, [tmSync.task?.status, tmSync.error, tmSync.output, checkCache]);
 
   /* ── Step 1: Factor Mining ──────────────────────────────────────── */
 
@@ -600,7 +617,7 @@ function PipelineContent() {
               📡 同步数据
             </button>
           </div>
-          <TaskOutput running={tmSync.running} error={tmSync.error} output={stepLogs[0] || tmSync.output}
+          <TaskOutput running={tmSync.running} error={tmSync.error} output={stepLogs[0] ? stepLogs[0] + (tmSync.output ? '\n\n── 详细日志 ──\n' + tmSync.output : '') : tmSync.output}
             progress={tmSync.progress} runningText="数据同步中..." />
         </div>
 
