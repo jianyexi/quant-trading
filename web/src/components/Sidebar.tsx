@@ -19,6 +19,7 @@ import {
   Timer,
   Workflow,
   History,
+  Server,
   ChevronDown,
   ChevronRight,
   type LucideIcon,
@@ -81,6 +82,7 @@ const navigation: NavEntry[] = [
       { to: '/metrics', label: '性能监控', icon: Activity },
       { to: '/reports', label: '统计报表', icon: FileBarChart },
       { to: '/latency', label: '延迟分析', icon: Timer },
+      { to: '/services', label: '服务管理', icon: Server },
     ],
   },
 

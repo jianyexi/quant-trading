@@ -9,6 +9,14 @@ use quant_strategy::collector::SentimentCollector;
 use crate::log_store::LogStore;
 use crate::task_store::TaskStore;
 
+/// Tracks a managed sidecar subprocess (e.g. ml_serve.py).
+pub struct ManagedProcess {
+    pub name: String,
+    pub child: std::process::Child,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub args: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<AppConfig>,
@@ -20,4 +28,6 @@ pub struct AppState {
     pub notifier: Arc<Notifier>,
     pub db: Option<sqlx::PgPool>,
     pub task_store: Arc<TaskStore>,
+    /// Managed sidecar processes (ml_serve, qmt_bridge, etc.)
+    pub managed_processes: Arc<Mutex<std::collections::HashMap<String, ManagedProcess>>>,
 }

@@ -17,6 +17,7 @@ import Reports from './pages/Reports';
 import Latency from './pages/Latency';
 import Pipeline from './pages/Pipeline';
 import History from './pages/History';
+import Services from './pages/Services';
 
 export default function App() {
   return (
@@ -39,6 +40,7 @@ export default function App() {
           <Route path="metrics" element={<Metrics />} />
           <Route path="reports" element={<Reports />} />
           <Route path="latency" element={<Latency />} />
+          <Route path="services" element={<Services />} />
           <Route path="chat" element={<Chat />} />
         </Route>
       </Routes>

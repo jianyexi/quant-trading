@@ -1750,6 +1750,7 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
         notifier: std::sync::Arc::new(notifier),
         db: db_pool,
         task_store: std::sync::Arc::new(task_store),
+        managed_processes: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     // Resolve web/dist path — try CWD first, then relative to the executable

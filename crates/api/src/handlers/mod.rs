@@ -7,6 +7,7 @@ mod metrics;
 mod reports;
 mod latency;
 mod tasks;
+mod services;
 
 pub use market::*;
 pub use backtest::*;
@@ -17,6 +18,7 @@ pub use metrics::*;
 pub use reports::*;
 pub use latency::*;
 pub use tasks::*;
+pub use services::*;
 
 use axum::{
     extract::{Path, Query, State},

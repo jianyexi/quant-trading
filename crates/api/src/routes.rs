@@ -122,6 +122,14 @@ fn task_routes() -> Router<AppState> {
         .route("/:id", get(handlers::get_task).delete(handlers::cancel_task))
 }
 
+fn service_routes() -> Router<AppState> {
+    Router::new()
+        .route("/status", get(handlers::services_status))
+        .route("/ml-serve/start", post(handlers::ml_serve_start))
+        .route("/ml-serve/stop", post(handlers::ml_serve_stop))
+        .route("/ml-serve/status", get(handlers::ml_serve_status))
+}
+
 fn journal_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(handlers::get_journal))
@@ -194,6 +202,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/research", research_routes())
         .nest("/api/factor", factor_routes())
         .nest("/api/tasks", task_routes())
+        .nest("/api/services", service_routes())
         .nest("/api/journal", journal_routes())
         .nest("/api/notifications", notification_routes())
         .nest("/api/logs", log_routes())
