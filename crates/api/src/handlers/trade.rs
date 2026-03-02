@@ -31,7 +31,7 @@ pub struct TradeStartRequest {
     pub replay_speed: Option<f64>,
     /// K-line period for replay: "daily", "1", "5", "15", "30", "60" (minutes), default="daily"
     pub replay_period: Option<String>,
-    /// ML inference mode: "embedded" (default), "tcp_mq", "http"
+    /// ML inference mode: "embedded" (default), "tcp_mq", "onnx"
     pub inference_mode: Option<String>,
 }
 

@@ -12,7 +12,7 @@ use crate::sentiment::{SentimentAwareStrategy, SentimentStore};
 /// Strategy creation options.
 #[derive(Debug, Clone, Default)]
 pub struct StrategyOptions {
-    /// ML inference mode (e.g. "embedded", "tcp", "http"). Only used for ml_factor.
+    /// ML inference mode (e.g. "embedded", "tcp", "onnx"). Only used for ml_factor.
     pub inference_mode: Option<String>,
     /// Pre-existing sentiment store to share. Only used for sentiment_aware.
     pub sentiment_store: Option<SentimentStore>,

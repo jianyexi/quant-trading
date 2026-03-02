@@ -53,7 +53,7 @@ pub struct BacktestRequest {
     pub capital: Option<f64>,
     /// "daily" (default), "1", "5", "15", "30", "60"
     pub period: Option<String>,
-    /// ML inference mode: "embedded" (default), "tcp_mq", "http"
+    /// ML inference mode: "embedded" (default), "tcp_mq"
     pub inference_mode: Option<String>,
     /// Additional symbols for multi-stock portfolio backtest
     pub symbols: Option<Vec<String>>,
@@ -152,8 +152,7 @@ pub async fn list_strategies() -> Json<Value> {
                 "description": "机器学习因子提取策略，24维特征工程 + GPU模型推理(Python sidecar)",
                 "parameters": [
                     {"key": "buy_threshold", "label": "买入阈值", "type": "number", "default": 0.60, "min": 0.50, "max": 0.80},
-                    {"key": "sell_threshold", "label": "卖出阈值", "type": "number", "default": 0.35, "min": 0.20, "max": 0.50},
-                    {"key": "bridge_url", "label": "推理服务地址", "type": "string", "default": "http://127.0.0.1:18091"}
+                    {"key": "sell_threshold", "label": "卖出阈值", "type": "number", "default": 0.35, "min": 0.20, "max": 0.50}
                 ]
             }
         ]

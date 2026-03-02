@@ -16,6 +16,5 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
-reqwest = { workspace = true }
 ort = { version = "2.0.0-rc.11", features = ["ndarray"], optional = true }
 ndarray = { version = "0.17", optional = true }

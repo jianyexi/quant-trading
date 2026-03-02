@@ -1,12 +1,12 @@
 // Machine Learning Factor Extraction Strategy
 //
 // Architecture:
-//   Kline bars → Feature Engineering (24 features in Rust) → ML Inference → Signal
+//   Kline bars → Feature Engineering (30 features in Rust) → ML Inference → Signal
 //
-// Three inference modes:
+// Inference modes:
 //   1. Embedded:  LightGBM model loaded directly in Rust (~0.01ms per prediction)
-//   2. TcpMq:    TCP message queue to ml_serve.py sidecar (~0.3ms per prediction)
-//   3. Http:     HTTP POST to ml_serve.py sidecar (~2-5ms per prediction)
+//   2. ONNX:     ONNX Runtime for any model format (~0.05ms per prediction)
+//   3. TcpMq:    TCP binary protocol to ml_serve.py sidecar (~0.3ms per prediction)
 //
 // Use `MlInferenceMode` to switch between modes via API.
 
@@ -260,155 +260,6 @@ fn ema_approx(vals: &[f64], period: usize) -> f64 {
     ema
 }
 
-// ── ML Inference via Python Sidecar ─────────────────────────────────
-
-/// HTTP client for the ML inference Python sidecar.
-/// Runs on http://127.0.0.1:18091 by default.
-pub struct MlInferenceClient {
-    bridge_url: String,
-    client: reqwest::blocking::Client,
-    /// Cache: is the bridge available?
-    available: Mutex<Option<bool>>,
-}
-
-impl MlInferenceClient {
-    pub fn new(bridge_url: &str) -> Self {
-        Self {
-            bridge_url: bridge_url.trim_end_matches('/').to_string(),
-            client: reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-                .unwrap_or_default(),
-            available: Mutex::new(None),
-        }
-    }
-
-    /// Parse host:port from bridge_url for raw TCP health check.
-    fn host_port(&self) -> Option<String> {
-        let url = &self.bridge_url;
-        let without_scheme = url
-            .strip_prefix("http://")
-            .or_else(|| url.strip_prefix("https://"))
-            .unwrap_or(url);
-        Some(without_scheme.to_string())
-    }
-
-    /// Check if the ML bridge is available (works inside tokio runtime).
-    pub fn check_health(&self) -> bool {
-        // Use raw TCP + HTTP/1.1 to avoid reqwest::blocking panic in async context
-        let addr = match self.host_port() {
-            Some(a) => a,
-            None => return false,
-        };
-        let stream = match std::net::TcpStream::connect_timeout(
-            &addr.parse().unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 18091))),
-            std::time::Duration::from_secs(2),
-        ) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        drop(stream);
-
-        // TCP connected — try a simple GET /health via raw socket
-        use std::io::{Read, Write};
-        match std::net::TcpStream::connect_timeout(
-            &addr.parse().unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 18091))),
-            std::time::Duration::from_secs(2),
-        ) {
-            Ok(mut s) => {
-                s.set_read_timeout(Some(std::time::Duration::from_secs(2))).ok();
-                let req = format!("GET /health HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", addr);
-                if s.write_all(req.as_bytes()).is_err() { return false; }
-                let mut buf = [0u8; 512];
-                match s.read(&mut buf) {
-                    Ok(n) if n > 0 => {
-                        let resp = String::from_utf8_lossy(&buf[..n]);
-                        resp.contains("200 OK") || resp.contains("\"ok\"")
-                    }
-                    _ => false,
-                }
-            }
-            Err(_) => false,
-        }
-    }
-
-    /// Run prediction on a feature vector. Returns probability [0, 1].
-    /// Uses raw TCP HTTP to work inside tokio async runtime.
-    pub fn predict(&self, features: &[f32; NUM_FEATURES]) -> Result<f64, String> {
-        // Check cached availability
-        {
-            let cached = self.available.lock().unwrap();
-            if let Some(false) = *cached {
-                return Err("ML bridge not available (cached)".to_string());
-            }
-        }
-
-        let body = serde_json::json!({
-            "features": features.to_vec(),
-            "feature_names": FEATURE_NAMES.to_vec(),
-        });
-        let body_str = body.to_string();
-
-        let addr = self.host_port().ok_or("Invalid bridge URL")?;
-
-        let infer_t0 = std::time::Instant::now();
-
-        use std::io::{Read, Write};
-        let mut stream = std::net::TcpStream::connect_timeout(
-            &addr.parse().map_err(|e| format!("Addr parse: {}", e))?,
-            std::time::Duration::from_secs(3),
-        ).map_err(|e| {
-            *self.available.lock().unwrap() = Some(false);
-            format!("ML bridge unreachable: {}", e)
-        })?;
-
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
-
-        let req = format!(
-            "POST /predict HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            addr, body_str.len(), body_str
-        );
-
-        stream.write_all(req.as_bytes()).map_err(|e| format!("Write error: {}", e))?;
-
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).map_err(|e| format!("Read error: {}", e))?;
-        let resp_str = String::from_utf8_lossy(&response);
-
-        // Parse HTTP response: find JSON body after \r\n\r\n
-        if let Some(body_start) = resp_str.find("\r\n\r\n") {
-            let json_part = &resp_str[body_start + 4..];
-            // Handle chunked encoding: skip chunk size line if present
-            let json_str = if json_part.starts_with(|c: char| c.is_ascii_hexdigit()) {
-                json_part.lines().skip(1).collect::<Vec<_>>().join("")
-            } else {
-                json_part.to_string()
-            };
-            // Trim trailing chunk markers
-            let json_clean = json_str.trim().trim_end_matches("0\r\n\r\n").trim_end_matches('\0');
-            let result: serde_json::Value = serde_json::from_str(json_clean)
-                .map_err(|e| format!("JSON parse error: {} (raw: {})", e, &json_clean[..json_clean.len().min(100)]))?;
-            let prob = result["probability"].as_f64().unwrap_or(0.5);
-            *self.available.lock().unwrap() = Some(true);
-            let infer_us = infer_t0.elapsed().as_micros();
-            tracing::debug!(mode="http", latency_us=%infer_us, "ML inference");
-            Ok(prob)
-        } else {
-            Err(format!("Invalid HTTP response"))
-        }
-    }
-
-    /// Get model info from the bridge.
-    pub fn model_info(&self) -> Result<serde_json::Value, String> {
-        self.client
-            .get(format!("{}/model_info", self.bridge_url))
-            .send()
-            .map_err(|e| format!("Request error: {}", e))?
-            .json()
-            .map_err(|e| format!("Parse error: {}", e))
-    }
-}
-
 // ── ML Inference Mode ───────────────────────────────────────────────
 
 /// Inference backend mode.
@@ -420,8 +271,6 @@ pub enum MlInferenceMode {
     Onnx,
     /// TCP binary protocol to ml_serve.py sidecar (~0.3ms)
     TcpMq,
-    /// HTTP POST to ml_serve.py sidecar (~2-5ms, original mode)
-    Http,
 }
 
 impl std::fmt::Display for MlInferenceMode {
@@ -430,7 +279,6 @@ impl std::fmt::Display for MlInferenceMode {
             MlInferenceMode::Embedded => write!(f, "embedded"),
             MlInferenceMode::Onnx => write!(f, "onnx"),
             MlInferenceMode::TcpMq => write!(f, "tcp_mq"),
-            MlInferenceMode::Http => write!(f, "http"),
         }
     }
 }
@@ -440,8 +288,7 @@ impl MlInferenceMode {
         match s.to_lowercase().as_str() {
             "embedded" | "native" | "rust" | "lgb" => MlInferenceMode::Embedded,
             "onnx" | "onnxruntime" => MlInferenceMode::Onnx,
-            "tcp_mq" | "tcpmq" | "tcp" | "mq" => MlInferenceMode::TcpMq,
-            "http" | "sidecar" => MlInferenceMode::Http,
+            "tcp_mq" | "tcpmq" | "tcp" | "mq" | "http" | "sidecar" => MlInferenceMode::TcpMq,
             _ => MlInferenceMode::Embedded,
         }
     }
@@ -614,8 +461,6 @@ fn fallback_score(features: &[f32; NUM_FEATURES]) -> f64 {
 /// Configuration for the ML Factor strategy.
 #[derive(Debug, Clone)]
 pub struct MlFactorConfig {
-    /// URL of the ML inference Python sidecar (e.g. http://127.0.0.1:18091)
-    pub bridge_url: String,
     /// TCP MQ address for ML sidecar (e.g. 127.0.0.1:18094)
     pub tcp_mq_addr: String,
     /// Path to LightGBM model file for embedded inference
@@ -635,7 +480,6 @@ pub struct MlFactorConfig {
 impl Default for MlFactorConfig {
     fn default() -> Self {
         Self {
-            bridge_url: "http://127.0.0.1:18091".to_string(),
             tcp_mq_addr: "127.0.0.1:18094".to_string(),
             model_path: "ml_models/factor_model.model".to_string(),
             onnx_model_path: "ml_models/factor_model.onnx".to_string(),
@@ -649,13 +493,11 @@ impl Default for MlFactorConfig {
 
 /// ML Factor Extraction Strategy.
 ///
-/// Computes 24 factor features from a rolling window of Kline bars,
-/// runs ML inference (embedded, TCP MQ, or HTTP), and generates
+/// Computes 30 factor features from a rolling window of Kline bars,
+/// runs ML inference (embedded, ONNX, or TCP MQ), and generates
 /// trading signals based on predicted probability.
 pub struct MlFactorStrategy {
     cfg: MlFactorConfig,
-    /// HTTP client (for Http mode)
-    http_client: Option<MlInferenceClient>,
     /// TCP MQ client (for TcpMq mode)
     tcp_client: Option<TcpMqInferenceClient>,
     /// Embedded LightGBM model (for Embedded mode)
@@ -674,11 +516,10 @@ pub struct MlFactorStrategy {
 
 impl MlFactorStrategy {
     pub fn new(cfg: MlFactorConfig) -> Self {
-        let (http_client, tcp_client, embedded_model, active_mode) =
+        let (tcp_client, embedded_model, active_mode) =
             Self::init_inference(&cfg);
 
         Self {
-            http_client,
             tcp_client,
             embedded_model,
             #[cfg(feature = "onnx")]
@@ -697,7 +538,6 @@ impl MlFactorStrategy {
 
     /// Initialize inference backend based on config mode, with fallback chain.
     fn init_inference(cfg: &MlFactorConfig) -> (
-        Option<MlInferenceClient>,
         Option<TcpMqInferenceClient>,
         Option<LightGBMModel>,
         MlInferenceMode,
@@ -708,22 +548,13 @@ impl MlFactorStrategy {
                 MlInferenceMode::Onnx,
                 MlInferenceMode::Embedded,
                 MlInferenceMode::TcpMq,
-                MlInferenceMode::Http,
             ],
             MlInferenceMode::Embedded => vec![
                 MlInferenceMode::Embedded,
                 MlInferenceMode::Onnx,
                 MlInferenceMode::TcpMq,
-                MlInferenceMode::Http,
             ],
             MlInferenceMode::TcpMq => vec![
-                MlInferenceMode::TcpMq,
-                MlInferenceMode::Embedded,
-                MlInferenceMode::Onnx,
-                MlInferenceMode::Http,
-            ],
-            MlInferenceMode::Http => vec![
-                MlInferenceMode::Http,
                 MlInferenceMode::TcpMq,
                 MlInferenceMode::Embedded,
                 MlInferenceMode::Onnx,
@@ -741,7 +572,7 @@ impl MlFactorStrategy {
                                     "🧠 ML inference: ONNX Runtime from {}",
                                     cfg.onnx_model_path
                                 );
-                                return (None, None, None, MlInferenceMode::Onnx);
+                                return (None, None, MlInferenceMode::Onnx);
                             }
                             Err(e) => {
                                 if cfg.inference_mode == MlInferenceMode::Onnx {
@@ -764,7 +595,6 @@ impl MlFactorStrategy {
                         "ml_models/factor_model.lgb.txt".to_string(),
                         "ml_models/factor_model.model".to_string(),
                     ];
-                    let mut loaded = false;
                     for path in &paths {
                         match LightGBMModel::load(path) {
                             Ok(model) => {
@@ -772,12 +602,12 @@ impl MlFactorStrategy {
                                     "🧠 ML inference: Embedded LightGBM ({} trees) from {}",
                                     model.num_trees(), path
                                 );
-                                return (None, None, Some(model), MlInferenceMode::Embedded);
+                                return (None, Some(model), MlInferenceMode::Embedded);
                             }
                             Err(_) => {}
                         }
                     }
-                    if !loaded && cfg.inference_mode == MlInferenceMode::Embedded {
+                    if cfg.inference_mode == MlInferenceMode::Embedded {
                         tracing::warn!("🧠 Embedded model load failed from all paths: {:?}", paths);
                     }
                 }
@@ -785,35 +615,26 @@ impl MlFactorStrategy {
                     let client = TcpMqInferenceClient::new(&cfg.tcp_mq_addr);
                     if client.check_health() {
                         tracing::info!("🧠 ML inference: TCP MQ at {}", cfg.tcp_mq_addr);
-                        return (None, Some(client), None, MlInferenceMode::TcpMq);
+                        return (Some(client), None, MlInferenceMode::TcpMq);
                     } else if cfg.inference_mode == MlInferenceMode::TcpMq {
                         tracing::warn!("🧠 TCP MQ not available at {}", cfg.tcp_mq_addr);
-                    }
-                }
-                MlInferenceMode::Http => {
-                    let client = MlInferenceClient::new(&cfg.bridge_url);
-                    if client.check_health() {
-                        tracing::info!("🧠 ML inference: HTTP at {}", cfg.bridge_url);
-                        return (Some(client), None, None, MlInferenceMode::Http);
-                    } else if cfg.inference_mode == MlInferenceMode::Http {
-                        tracing::warn!("🧠 HTTP sidecar not available at {}", cfg.bridge_url);
                     }
                 }
             }
         }
 
         tracing::error!("🧠 No ML inference backend available! Strategy will produce no signals.");
-        (None, None, None, cfg.inference_mode.clone())
+        (None, None, cfg.inference_mode.clone())
     }
 
     pub fn with_defaults() -> Self {
         Self::new(MlFactorConfig::default())
     }
 
-    pub fn with_bridge(bridge_url: &str) -> Self {
+    pub fn with_tcp_mq(addr: &str) -> Self {
         Self::new(MlFactorConfig {
-            bridge_url: bridge_url.to_string(),
-            inference_mode: MlInferenceMode::Http,
+            tcp_mq_addr: addr.to_string(),
+            inference_mode: MlInferenceMode::TcpMq,
             ..Default::default()
         })
     }
@@ -853,19 +674,6 @@ impl MlFactorStrategy {
                     None
                 }
             }
-            MlInferenceMode::Http => {
-                if let Some(client) = &self.http_client {
-                    match client.predict(features) {
-                        Ok(prob) => Some(prob),
-                        Err(e) => {
-                            tracing::warn!("HTTP inference failed: {}", e);
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            }
         }
     }
 
@@ -877,7 +685,6 @@ impl MlFactorStrategy {
     pub fn is_using_fallback(&self) -> bool {
         self.embedded_model.is_none()
             && self.tcp_client.is_none()
-            && self.http_client.is_none()
     }
 }
 
@@ -1020,8 +827,8 @@ mod tests {
     #[test]
     fn test_ml_strategy_needs_warmup() {
         let mut strat = MlFactorStrategy::new(MlFactorConfig {
-            inference_mode: MlInferenceMode::Http,
-            bridge_url: "http://127.0.0.1:1".to_string(),
+            inference_mode: MlInferenceMode::TcpMq,
+            tcp_mq_addr: "127.0.0.1:1".to_string(),
             model_path: "nonexistent.model".to_string(),
             ..Default::default()
         });
@@ -1037,8 +844,7 @@ mod tests {
     fn test_ml_strategy_no_signals_without_backend() {
         // All backends unreachable → no signals
         let mut strat = MlFactorStrategy::new(MlFactorConfig {
-            inference_mode: MlInferenceMode::Http,
-            bridge_url: "http://127.0.0.1:1".to_string(),
+            inference_mode: MlInferenceMode::TcpMq,
             tcp_mq_addr: "127.0.0.1:1".to_string(),
             model_path: "nonexistent.model".to_string(),
             buy_threshold: 0.52,
@@ -1086,8 +892,8 @@ mod tests {
     #[test]
     fn test_ml_strategy_generates_signal_downtrend() {
         let mut strat = MlFactorStrategy::new(MlFactorConfig {
-            inference_mode: MlInferenceMode::Http,
-            bridge_url: "http://127.0.0.1:1".to_string(),
+            inference_mode: MlInferenceMode::TcpMq,
+            tcp_mq_addr: "127.0.0.1:1".to_string(),
             model_path: "nonexistent.model".to_string(),
             buy_threshold: 0.55,
             sell_threshold: 0.49,
