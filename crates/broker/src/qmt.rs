@@ -329,6 +329,126 @@ impl Broker for QmtBroker {
     }
 }
 
+// ── QMT Market Data ────────────────────────────────────────────────
+
+/// Market data kline bar returned from QMT bridge.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct QmtKline {
+    pub datetime: String,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,
+}
+
+/// Real-time quote snapshot from QMT bridge.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct QmtQuote {
+    pub stock_code: String,
+    pub last_price: f64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub pre_close: f64,
+    pub volume: f64,
+    pub amount: f64,
+    #[serde(default)]
+    pub bid_prices: Vec<f64>,
+    #[serde(default)]
+    pub ask_prices: Vec<f64>,
+    #[serde(default)]
+    pub bid_vols: Vec<i64>,
+    #[serde(default)]
+    pub ask_vols: Vec<i64>,
+    #[serde(default)]
+    pub timestamp: i64,
+}
+
+impl QmtBroker {
+    /// Fetch historical kline data from the QMT bridge via xtdata.
+    ///
+    /// `period`: "1d", "1m", "5m", "15m", "30m", "60m"
+    pub async fn fetch_klines(
+        &self,
+        stock_code: &str,
+        period: &str,
+        start_time: &str,
+        end_time: &str,
+    ) -> Result<Vec<QmtKline>> {
+        let url = format!(
+            "{}/market/kline?stock_code={}&period={}&start_time={}&end_time={}",
+            self.config.bridge_url, stock_code, period, start_time, end_time
+        );
+        let resp = self.client.get(&url).send().await
+            .map_err(|e| QuantError::DataError(format!("QMT kline request failed: {}", e)))?;
+
+        #[derive(Deserialize)]
+        struct KlineResp {
+            klines: Option<Vec<QmtKline>>,
+            error: Option<String>,
+        }
+
+        let body: KlineResp = resp.json().await
+            .map_err(|e| QuantError::DataError(format!("Bad kline response: {}", e)))?;
+
+        if let Some(err) = body.error {
+            return Err(QuantError::DataError(err));
+        }
+        Ok(body.klines.unwrap_or_default())
+    }
+
+    /// Fetch real-time quotes for one or more stocks.
+    pub async fn fetch_quotes(&self, stock_codes: &[&str]) -> Result<Vec<QmtQuote>> {
+        let codes = stock_codes.join(",");
+        let url = format!(
+            "{}/market/quote?stock_codes={}",
+            self.config.bridge_url, codes
+        );
+        let resp = self.client.get(&url).send().await
+            .map_err(|e| QuantError::DataError(format!("QMT quote request failed: {}", e)))?;
+
+        #[derive(Deserialize)]
+        struct QuoteResp {
+            quotes: Option<Vec<QmtQuote>>,
+            error: Option<String>,
+        }
+
+        let body: QuoteResp = resp.json().await
+            .map_err(|e| QuantError::DataError(format!("Bad quote response: {}", e)))?;
+
+        if let Some(err) = body.error {
+            return Err(QuantError::DataError(err));
+        }
+        Ok(body.quotes.unwrap_or_default())
+    }
+
+    /// Subscribe to real-time market data on the bridge side.
+    pub async fn subscribe_market(&self, stock_codes: &[&str], period: &str) -> Result<usize> {
+        let url = format!("{}/market/subscribe", self.config.bridge_url);
+        let body = serde_json::json!({
+            "stock_codes": stock_codes,
+            "period": period,
+        });
+        let resp = self.client.post(&url).json(&body).send().await
+            .map_err(|e| QuantError::DataError(format!("QMT subscribe request failed: {}", e)))?;
+
+        #[derive(Deserialize)]
+        struct SubResp {
+            count: Option<usize>,
+            error: Option<String>,
+        }
+
+        let result: SubResp = resp.json().await
+            .map_err(|e| QuantError::DataError(format!("Bad subscribe response: {}", e)))?;
+
+        if let Some(err) = result.error {
+            return Err(QuantError::DataError(err));
+        }
+        Ok(result.count.unwrap_or(0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

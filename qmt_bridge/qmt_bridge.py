@@ -343,6 +343,183 @@ def api_order_status(order_id: str):
         return jsonify({"error": str(e)}), 500
 
 
+# ── Market Data Endpoints ───────────────────────────────────────────
+
+def _get_xtdata():
+    """Lazily import xtdata. Returns the module or None."""
+    try:
+        from xtquant import xtdata
+        return xtdata
+    except ImportError:
+        return None
+
+
+@app.route("/market/kline", methods=["GET"])
+def api_market_kline():
+    """
+    Fetch historical kline (OHLCV) data via xtdata.
+
+    Query params:
+        stock_code: str   — e.g. "000001.SZ"
+        period: str       — "1d", "1m", "5m", "15m", "30m", "60m" (default: "1d")
+        start_time: str   — e.g. "20240101" or "20240101093000" (default: "")
+        end_time: str     — e.g. "20241231" (default: "")
+        count: int        — max bars to return (default: -1 = all)
+    """
+    xtdata = _get_xtdata()
+    if xtdata is None:
+        return jsonify({"error": "xtdata not available (xtquant not installed)"}), 503
+
+    stock_code = request.args.get("stock_code", "")
+    period = request.args.get("period", "1d")
+    start_time = request.args.get("start_time", "")
+    end_time = request.args.get("end_time", "")
+    count = int(request.args.get("count", -1))
+
+    if not stock_code:
+        return jsonify({"error": "stock_code is required"}), 400
+
+    # Map user-friendly period names to xtdata period strings
+    period_map = {
+        "1d": "1d", "daily": "1d", "day": "1d",
+        "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m", "60m": "60m",
+        "1w": "1w", "week": "1w",
+    }
+    xt_period = period_map.get(period, period)
+
+    try:
+        # Download data first (ensures local cache is up to date)
+        xtdata.download_history_data(stock_code, xt_period, start_time, end_time)
+
+        data = xtdata.get_market_data(
+            field_list=["open", "high", "low", "close", "volume"],
+            stock_list=[stock_code],
+            period=xt_period,
+            start_time=start_time,
+            end_time=end_time,
+            count=count,
+        )
+
+        if data is None or not data:
+            return jsonify({"stock_code": stock_code, "klines": [], "count": 0})
+
+        # data is dict: { field: DataFrame(index=time, columns=stock_list) }
+        klines = []
+        opens = data.get("open", {}).get(stock_code, {})
+        highs = data.get("high", {}).get(stock_code, {})
+        lows = data.get("low", {}).get(stock_code, {})
+        closes = data.get("close", {}).get(stock_code, {})
+        volumes = data.get("volume", {}).get(stock_code, {})
+
+        if hasattr(opens, "items"):
+            for ts in opens.keys():
+                dt_str = str(ts)
+                klines.append({
+                    "datetime": dt_str,
+                    "open": float(opens.get(ts, 0)),
+                    "high": float(highs.get(ts, 0)),
+                    "low": float(lows.get(ts, 0)),
+                    "close": float(closes.get(ts, 0)),
+                    "volume": float(volumes.get(ts, 0)),
+                })
+
+        return jsonify({
+            "stock_code": stock_code,
+            "period": xt_period,
+            "klines": klines,
+            "count": len(klines),
+        })
+    except Exception as e:
+        logger.error(f"Market kline error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/market/quote", methods=["GET"])
+def api_market_quote():
+    """
+    Fetch latest snapshot quote for one or more stocks.
+
+    Query params:
+        stock_codes: str  — comma-separated, e.g. "000001.SZ,600519.SH"
+    """
+    xtdata = _get_xtdata()
+    if xtdata is None:
+        return jsonify({"error": "xtdata not available (xtquant not installed)"}), 503
+
+    codes_str = request.args.get("stock_codes", "")
+    if not codes_str:
+        return jsonify({"error": "stock_codes is required"}), 400
+
+    stock_list = [c.strip() for c in codes_str.split(",") if c.strip()]
+
+    try:
+        data = xtdata.get_full_tick(stock_list)
+
+        quotes = []
+        for code in stock_list:
+            tick = data.get(code)
+            if tick is None:
+                continue
+            quotes.append({
+                "stock_code": code,
+                "last_price": float(getattr(tick, "lastPrice", 0)),
+                "open": float(getattr(tick, "open", 0)),
+                "high": float(getattr(tick, "high", 0)),
+                "low": float(getattr(tick, "low", 0)),
+                "pre_close": float(getattr(tick, "lastClose", 0)),
+                "volume": float(getattr(tick, "volume", 0)),
+                "amount": float(getattr(tick, "amount", 0)),
+                "bid_prices": [float(p) for p in getattr(tick, "bidPrice", [])[:5]],
+                "ask_prices": [float(p) for p in getattr(tick, "askPrice", [])[:5]],
+                "bid_vols": [int(v) for v in getattr(tick, "bidVol", [])[:5]],
+                "ask_vols": [int(v) for v in getattr(tick, "askVol", [])[:5]],
+                "timestamp": int(getattr(tick, "time", 0)),
+            })
+        return jsonify({"quotes": quotes, "count": len(quotes)})
+    except Exception as e:
+        logger.error(f"Market quote error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/market/subscribe", methods=["POST"])
+def api_market_subscribe():
+    """
+    Subscribe to real-time quote updates (writes to in-memory cache).
+
+    Body JSON:
+        stock_codes: list[str]  — e.g. ["000001.SZ", "600519.SH"]
+        period: str             — "tick", "1m", "5m" (default: "tick")
+    """
+    xtdata = _get_xtdata()
+    if xtdata is None:
+        return jsonify({"error": "xtdata not available (xtquant not installed)"}), 503
+
+    data = request.get_json(silent=True) or {}
+    stock_codes = data.get("stock_codes", [])
+    period = data.get("period", "tick")
+
+    if not stock_codes:
+        return jsonify({"error": "stock_codes list is required"}), 400
+
+    period_map = {"tick": "tick", "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m", "60m": "60m"}
+    xt_period = period_map.get(period, "tick")
+
+    subscribed = []
+    errors = []
+    for code in stock_codes:
+        try:
+            seq = xtdata.subscribe_quote(code, period=xt_period, count=-1)
+            subscribed.append({"stock_code": code, "seq": seq})
+        except Exception as e:
+            errors.append({"stock_code": code, "error": str(e)})
+
+    return jsonify({
+        "subscribed": subscribed,
+        "errors": errors,
+        "count": len(subscribed),
+    })
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 def main():
