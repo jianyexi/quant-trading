@@ -279,9 +279,12 @@ async fn main() -> anyhow::Result<()> {
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
+    // Stdout also non-blocking to avoid latency on debug-heavy cross-process logging
+    let (nb_stdout, _stdout_guard) = tracing_appender::non_blocking(std::io::stdout());
+
     tracing_subscriber::registry()
         .with(env_filter)
-        .with(fmt::layer().with_writer(std::io::stdout))
+        .with(fmt::layer().with_writer(nb_stdout))
         .with(fmt::layer().with_ansi(false).with_writer(non_blocking))
         .init();
 

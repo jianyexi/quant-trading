@@ -30,8 +30,11 @@ import os
 import sys
 import json
 import time
+import logging
 import numpy as np
 from flask import Flask, request, jsonify
+
+logger = logging.getLogger("ml_serve")
 
 app = Flask(__name__)
 
@@ -69,7 +72,7 @@ def detect_device():
         if torch.cuda.is_available():
             name = torch.cuda.get_device_name(0)
             mem = torch.cuda.get_device_properties(0).total_mem / 1e9
-            print(f"  🎮 GPU detected: {name} ({mem:.1f} GB)")
+            logger.info(f"  🎮 GPU detected: {name} ({mem:.1f} GB)")
             return "cuda"
     except ImportError:
         pass
@@ -79,12 +82,12 @@ def detect_device():
         import onnxruntime as ort
         providers = ort.get_available_providers()
         if "CUDAExecutionProvider" in providers:
-            print("  🎮 ONNX Runtime CUDA provider available")
+            logger.info("  🎮 ONNX Runtime CUDA provider available")
             return "cuda"
     except ImportError:
         pass
 
-    print("  💻 Using CPU (install torch with CUDA or onnxruntime-gpu for GPU acceleration)")
+    logger.info("  💻 Using CPU (install torch with CUDA or onnxruntime-gpu for GPU acceleration)")
     return "cpu"
 
 
@@ -109,18 +112,18 @@ def load_model(model_path, device):
             with open(model_path, "r") as f:
                 header = f.readline().strip()
             if header == "tree":
-                print(f"  Auto-detected LightGBM text format for {model_path}")
+                logger.info(f"  Auto-detected LightGBM text format for {model_path}")
                 load_lightgbm_model(model_path)
             else:
-                print(f"  ⚠️ Unknown .model format (header: {header}), trying LightGBM")
+                logger.warning(f"Unknown .model format (header: {header}), trying LightGBM")
                 load_lightgbm_model(model_path)
         except Exception:
-            print(f"  ⚠️ Cannot read {model_path}, using dummy model")
+            logger.warning(f"Cannot read {model_path}, using dummy model")
             MODEL = None
             MODEL_TYPE = "dummy"
     else:
-        print(f"  ⚠️ Unknown model format: {model_path}")
-        print("  Using dummy model (returns 0.5 for all predictions)")
+        logger.warning(f"Unknown model format: {model_path}")
+        logger.warning("Using dummy model (returns 0.5 for all predictions)")
         MODEL = None
         MODEL_TYPE = "dummy"
 
@@ -132,19 +135,19 @@ def load_onnx_model(model_path, device):
     providers = ["CPUExecutionProvider"]
     if device == "cuda" and "CUDAExecutionProvider" in ort.get_available_providers():
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        print("  🚀 ONNX Runtime: Using CUDA GPU")
+        logger.info("  🚀 ONNX Runtime: Using CUDA GPU")
     else:
-        print("  💻 ONNX Runtime: Using CPU")
+        logger.info("  💻 ONNX Runtime: Using CPU")
 
     MODEL = ort.InferenceSession(model_path, providers=providers)
     MODEL_TYPE = "onnx"
-    print(f"  ✅ ONNX model loaded: {model_path}")
+    logger.info(f"  ✅ ONNX model loaded: {model_path}")
 
     # Print input/output info
     for inp in MODEL.get_inputs():
-        print(f"     Input: {inp.name} shape={inp.shape} type={inp.type}")
+        logger.info(f"     Input: {inp.name} shape={inp.shape} type={inp.type}")
     for out in MODEL.get_outputs():
-        print(f"     Output: {out.name} shape={out.shape} type={out.type}")
+        logger.info(f"     Output: {out.name} shape={out.shape} type={out.type}")
 
 
 def _probe_lightgbm_model(model_path):
@@ -178,8 +181,8 @@ def load_lightgbm_model(model_path):
     # Probe in subprocess first — LightGBM C++ abort() kills the process
     ok, info = _probe_lightgbm_model(model_path)
     if not ok:
-        print(f"  ⚠️ LightGBM model probe failed: {info}")
-        print("  Using dummy model (returns 0.5 for all predictions)")
+        logger.warning(f"LightGBM model probe failed: {info}")
+        logger.warning("Using dummy model (returns 0.5 for all predictions)")
         MODEL = None
         MODEL_TYPE = "dummy"
         return
@@ -187,11 +190,11 @@ def load_lightgbm_model(model_path):
     try:
         MODEL = lgb.Booster(model_file=model_path)
         MODEL_TYPE = "lightgbm"
-        print(f"  ✅ LightGBM model loaded: {model_path}")
-        print(f"     Features: {MODEL.num_feature()}")
+        logger.info(f"  ✅ LightGBM model loaded: {model_path}")
+        logger.info(f"     Features: {MODEL.num_feature()}")
     except Exception as e:
-        print(f"  ⚠️ LightGBM model load failed: {e}")
-        print("  Using dummy model (returns 0.5 for all predictions)")
+        logger.warning(f"LightGBM model load failed: {e}")
+        logger.warning("Using dummy model (returns 0.5 for all predictions)")
         MODEL = None
         MODEL_TYPE = "dummy"
 
@@ -203,7 +206,7 @@ def load_xgboost_model(model_path):
     MODEL = xgb.Booster()
     MODEL.load_model(model_path)
     MODEL_TYPE = "xgboost"
-    print(f"  ✅ XGBoost model loaded: {model_path}")
+    logger.info(f"  ✅ XGBoost model loaded: {model_path}")
 
 
 def load_catboost_model(model_path):
@@ -213,7 +216,7 @@ def load_catboost_model(model_path):
     MODEL = CatBoostClassifier()
     MODEL.load_model(model_path)
     MODEL_TYPE = "catboost"
-    print(f"  ✅ CatBoost model loaded: {model_path}")
+    logger.info(f"  ✅ CatBoost model loaded: {model_path}")
 
 
 def load_pytorch_model(model_path, device):
@@ -225,7 +228,7 @@ def load_pytorch_model(model_path, device):
     MODEL_TYPE = "pytorch"
     if device == "cuda":
         MODEL = MODEL.cuda()
-    print(f"  ✅ PyTorch model loaded: {model_path} (device={device})")
+    logger.info(f"  ✅ PyTorch model loaded: {model_path} (device={device})")
 
 
 def predict_single(features):
@@ -413,7 +416,7 @@ def api_reload():
 
     try:
         load_model(model_path, DEVICE)
-        print(f"🔄 Model hot-reloaded: {model_path} ({MODEL_TYPE})")
+        logger.info(f"🔄 Model hot-reloaded: {model_path} ({MODEL_TYPE})")
         return jsonify({
             "status": "reloaded",
             "model_path": model_path,
@@ -480,7 +483,7 @@ def api_ensemble_load():
             loaded.append({"path": path, "status": f"error: {e}"})
 
     ENSEMBLE_ENABLED = len(ENSEMBLE_MODELS) > 0
-    print(f"🎯 Ensemble loaded: {len(ENSEMBLE_MODELS)} models, enabled={ENSEMBLE_ENABLED}")
+    logger.info(f"🎯 Ensemble loaded: {len(ENSEMBLE_MODELS)} models, enabled={ENSEMBLE_ENABLED}")
 
     return jsonify({
         "ensemble_enabled": ENSEMBLE_ENABLED,
@@ -545,7 +548,7 @@ def tcp_recv(conn, timeout=30.0):
 
 def handle_ml_tcp_client(conn, addr):
     """Handle a single TCP ML inference client."""
-    print(f"🔗 ML TCP client connected: {addr}")
+    logger.info(f"🔗 ML TCP client connected: {addr}")
     tcp_send(conn, {"type": "connected", "model_type": MODEL_TYPE, "device": DEVICE})
 
     try:
@@ -597,10 +600,10 @@ def handle_ml_tcp_client(conn, addr):
                     tcp_send(conn, {"type": "error", "error": f"File not found: {model_path}"})
 
     except Exception as e:
-        print(f"🔗 ML TCP client error: {e}")
+        logger.error(f"🔗 ML TCP client error: {e}")
     finally:
         conn.close()
-        print(f"🔗 ML TCP client disconnected: {addr}")
+        logger.info(f"🔗 ML TCP client disconnected: {addr}")
 
 
 def ml_tcp_server_thread(port: int):
@@ -609,7 +612,7 @@ def ml_tcp_server_thread(port: int):
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", port))
     srv.listen(8)
-    print(f"🔗 ML TCP MQ listening on port {port}")
+    logger.info(f"🔗 ML TCP MQ listening on port {port}")
 
     while True:
         conn, addr = srv.accept()
@@ -632,33 +635,38 @@ if __name__ == "__main__":
                        help="Device for inference (default: auto-detect)")
     args = parser.parse_args()
 
-    print("🧠 ML Inference Sidecar for QuantTrader")
-    print(f"   Model: {args.model}")
-    print(f"   HTTP:  {args.port} | TCP MQ: {args.tcp_port}")
+    # Configure logging (async-safe: buffered, non-blocking for file handler)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
+    logger.info("🧠 ML Inference Sidecar for QuantTrader")
+    logger.info(f"   Model: {args.model}")
+    logger.info(f"   HTTP:  {args.port} | TCP MQ: {args.tcp_port}")
 
     # Detect device
     device = args.device
     if device == "auto":
         device = detect_device()
     else:
-        print(f"  Device: {device}")
+        logger.info(f"  Device: {device}")
     DEVICE = device
 
     # Load model
     try:
         load_model(args.model, device)
     except Exception as e:
-        print(f"  ⚠️ Failed to load model: {e}")
-        print(f"  Running with dummy model (returns 0.5)")
+        logger.warning(f"Failed to load model: {e}")
+        logger.warning("Running with dummy model (returns 0.5)")
         MODEL = None
         MODEL_TYPE = "dummy"
 
     # Start TCP MQ server thread
     threading.Thread(target=ml_tcp_server_thread, args=(args.tcp_port,), daemon=True).start()
 
-    print(f"\n🚀 Starting ML server")
-    print(f"   HTTP:    http://{args.host}:{args.port}/predict")
-    print(f"   TCP MQ:  {args.host}:{args.tcp_port} (binary protocol)")
-    print()
+    logger.info(f"🚀 Starting ML server")
+    logger.info(f"   HTTP:    http://{args.host}:{args.port}/predict")
+    logger.info(f"   TCP MQ:  {args.host}:{args.tcp_port} (binary protocol)")
 
     app.run(host=args.host, port=args.port, debug=False)

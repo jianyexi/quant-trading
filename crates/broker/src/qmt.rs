@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::{info, error};
+use tracing::{info, error, debug};
 use uuid::Uuid;
 
 use quant_core::error::{QuantError, Result};
@@ -110,10 +110,12 @@ impl QmtBroker {
     /// Check if the bridge is healthy and connected.
     pub async fn check_connection(&self) -> Result<bool> {
         let url = format!("{}/health", self.config.bridge_url);
+        debug!(url=%url, "QMT bridge health check");
         let resp = self.client.get(&url).send().await
             .map_err(|e| QuantError::BrokerError(format!("Bridge unreachable: {}", e)))?;
         let health: BridgeHealthResponse = resp.json().await
             .map_err(|e| QuantError::BrokerError(format!("Bad health response: {}", e)))?;
+        debug!(status=%health.status, connected=%health.connected, "QMT bridge health response");
         Ok(health.status == "ok" && health.connected)
     }
 
@@ -203,6 +205,7 @@ impl Broker for QmtBroker {
         };
 
         let url = format!("{}/order", self.config.bridge_url);
+        debug!(url=%url, symbol=%order.symbol, side=%req.side, price=%req.price, amount=%req.amount, "QMT submit_order request");
         let resp = self.client.post(&url).json(&req).send().await
             .map_err(|e| QuantError::BrokerError(format!("Bridge request failed: {}", e)))?;
 
@@ -241,6 +244,7 @@ impl Broker for QmtBroker {
         };
 
         let url = format!("{}/cancel", self.config.bridge_url);
+        debug!(url=%url, order_id=%order_id, qmt_id=%qmt_id, "QMT cancel_order request");
         let body = serde_json::json!({ "order_id": qmt_id });
         let resp = self.client.post(&url).json(&body).send().await
             .map_err(|e| QuantError::BrokerError(format!("Cancel request failed: {}", e)))?;
@@ -258,6 +262,7 @@ impl Broker for QmtBroker {
 
     async fn get_positions(&self) -> Result<Vec<Position>> {
         let url = format!("{}/positions", self.config.bridge_url);
+        debug!(url=%url, "QMT get_positions request");
         let resp = self.client.get(&url).send().await
             .map_err(|e| QuantError::BrokerError(format!("Positions request failed: {}", e)))?;
 
@@ -292,6 +297,7 @@ impl Broker for QmtBroker {
 
     async fn get_account(&self) -> Result<Account> {
         let url = format!("{}/account", self.config.bridge_url);
+        debug!(url=%url, "QMT get_account request");
         let resp = self.client.get(&url).send().await
             .map_err(|e| QuantError::BrokerError(format!("Account request failed: {}", e)))?;
 
@@ -380,6 +386,7 @@ impl QmtBroker {
             "{}/market/kline?stock_code={}&period={}&start_time={}&end_time={}",
             self.config.bridge_url, stock_code, period, start_time, end_time
         );
+        debug!(url=%url, stock_code=%stock_code, period=%period, "QMT fetch_klines request");
         let resp = self.client.get(&url).send().await
             .map_err(|e| QuantError::DataError(format!("QMT kline request failed: {}", e)))?;
 
@@ -395,7 +402,9 @@ impl QmtBroker {
         if let Some(err) = body.error {
             return Err(QuantError::DataError(err));
         }
-        Ok(body.klines.unwrap_or_default())
+        let klines = body.klines.unwrap_or_default();
+        debug!(count=%klines.len(), "QMT fetch_klines response");
+        Ok(klines)
     }
 
     /// Fetch real-time quotes for one or more stocks.
@@ -405,6 +414,7 @@ impl QmtBroker {
             "{}/market/quote?stock_codes={}",
             self.config.bridge_url, codes
         );
+        debug!(url=%url, count=%stock_codes.len(), "QMT fetch_quotes request");
         let resp = self.client.get(&url).send().await
             .map_err(|e| QuantError::DataError(format!("QMT quote request failed: {}", e)))?;
 
@@ -420,7 +430,9 @@ impl QmtBroker {
         if let Some(err) = body.error {
             return Err(QuantError::DataError(err));
         }
-        Ok(body.quotes.unwrap_or_default())
+        let quotes = body.quotes.unwrap_or_default();
+        debug!(count=%quotes.len(), "QMT fetch_quotes response");
+        Ok(quotes)
     }
 
     /// Subscribe to real-time market data on the bridge side.
@@ -430,6 +442,7 @@ impl QmtBroker {
             "stock_codes": stock_codes,
             "period": period,
         });
+        debug!(url=%url, count=%stock_codes.len(), period=%period, "QMT subscribe_market request");
         let resp = self.client.post(&url).json(&body).send().await
             .map_err(|e| QuantError::DataError(format!("QMT subscribe request failed: {}", e)))?;
 
@@ -445,7 +458,9 @@ impl QmtBroker {
         if let Some(err) = result.error {
             return Err(QuantError::DataError(err));
         }
-        Ok(result.count.unwrap_or(0))
+        let count = result.count.unwrap_or(0);
+        debug!(count=%count, "QMT subscribe_market response");
+        Ok(count)
     }
 }
 
