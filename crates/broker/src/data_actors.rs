@@ -243,6 +243,12 @@ pub(crate) async fn data_actor(
             info!("📊 DataActor started [L2] for {:?} (addr={})", symbols, l2_addr);
             data_actor_l2(symbols, l2_addr.clone(), tx, shutdown).await;
         }
+        DataMode::QmtPush { qmt_push_addr } => {
+            info!("📊 DataActor started [QMT_PUSH] for {:?} (addr={})", symbols, qmt_push_addr);
+            let n = warmup_historical(&symbols, &tx, 80).await;
+            if n > 0 { info!("📊 Warmup complete: {} bars pre-loaded", n); }
+            data_actor_qmt_push(symbols, qmt_push_addr.clone(), tx, shutdown).await;
+        }
     }
 }
 
@@ -1363,4 +1369,120 @@ fn parse_l2_depth(data: &serde_json::Value) -> Option<DepthData> {
     };
 
     Some(DepthData { symbol, datetime, bids, asks, last_price, total_volume, total_turnover })
+}
+
+// ── QMT Push Data Actor ────────────────────────────────────────────
+// Event-driven L1 quotes from QMT bridge TCP push server.
+// Uses same binary protocol as LowLatency: [4B len + JSON].
+// Bridge side uses xtdata.subscribe_whole_quote() and pushes quotes.
+
+async fn data_actor_qmt_push(
+    symbols: Vec<String>,
+    qmt_push_addr: String,
+    tx: mpsc::Sender<MarketEvent>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    // Connect to QMT bridge TCP push server
+    let stream = match tokio::net::TcpStream::connect(&qmt_push_addr).await {
+        Ok(s) => {
+            info!("🔗 QMT push connected at {}", qmt_push_addr);
+            s
+        }
+        Err(e) => {
+            error!("🔗 QMT push failed at {}: {}", qmt_push_addr, e);
+            return;
+        }
+    };
+    let _ = stream.set_nodelay(true);
+    let (mut reader, mut writer) = stream.into_split();
+
+    // Read "connected" welcome message
+    if let Some(msg) = tcp_mq_read(&mut reader).await {
+        debug!("QMT push: {:?}", msg.get("type"));
+    }
+
+    // Subscribe to symbols
+    let sub_msg = serde_json::json!({
+        "cmd": "subscribe",
+        "symbols": symbols,
+    });
+    tcp_mq_write(&mut writer, &sub_msg).await;
+
+    // Read "subscribed" confirmation
+    if let Some(msg) = tcp_mq_read(&mut reader).await {
+        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if msg_type == "error" {
+            let err = msg.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+            error!("QMT push subscribe error: {}", err);
+            return;
+        }
+        let count = msg.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+        info!("📊 QMT push subscribed to {} symbols, waiting for event-driven quotes", count);
+    }
+
+    // Writer no longer needed — push-only mode
+    drop(writer);
+
+    // Receive event-driven quotes (no polling, no interval)
+    loop {
+        tokio::select! {
+            msg = tcp_mq_read(&mut reader) => {
+                match msg {
+                    Some(data) => {
+                        let msg_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        if msg_type == "quote" {
+                            let close = data.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            if close <= 0.0 { continue; }
+                            let sym = data.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            if sym.is_empty() { continue; }
+                            let kline = Kline {
+                                symbol: sym.clone(),
+                                datetime: Utc::now().naive_utc(),
+                                open: data.get("open").and_then(|v| v.as_f64()).unwrap_or(close),
+                                high: data.get("high").and_then(|v| v.as_f64()).unwrap_or(close),
+                                low: data.get("low").and_then(|v| v.as_f64()).unwrap_or(close),
+                                close,
+                                volume: data.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            };
+                            trace!(symbol=%sym, close=%format!("{:.2}", close), "QMT push quote");
+                            if tx.send(MarketEvent::Bar(kline)).await.is_err() {
+                                info!("DataActor[qmt_push]: channel closed");
+                                return;
+                            }
+                        }
+                    }
+                    None => {
+                        // Connection lost — retry with exponential backoff
+                        warn!("DataActor[qmt_push]: connection lost, retrying...");
+                        let mut backoff_ms = 500u64;
+                        for attempt in 1..=10 {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                            if shutdown.has_changed().unwrap_or(false) && *shutdown.borrow() { return; }
+                            match tokio::net::TcpStream::connect(&qmt_push_addr).await {
+                                Ok(_) => {
+                                    info!("🔗 QMT push reconnected after attempt {}", attempt);
+                                    // Restart the whole actor with fresh connection
+                                    return Box::pin(data_actor_qmt_push(
+                                        symbols, qmt_push_addr, tx, shutdown,
+                                    )).await;
+                                }
+                                Err(e) => {
+                                    warn!("🔗 QMT push reconnect attempt {}/10 failed: {}", attempt, e);
+                                    backoff_ms = (backoff_ms * 2).min(30_000);
+                                }
+                            }
+                        }
+                        error!("🔗 QMT push failed 10 retries, giving up");
+                        return;
+                    }
+                }
+            }
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    info!("DataActor[qmt_push]: shutdown");
+                    return;
+                }
+            }
+        }
+    }
 }

@@ -520,6 +520,168 @@ def api_market_subscribe():
     })
 
 
+# ── TCP Push Server for Real-time L1 Quotes ─────────────────────────
+# Uses xtdata.subscribe_whole_quote() to receive market-wide push updates,
+# then forwards them to connected Rust clients via length-prefixed JSON TCP.
+# Protocol: [4 bytes: msg_len big-endian u32] [msg_len bytes: JSON]
+
+_push_clients: list = []
+_push_lock = threading.Lock()
+
+
+def _tcp_push_send(conn, msg: dict):
+    """Send a length-prefixed JSON message to a TCP client."""
+    try:
+        data = json.dumps(msg).encode("utf-8")
+        header = len(data).to_bytes(4, "big")
+        conn.sendall(header + data)
+    except Exception:
+        pass
+
+
+def _tcp_push_recv(conn, timeout=10.0):
+    """Receive a length-prefixed JSON message from a TCP client."""
+    import struct
+    conn.settimeout(timeout)
+    try:
+        header = b""
+        while len(header) < 4:
+            chunk = conn.recv(4 - len(header))
+            if not chunk:
+                return None
+            header += chunk
+        msg_len = struct.unpack(">I", header)[0]
+        if msg_len > 1_000_000:
+            return None
+        body = b""
+        while len(body) < msg_len:
+            chunk = conn.recv(msg_len - len(body))
+            if not chunk:
+                return None
+            body += chunk
+        return json.loads(body.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _on_quote_push(data: dict):
+    """
+    Callback from xtdata.subscribe_whole_quote().
+    `data` is a dict of {stock_code: tick_data}.
+    Forward each quote to all connected TCP clients.
+    """
+    with _push_lock:
+        clients = list(_push_clients)
+
+    if not clients:
+        return
+
+    dead = []
+    for stock_code, tick in data.items():
+        msg = {
+            "type": "quote",
+            "symbol": stock_code,
+            "price": float(getattr(tick, "lastPrice", 0) if hasattr(tick, "lastPrice") else tick.get("lastPrice", 0)),
+            "open": float(getattr(tick, "open", 0) if hasattr(tick, "open") else tick.get("open", 0)),
+            "high": float(getattr(tick, "high", 0) if hasattr(tick, "high") else tick.get("high", 0)),
+            "low": float(getattr(tick, "low", 0) if hasattr(tick, "low") else tick.get("low", 0)),
+            "volume": float(getattr(tick, "volume", 0) if hasattr(tick, "volume") else tick.get("volume", 0)),
+            "amount": float(getattr(tick, "amount", 0) if hasattr(tick, "amount") else tick.get("amount", 0)),
+            "pre_close": float(getattr(tick, "lastClose", 0) if hasattr(tick, "lastClose") else tick.get("lastClose", 0)),
+            "timestamp": int(getattr(tick, "time", 0) if hasattr(tick, "time") else tick.get("time", 0)),
+        }
+        for conn in clients:
+            try:
+                _tcp_push_send(conn, msg)
+            except Exception:
+                dead.append(conn)
+
+    if dead:
+        with _push_lock:
+            for c in dead:
+                try:
+                    _push_clients.remove(c)
+                except ValueError:
+                    pass
+                try:
+                    c.close()
+                except Exception:
+                    pass
+
+
+def _handle_push_client(conn, addr):
+    """Handle a connected Rust client on the push TCP port."""
+    logger.info(f"TCP push client connected: {addr}")
+    _tcp_push_send(conn, {"type": "connected", "mode": "qmt_push"})
+
+    # Wait for subscribe command
+    msg = _tcp_push_recv(conn, timeout=30.0)
+    if msg is None:
+        conn.close()
+        return
+
+    cmd = msg.get("cmd", "")
+    symbols = msg.get("symbols", [])
+
+    if cmd == "subscribe" and symbols:
+        xtdata = _get_xtdata()
+        if xtdata is None:
+            _tcp_push_send(conn, {"type": "error", "error": "xtdata not available"})
+            conn.close()
+            return
+
+        # Register this client for push updates
+        with _push_lock:
+            _push_clients.append(conn)
+
+        # Subscribe to whole-market quote push (idempotent)
+        try:
+            xtdata.subscribe_whole_quote(
+                code_list=symbols,
+                callback=_on_quote_push,
+            )
+            _tcp_push_send(conn, {"type": "subscribed", "count": len(symbols)})
+            logger.info(f"TCP push: subscribed {len(symbols)} symbols for {addr}")
+        except Exception as e:
+            _tcp_push_send(conn, {"type": "error", "error": str(e)})
+            logger.error(f"TCP push subscribe error: {e}")
+
+        # Keep connection alive — block until client disconnects
+        conn.settimeout(None)
+        try:
+            while True:
+                data = conn.recv(1)
+                if not data:
+                    break
+        except Exception:
+            pass
+
+        with _push_lock:
+            try:
+                _push_clients.remove(conn)
+            except ValueError:
+                pass
+        logger.info(f"TCP push client disconnected: {addr}")
+    else:
+        _tcp_push_send(conn, {"type": "error", "error": f"Unknown command: {cmd}"})
+        conn.close()
+
+
+def _tcp_push_server(host: str, port: int):
+    """TCP server thread for event-driven L1 quote push."""
+    import socket
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((host, port))
+    srv.listen(5)
+    logger.info(f"TCP push server listening on {host}:{port}")
+    while True:
+        conn, addr = srv.accept()
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        t = threading.Thread(target=_handle_push_client, args=(conn, addr), daemon=True)
+        t.start()
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 def main():
@@ -537,6 +699,10 @@ def main():
     )
     parser.add_argument(
         "--port", type=int, default=18090, help="HTTP port (default: 18090)"
+    )
+    parser.add_argument(
+        "--tcp-port", type=int, default=18096,
+        help="TCP push port for real-time L1 quotes (default: 18096)",
     )
     parser.add_argument(
         "--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)"
@@ -565,7 +731,14 @@ def main():
         _account_id = args.account
         logger.info("Starting in offline mode (--no-connect)")
 
-    logger.info(f"QMT Bridge starting on {args.host}:{args.port}")
+    # Start TCP push server for event-driven L1 quotes
+    threading.Thread(
+        target=_tcp_push_server,
+        args=(args.host, args.tcp_port),
+        daemon=True,
+    ).start()
+
+    logger.info(f"QMT Bridge starting on {args.host}:{args.port} (TCP push: {args.tcp_port})")
     app.run(host=args.host, port=args.port, debug=False)
 
 

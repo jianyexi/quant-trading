@@ -220,6 +220,12 @@ pub enum DataMode {
         /// L2 data server TCP address (default: 127.0.0.1:18095)
         l2_addr: String,
     },
+    /// QmtPush: event-driven L1 quotes from QMT bridge TCP push server
+    /// Uses xtdata.subscribe_whole_quote() on the bridge side
+    QmtPush {
+        /// QMT bridge TCP push address (default: 127.0.0.1:18096)
+        qmt_push_addr: String,
+    },
 }
 
 impl Default for EngineConfig {
