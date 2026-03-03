@@ -112,8 +112,10 @@ export default function Services() {
     }
   };
 
-  const isRunning = status?.process_info?.process === 'running';
+  const isManagedRunning = status?.process_info?.process === 'running';
   const isHealthy = status?.health?.reachable === true;
+  const isExternallyRunning = !isManagedRunning && isHealthy;
+  const isRunning = isManagedRunning || isExternallyRunning;
 
   return (
     <div className="space-y-6">
@@ -139,8 +141,8 @@ export default function Services() {
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[#334155] px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className={`rounded-lg p-2 ${isRunning && isHealthy ? 'bg-green-500/15' : isRunning ? 'bg-yellow-500/15' : 'bg-[#334155]'}`}>
-              <Server className={`h-5 w-5 ${isRunning && isHealthy ? 'text-green-400' : isRunning ? 'text-yellow-400' : 'text-[#64748b]'}`} />
+            <div className={`rounded-lg p-2 ${isRunning && isHealthy ? 'bg-green-500/15' : isManagedRunning ? 'bg-yellow-500/15' : 'bg-[#334155]'}`}>
+              <Server className={`h-5 w-5 ${isRunning && isHealthy ? 'text-green-400' : isManagedRunning ? 'text-yellow-400' : 'text-[#64748b]'}`} />
             </div>
             <div>
               <h2 className="text-lg font-semibold text-[#f8fafc]">ML Inference Server</h2>
@@ -148,7 +150,10 @@ export default function Services() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {isRunning ? (
+            {isExternallyRunning && (
+              <span className="text-xs text-[#94a3b8] bg-[#334155] rounded-md px-2 py-1 mr-2">外部启动</span>
+            )}
+            {isManagedRunning ? (
               <button
                 onClick={handleStop}
                 disabled={actionLoading !== null}
@@ -157,7 +162,7 @@ export default function Services() {
                 {actionLoading === 'stop' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
                 停止
               </button>
-            ) : (
+            ) : !isExternallyRunning ? (
               <button
                 onClick={handleStart}
                 disabled={actionLoading !== null}
@@ -166,7 +171,7 @@ export default function Services() {
                 {actionLoading === 'start' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                 启动
               </button>
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -180,7 +185,7 @@ export default function Services() {
               <span className="text-sm text-[#94a3b8]">进程</span>
             </div>
             <span className={`text-sm font-medium ${isRunning ? 'text-green-400' : 'text-[#64748b]'}`}>
-              {isRunning ? `Running (PID ${status?.process_info?.pid})` : status?.process_info?.process === 'exited' ? `Exited (code ${status?.process_info?.exit_code})` : 'Stopped'}
+              {isManagedRunning ? `Running (PID ${status?.process_info?.pid})` : isExternallyRunning ? 'Running (外部进程)' : status?.process_info?.process === 'exited' ? `Exited (code ${status?.process_info?.exit_code})` : 'Stopped'}
             </span>
           </div>
 
