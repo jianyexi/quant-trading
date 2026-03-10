@@ -4,6 +4,7 @@ import {
   Activity, ShieldCheck, AlertTriangle, Zap, RefreshCw,
 } from 'lucide-react';
 import { getDashboard } from '../api/client';
+import { useMarket } from '../contexts/MarketContext';
 
 interface Position {
   symbol: string;
@@ -112,6 +113,7 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const { filterByMarket } = useMarket();
 
   const refresh = useCallback(async () => {
     try {
@@ -136,6 +138,9 @@ export default function Dashboard() {
   if (!data) return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="animate-spin mr-2" size={20} /> Loading...</div>;
 
   const riskAlert = data.risk_daily_paused || data.risk_circuit_open || data.risk_drawdown_halted;
+  const filteredPositions = filterByMarket(data.positions || [], 'symbol');
+  const filteredTrades = filterByMarket(data.recent_trades || [], 'symbol');
+  const filteredJournal = filterByMarket(data.journal || [], 'symbol');
 
   return (
     <div className="space-y-5">
@@ -253,7 +258,7 @@ export default function Dashboard() {
       </div>
 
       {/* Positions & Risk */}
-      {data.positions && data.positions.length > 0 && (
+      {filteredPositions.length > 0 && (
         <div className="rounded-xl border border-[#334155] bg-[#1e293b] p-5">
           <h2 className="mb-4 text-sm font-semibold text-[#94a3b8] flex items-center gap-2">
             <ShieldCheck size={14} /> 当前持仓
@@ -271,7 +276,7 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {data.positions.map((p) => (
+                {filteredPositions.map((p) => (
                   <tr key={p.symbol} className="border-b border-[#334155]/30 text-[#f8fafc]">
                     <td className="py-2.5 pr-4 font-mono text-[#3b82f6]">{p.symbol}</td>
                     <td className="py-2.5 pr-4 text-right">{p.quantity}</td>
@@ -296,11 +301,11 @@ export default function Dashboard() {
         {/* Recent Trades */}
         <div className="rounded-xl border border-[#334155] bg-[#1e293b] p-5">
           <h2 className="mb-4 text-sm font-semibold text-[#94a3b8]">🔄 最近成交</h2>
-          {data.recent_trades.length === 0 ? (
+          {filteredTrades.length === 0 ? (
             <div className="text-[#64748b] text-sm py-4 text-center">暂无成交记录</div>
           ) : (
             <div className="space-y-2 max-h-64 overflow-y-auto">
-              {data.recent_trades.slice(0, 10).map((t, i) => (
+              {filteredTrades.slice(0, 10).map((t, i) => (
                 <div key={i} className="flex items-center justify-between text-sm py-1.5 border-b border-[#334155]/30 last:border-0">
                   <div className="flex items-center gap-3">
                     <span className="text-xs text-[#64748b] font-mono w-16">{t.time}</span>
@@ -321,11 +326,11 @@ export default function Dashboard() {
         {/* Activity Feed */}
         <div className="rounded-xl border border-[#334155] bg-[#1e293b] p-5">
           <h2 className="mb-4 text-sm font-semibold text-[#94a3b8]">📋 交易日志</h2>
-          {(!data.journal || data.journal.length === 0) ? (
+          {filteredJournal.length === 0 ? (
             <div className="text-[#64748b] text-sm py-4 text-center">暂无日志记录</div>
           ) : (
             <div className="space-y-2 max-h-64 overflow-y-auto">
-              {data.journal.slice(0, 12).map((j, i) => (
+              {filteredJournal.slice(0, 12).map((j, i) => (
                 <div key={i} className="flex items-center justify-between text-sm py-1.5 border-b border-[#334155]/30 last:border-0">
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-[#64748b] font-mono w-16">{j.time}</span>

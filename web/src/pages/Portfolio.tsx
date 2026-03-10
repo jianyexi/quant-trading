@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import { TrendingUp, TrendingDown, Wallet, PiggyBank, BarChart3, Percent, Loader2, X, Archive } from 'lucide-react';
 import { getPortfolio, closePosition, getClosedPositions } from '../api/client';
+import { useMarket } from '../contexts/MarketContext';
 
 // --- Types ---
 
@@ -128,6 +129,7 @@ export default function Portfolio() {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<'open' | 'closed'>('open');
   const [closingSymbol, setClosingSymbol] = useState<string | null>(null);
+  const { filterByMarket } = useMarket();
 
   const loadData = useCallback(() => {
     getPortfolio()
@@ -167,7 +169,8 @@ export default function Portfolio() {
     return <div className="flex items-center justify-center h-64 text-slate-400"><Loader2 className="animate-spin mr-2" size={20} /> Loading...</div>;
   }
 
-  const positionsWithStats = data.positions.map(computePositionStats);
+  const positionsWithStats = filterByMarket(data.positions, 'symbol').map(computePositionStats);
+  const filteredClosed = filterByMarket(closedPositions, 'symbol');
   const totalCost = positionsWithStats.reduce((s, p) => s + p.shares * p.avg_cost, 0);
   const totalPnl = data.total_pnl;
   const totalPnlPercent = totalCost !== 0 ? (totalPnl / totalCost) * 100 : 0;
@@ -236,7 +239,7 @@ export default function Portfolio() {
           onClick={() => setTab('closed')}
           className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition ${tab === 'closed' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
         >
-          <Archive size={14} /> 已平仓 ({closedPositions.length})
+          <Archive size={14} /> 已平仓 ({filteredClosed.length})
         </button>
       </div>
 
@@ -318,9 +321,9 @@ export default function Portfolio() {
                 </tr>
               </thead>
               <tbody>
-                {closedPositions.length === 0 ? (
+                {filteredClosed.length === 0 ? (
                   <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-500">暂无已平仓记录</td></tr>
-                ) : closedPositions.map((c, i) => {
+                ) : filteredClosed.map((c, i) => {
                   const color = c.realized_pnl >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]';
                   return (
                     <tr key={`${c.symbol}-${i}`} className="border-b border-slate-700/50 hover:bg-slate-700/30">

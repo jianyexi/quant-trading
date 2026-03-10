@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import type { StrategyConfig, StrategyParam } from '../types';
 import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlModelInfo, type ModelInfo } from '../api/client';
 import { Save, Upload, Play, RotateCcw, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { useMarket } from '../contexts/MarketContext';
 
 const STRATEGIES: StrategyConfig[] = [
   {
@@ -87,20 +88,28 @@ function defaultParamValues(): Record<string, Record<string, number>> {
   return values;
 }
 
-function defaultTradingConfig(): TradingConfig {
+const DEFAULT_SYMBOLS: Record<string, string> = {
+  CN: '600519.SH',
+  US: 'AAPL',
+  HK: '0700.HK',
+  ALL: '600519.SH',
+};
+
+function defaultTradingConfig(market?: string): TradingConfig {
   return {
     initialCapital: 1000000,
     commissionRate: 0.025,
-    symbol: '600519.SH',
+    symbol: DEFAULT_SYMBOLS[market || 'ALL'] || '600519.SH',
     startDate: '2023-01-01',
     endDate: '2024-01-01',
   };
 }
 
 export default function StrategyConfigPage() {
+  const { market } = useMarket();
   const [selectedStrategy, setSelectedStrategy] = useState<string>(STRATEGIES[0].name);
   const [paramValues, setParamValues] = useState<Record<string, Record<string, number>>>(defaultParamValues);
-  const [tradingConfig, setTradingConfig] = useState<TradingConfig>(defaultTradingConfig);
+  const [tradingConfig, setTradingConfig] = useState<TradingConfig>(() => defaultTradingConfig(market));
   const [status, setStatus] = useState<{ text: string; type: 'info' | 'success' | 'error' } | null>(null);
   const [saving, setSaving] = useState(false);
   const [modelInfoData, setModelInfoData] = useState<ModelInfo | null>(null);

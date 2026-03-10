@@ -47,6 +47,44 @@ pub struct TradingConfig {
     pub stamp_tax_rate: f64,
     pub slippage_ticks: u32,
     pub initial_capital: f64,
+    #[serde(default)]
+    pub fees: std::collections::HashMap<String, MarketFees>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MarketFees {
+    pub commission_rate: f64,
+    pub stamp_tax_rate: f64,
+    #[serde(default = "default_slippage")]
+    pub slippage_ticks: u32,
+}
+
+fn default_slippage() -> u32 { 1 }
+
+impl TradingConfig {
+    /// Get fees for a specific market region (CN/US/HK), falling back to global defaults.
+    pub fn fees_for_market(&self, market: &str) -> MarketFees {
+        self.fees.get(market).cloned().unwrap_or(MarketFees {
+            commission_rate: self.commission_rate,
+            stamp_tax_rate: self.stamp_tax_rate,
+            slippage_ticks: self.slippage_ticks,
+        })
+    }
+
+    /// Detect market from symbol and return appropriate fees.
+    pub fn fees_for_symbol(&self, symbol: &str) -> MarketFees {
+        let market = detect_market_region(symbol);
+        self.fees_for_market(market)
+    }
+}
+
+/// Detect market region from symbol string.
+pub fn detect_market_region(symbol: &str) -> &'static str {
+    let s = symbol.to_uppercase();
+    if s.ends_with(".SH") || s.ends_with(".SZ") { return "CN"; }
+    if s.ends_with(".HK") { return "HK"; }
+    if s.chars().all(|c| c.is_ascii_digit()) && s.len() == 6 { return "CN"; }
+    "US"
 }
 
 #[derive(Debug, Clone, Deserialize)]

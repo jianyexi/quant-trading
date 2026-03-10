@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { useTaskManager } from '../hooks/useTaskManager';
 import { TaskOutput } from '../components/TaskPipeline';
+import { useMarket } from '../contexts/MarketContext';
 import {
   factorMineParametric,
   factorMineGP,
@@ -58,13 +59,34 @@ const STRATEGIES = [
   { value: 'sentiment_aware', label: '舆情感知' },
 ];
 
-const SYMBOL_PRESETS = [
-  { label: '茅台', value: '600519' },
-  { label: '平安', value: '601318' },
-  { label: '宁德', value: '300750' },
-  { label: '招行', value: '600036' },
-  { label: '比亚迪', value: '002594' },
-];
+const SYMBOL_PRESETS_BY_MARKET: Record<string, { label: string; value: string }[]> = {
+  ALL: [
+    { label: '茅台', value: '600519' },
+    { label: '平安', value: '601318' },
+    { label: 'AAPL', value: 'AAPL' },
+    { label: '腾讯', value: '0700.HK' },
+  ],
+  CN: [
+    { label: '茅台', value: '600519' },
+    { label: '平安', value: '601318' },
+    { label: '宁德', value: '300750' },
+    { label: '招行', value: '600036' },
+    { label: '比亚迪', value: '002594' },
+  ],
+  US: [
+    { label: 'AAPL', value: 'AAPL' },
+    { label: 'MSFT', value: 'MSFT' },
+    { label: 'NVDA', value: 'NVDA' },
+    { label: 'GOOGL', value: 'GOOGL' },
+    { label: 'TSLA', value: 'TSLA' },
+  ],
+  HK: [
+    { label: '腾讯', value: '0700.HK' },
+    { label: '阿里', value: '9988.HK' },
+    { label: '美团', value: '3690.HK' },
+    { label: '网易', value: '9999.HK' },
+  ],
+};
 
 /* ── Shared input component ────────────────────────────────────────── */
 
@@ -122,8 +144,11 @@ function StepIndicator({ steps }: { steps: StepStatus[] }) {
 /* ── Main Pipeline Page ────────────────────────────────────────────── */
 
 function PipelineContent() {
+  const { market } = useMarket();
+  const SYMBOL_PRESETS = SYMBOL_PRESETS_BY_MARKET[market] || SYMBOL_PRESETS_BY_MARKET.ALL;
+  const defaultSymbol = SYMBOL_PRESETS[0]?.value || '600519';
   const [shared, setShared] = useState<SharedConfig>({
-    symbols: '600519',
+    symbols: defaultSymbol,
     start_date: '2023-01-01',
     end_date: '2024-12-31',
   });

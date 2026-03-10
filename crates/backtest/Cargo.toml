@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 quant-core = { workspace = true }
+quant-config = { workspace = true }
 quant-strategy = { workspace = true }
 quant-data = { workspace = true }
 quant-risk = { workspace = true }

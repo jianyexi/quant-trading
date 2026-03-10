@@ -151,6 +151,21 @@ fn default_true() -> bool { true }
 fn default_atr_period() -> usize { 14 }
 fn default_risk_per_trade() -> f64 { 0.02 }
 
+impl BacktestConfig {
+    /// Get market-specific fees for a symbol, falling back to global config rates.
+    pub fn fees_for_symbol(&self, symbol: &str) -> quant_config::MarketFees {
+        // Try loading from app config, fallback to this config's global rates
+        if let Ok(app_cfg) = quant_config::AppConfig::from_default() {
+            return app_cfg.trading.fees_for_symbol(symbol);
+        }
+        quant_config::MarketFees {
+            commission_rate: self.commission_rate,
+            stamp_tax_rate: self.stamp_tax_rate,
+            slippage_ticks: self.slippage_ticks,
+        }
+    }
+}
+
 pub struct BacktestResult {
     pub config: BacktestConfig,
     pub trades: Vec<Trade>,
@@ -198,9 +213,15 @@ impl BacktestEngine {
 
         let mut trade = self.matching.try_match(&order, kline)?;
         let turnover = trade.price * trade.quantity;
-        // Stamp tax (印花税) only applies to SELL side in China A-shares
-        trade.commission =
-            turnover * self.config.commission_rate + turnover * self.config.stamp_tax_rate;
+        // Market-aware fees: CN stamp tax on sell only, HK on both sides, US none
+        let market_region = quant_config::detect_market_region(symbol);
+        let fees = self.config.fees_for_symbol(symbol);
+        let stamp_tax = match market_region {
+            "CN" => turnover * fees.stamp_tax_rate,  // sell-side only
+            "HK" => turnover * fees.stamp_tax_rate,  // both sides
+            _ => 0.0,                                 // US: no stamp tax
+        };
+        trade.commission = turnover * fees.commission_rate + stamp_tax;
 
         let proceeds = turnover - trade.commission;
         portfolio.cash += proceeds;
@@ -386,8 +407,9 @@ impl BacktestEngine {
 
                                 // Use kline.open for position sizing (what's actually available)
                                 let price_est = kline.open;
+                                let buy_fees = self.config.fees_for_symbol(&sig.symbol);
                                 let affordable =
-                                    (capped_budget / (price_est * (1.0 + self.config.commission_rate)))
+                                    (capped_budget / (price_est * (1.0 + buy_fees.commission_rate)))
                                         .floor();
                                 (affordable / 100.0).floor() * 100.0
                             }
@@ -449,8 +471,11 @@ impl BacktestEngine {
 
                                 if let Some(mut trade) = self.matching.try_match(&order, kline) {
                                     let turnover = trade.price * trade.quantity;
-                                    // Buy side: commission only, no stamp tax
-                                    trade.commission = turnover * self.config.commission_rate;
+                                    // Buy side: commission only (no stamp tax on buys for CN/US, HK has both-side stamp)
+                                    let buy_fees = self.config.fees_for_symbol(&sig.symbol);
+                                    let market_region = quant_config::detect_market_region(&sig.symbol);
+                                    let stamp = if market_region == "HK" { turnover * buy_fees.stamp_tax_rate } else { 0.0 };
+                                    trade.commission = turnover * buy_fees.commission_rate + stamp;
 
                                     let cost = turnover + trade.commission;
                                     portfolio.cash -= cost;

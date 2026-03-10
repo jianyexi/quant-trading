@@ -12,21 +12,33 @@ base_url = "http://api.tushare.pro"
 base_url = "https://akshare.akfamily.xyz"
 
 [llm]
-api_url = "https://api.openai.com/v1"
-api_key = ""
-model = "gpt-4"
+api_url = "https://models.inference.ai.azure.com"
+api_key = "REDACTED_TOKEN"   # Your GitHub PAT with Copilot access
+model = "gpt-4o"              # Or any model available via Copilot
 temperature = 0.7
-max_tokens = 4096
-
+max_tokens = 10000
 [trading]
-# Commission rate (e.g., 0.00025 = 0.025%)
+# Default global rates (used as fallback)
 commission_rate = 0.00025
-# Stamp tax rate (sell side only, 0.001 = 0.1%)
 stamp_tax_rate = 0.001
-# Slippage in price ticks
 slippage_ticks = 1
-# Default initial capital
 initial_capital = 1000000.0
+
+# Per-market fee overrides
+[trading.fees.CN]
+commission_rate = 0.00025    # 0.025%
+stamp_tax_rate = 0.001       # 0.1% sell-side only (印花税)
+slippage_ticks = 1
+
+[trading.fees.US]
+commission_rate = 0.001      # 0.1% (IBKR tiered)
+stamp_tax_rate = 0.0         # No stamp tax
+slippage_ticks = 1
+
+[trading.fees.HK]
+commission_rate = 0.0008     # 0.08%
+stamp_tax_rate = 0.001       # 0.1% stamp duty (both sides)
+slippage_ticks = 1
 
 [risk]
 # Maximum position concentration per stock (0.2 = 20%)

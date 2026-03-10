@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
+import { useMarket, MARKET_OPTIONS } from '../contexts/MarketContext';
 import {
   LayoutDashboard,
   TrendingUp,
@@ -129,11 +130,33 @@ function NavGroupSection({ group }: { group: NavGroup }) {
 }
 
 export default function Sidebar() {
+  const { market, setMarket } = useMarket();
+
   return (
     <aside className="fixed left-0 top-0 h-screen w-60 z-40 bg-[#1e293b] flex flex-col border-r border-[#334155]">
       <div className="flex items-center gap-2 px-5 py-5">
         <TrendingUp className="h-7 w-7 text-[#3b82f6]" />
         <span className="text-xl font-bold text-[#f8fafc]">QuantTrader</span>
+      </div>
+
+      {/* Market Selector */}
+      <div className="px-3 pb-3">
+        <div className="flex rounded-lg bg-[#0f172a] p-0.5 gap-0.5">
+          {MARKET_OPTIONS.map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => setMarket(opt.value)}
+              className={`flex-1 rounded-md px-1.5 py-1.5 text-xs font-medium transition-colors ${
+                market === opt.value
+                  ? 'bg-[#3b82f6] text-white'
+                  : 'text-[#94a3b8] hover:text-[#f8fafc] hover:bg-[#334155]'
+              }`}
+              title={opt.label}
+            >
+              <span>{opt.flag}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       <nav className="flex-1 flex flex-col gap-0.5 px-3 overflow-y-auto">

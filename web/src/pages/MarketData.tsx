@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import { Search, TrendingUp, TrendingDown, Loader2 } from 'lucide-react';
 import { getQuote, getKline } from '../api/client';
+import { useMarket, extractMarketFromSymbol } from '../contexts/MarketContext';
 import type { KlineData } from '../types';
 
 interface StockInfo {
@@ -81,6 +82,12 @@ function KlineTooltip({ active, payload }: { active?: boolean; payload?: Tooltip
 // --- Main Component ---
 
 export default function MarketData() {
+  const { market } = useMarket();
+  const filteredStocks = useMemo(() => {
+    if (market === 'ALL') return POPULAR_STOCKS;
+    return POPULAR_STOCKS.filter(s => extractMarketFromSymbol(s.symbol) === market);
+  }, [market]);
+
   const [searchInput, setSearchInput] = useState('');
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [stockInfo, setStockInfo] = useState<StockInfo | null>(null);
@@ -223,7 +230,7 @@ export default function MarketData() {
             className="h-10 w-64 rounded-lg border border-slate-600 bg-[#1e293b] pl-10 pr-3 text-sm text-slate-200 placeholder-slate-500 outline-none focus:border-[#3b82f6]"
           />
         </div>
-        {POPULAR_STOCKS.map((s) => (
+        {filteredStocks.map((s) => (
           <button
             key={s.symbol}
             onClick={() => selectStock(s.symbol)}
