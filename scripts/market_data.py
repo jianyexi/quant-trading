@@ -119,73 +119,61 @@ def cmd_klines(args):
     fsym = full_symbol(raw_symbol, market)
     start_fmt = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
     end_fmt = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
+    close_time = "16:00:00" if market in ("US", "HK") else "15:00:00"
 
-    # ── US / HK stocks: use yfinance via cache ──
-    if market in ("US", "HK"):
-        close_time = "16:00:00"
-        if period == "daily":
-            from market_cache import get_cache
-            cache = get_cache()
-            df = cache.get_or_fetch(raw_symbol, start_fmt, end_fmt, market=market)
-            if df is None or df.empty:
-                return []
-            return _df_to_records(df, fsym, close_time, daily=True)
-        # Minute data: fetch directly (not cached)
-        try:
-            from yfinance_provider import fetch_daily, is_available as yf_ok
-            if yf_ok():
-                df = fetch_daily(raw_symbol, start_fmt, end_fmt, market=market)
-                if df is not None and not df.empty:
-                    return _df_to_records(df, fsym, close_time, daily=False)
-        except (ImportError, Exception):
-            pass
-        return []
-
-    # ── CN stocks: existing tushare/akshare logic ──
+    # Daily data: always through cache (which uses configured providers)
     if period == "daily":
         from market_cache import get_cache
         cache = get_cache()
-        df = cache.get_or_fetch(symbol, start_fmt, end_fmt)
+        cache_symbol = raw_symbol if market in ("US", "HK") else symbol
+        df = cache.get_or_fetch(cache_symbol, start_fmt, end_fmt, market=market)
         if df is None or df.empty:
             return []
-        return _df_to_records(df, fsym, "15:00:00", daily=True)
+        return _df_to_records(df, fsym, close_time, daily=True)
 
-    # Minute-level data — try tushare first, then akshare
+    # Minute data: try configured providers in order
+    from data_source_config import get_providers
+    providers = get_providers(market)
     df = None
-    try:
-        from tushare_provider import fetch_minute, is_available as ts_ok
-        if ts_ok():
-            df = fetch_minute(symbol, start_fmt, end_fmt, freq=period)
-    except (ImportError, Exception):
-        pass
 
-    if df is None or df.empty:
+    for provider in providers:
+        if df is not None and not df.empty:
+            break
         try:
-            import akshare as ak
-            start_dt = start_fmt + " 09:30:00"
-            end_dt = end_fmt + " 15:00:00"
-            df = ak.stock_zh_a_hist_min_em(
-                symbol=symbol, period=period,
-                start_date=start_dt, end_date=end_dt, adjust="qfq",
-            )
-            if df is not None and not df.empty:
-                df = df.rename(columns={
-                    "时间": "date", "开盘": "open", "最高": "high",
-                    "最低": "low", "收盘": "close", "成交量": "volume",
-                })
-                df["date"] = pd.to_datetime(df["date"])
-                df.set_index("date", inplace=True)
-                df = df[["open", "high", "low", "close", "volume"]].astype(float)
+            if provider == "yfinance":
+                from yfinance_provider import fetch_daily, is_available as yf_ok
+                if yf_ok():
+                    df = fetch_daily(raw_symbol, start_fmt, end_fmt, market=market)
+            elif provider == "tushare":
+                from tushare_provider import fetch_minute, is_available as ts_ok
+                if ts_ok():
+                    df = fetch_minute(symbol, start_fmt, end_fmt, freq=period)
+            elif provider == "akshare":
+                import akshare as ak
+                start_dt = start_fmt + " 09:30:00"
+                end_dt = end_fmt + " 15:00:00"
+                df = ak.stock_zh_a_hist_min_em(
+                    symbol=symbol, period=period,
+                    start_date=start_dt, end_date=end_dt, adjust="qfq",
+                )
+                if df is not None and not df.empty:
+                    df = df.rename(columns={
+                        "时间": "date", "开盘": "open", "最高": "high",
+                        "最低": "low", "收盘": "close", "成交量": "volume",
+                    })
+                    df["date"] = pd.to_datetime(df["date"])
+                    df.set_index("date", inplace=True)
+                    df = df[["open", "high", "low", "close", "volume"]].astype(float)
         except (ImportError, Exception):
-            pass
+            continue
 
     if df is None or df.empty:
         return []
-    return _df_to_records(df, fsym, daily=False)
+    return _df_to_records(df, fsym, close_time, daily=(period == "daily"))
 
 
 def cmd_quote(args):
-    """Get latest quote. Routes to yfinance for US/HK, tushare/akshare for CN."""
+    """Get latest quote using configured providers."""
     if not args:
         return {"error": "usage: quote <symbol>"}
     raw_symbol = args[0]
@@ -193,63 +181,54 @@ def cmd_quote(args):
     symbol = normalize_symbol(raw_symbol)
     fsym = full_symbol(raw_symbol, market)
 
-    # US/HK: use yfinance
-    if market in ("US", "HK"):
+    from data_source_config import get_providers
+    providers = get_providers(market)
+
+    for provider in providers:
         try:
-            from yfinance_provider import fetch_quote as yf_quote, is_available as yf_ok
-            if yf_ok():
-                q = yf_quote(raw_symbol, market=market)
-                q["symbol"] = fsym
-                return q
-        except (ImportError, Exception) as e:
-            return {"error": f"No quote data for {raw_symbol}: {e}"}
-        return {"error": f"yfinance not available for {raw_symbol}"}
+            if provider == "yfinance":
+                from yfinance_provider import fetch_quote as yf_quote, is_available as yf_ok
+                if yf_ok():
+                    q = yf_quote(raw_symbol, market=market)
+                    q["symbol"] = fsym
+                    return q
+            elif provider == "tushare":
+                from tushare_provider import fetch_quote, is_available as ts_ok
+                if ts_ok():
+                    q = fetch_quote(symbol)
+                    q["symbol"] = fsym
+                    name = _STOCK_NAMES.get(symbol)
+                    if name:
+                        q["name"] = name
+                    return q
+            elif provider == "akshare":
+                import akshare as ak
+                from datetime import datetime as _dt, timedelta
+                end = _dt.now().strftime("%Y%m%d")
+                start = (_dt.now() - timedelta(days=10)).strftime("%Y%m%d")
+                df = ak.stock_zh_a_hist(
+                    symbol=symbol, period="daily",
+                    start_date=start, end_date=end, adjust="qfq",
+                )
+                if df is not None and not df.empty:
+                    r = df.iloc[-1]
+                    name = _STOCK_NAMES.get(symbol, symbol)
+                    return {
+                        "symbol": fsym, "name": name,
+                        "price": float(r["收盘"]), "open": float(r["开盘"]),
+                        "high": float(r["最高"]), "low": float(r["最低"]),
+                        "volume": float(r["成交量"]), "turnover": float(r["成交额"]),
+                        "change": float(r["涨跌额"]), "change_percent": float(r["涨跌幅"]),
+                        "date": str(r["日期"]),
+                    }
+        except (ImportError, Exception):
+            continue
 
-    # CN: try tushare first, then akshare
-    try:
-        from tushare_provider import fetch_quote, is_available as ts_ok
-        if ts_ok():
-            q = fetch_quote(symbol)
-            q["symbol"] = fsym
-            name = _STOCK_NAMES.get(symbol)
-            if name:
-                q["name"] = name
-            return q
-    except (ImportError, Exception):
-        pass
-
-    try:
-        import akshare as ak
-        from datetime import datetime, timedelta
-        end = datetime.now().strftime("%Y%m%d")
-        start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
-        df = ak.stock_zh_a_hist(
-            symbol=symbol, period="daily",
-            start_date=start, end_date=end, adjust="qfq",
-        )
-        if df is None or df.empty:
-            return {"error": f"No quote data for {symbol}"}
-        r = df.iloc[-1]
-        name = _STOCK_NAMES.get(symbol, symbol)
-        return {
-            "symbol": fsym,
-            "name": name,
-            "price": float(r["收盘"]),
-            "open": float(r["开盘"]),
-            "high": float(r["最高"]),
-            "low": float(r["最低"]),
-            "volume": float(r["成交量"]),
-            "turnover": float(r["成交额"]),
-            "change": float(r["涨跌额"]),
-            "change_percent": float(r["涨跌幅"]),
-            "date": str(r["日期"]),
-        }
-    except (ImportError, Exception) as e:
-        return {"error": f"No quote data for {symbol}: {e}"}
+    return {"error": f"No quote data for {raw_symbol}: all providers failed"}
 
 
 def cmd_stock_info(args):
-    """Get individual stock info. Routes by market."""
+    """Get individual stock info using configured providers."""
     if not args:
         return {"error": "usage: stock_info <symbol>"}
     raw_symbol = args[0]
@@ -257,47 +236,44 @@ def cmd_stock_info(args):
     symbol = normalize_symbol(raw_symbol)
     fsym = full_symbol(raw_symbol, market)
 
-    # US/HK: use yfinance
-    if market in ("US", "HK"):
+    from data_source_config import get_providers
+    providers = get_providers(market)
+
+    for provider in providers:
         try:
-            from yfinance_provider import fetch_stock_info as yf_info, is_available as yf_ok
-            if yf_ok():
-                info = yf_info(raw_symbol, market=market)
-                info["symbol"] = fsym
-                return info
-        except (ImportError, Exception) as e:
-            return {"symbol": fsym, "error": str(e)}
-        return {"symbol": fsym, "error": "yfinance not available"}
+            if provider == "yfinance":
+                from yfinance_provider import fetch_stock_info as yf_info, is_available as yf_ok
+                if yf_ok():
+                    info = yf_info(raw_symbol, market=market)
+                    info["symbol"] = fsym
+                    return info
+            elif provider == "tushare":
+                from tushare_provider import fetch_stock_info, is_available as ts_ok
+                if ts_ok():
+                    info = fetch_stock_info(symbol)
+                    info["symbol"] = fsym
+                    return info
+            elif provider == "akshare":
+                import akshare as ak
+                info = ak.stock_individual_info_em(symbol=symbol)
+                result = {"symbol": fsym}
+                for _, row in info.iterrows():
+                    item, value = str(row["item"]), row["value"]
+                    if item == "股票简称":
+                        result["name"] = str(value)
+                    elif item == "行业":
+                        result["industry"] = str(value)
+                    elif item == "上市时间":
+                        result["list_date"] = str(value)
+                    elif item == "总市值":
+                        result["market_cap"] = float(value)
+                    elif item == "流通市值":
+                        result["float_market_cap"] = float(value)
+                return result
+        except (ImportError, Exception):
+            continue
 
-    # CN: try tushare first, then akshare
-    try:
-        from tushare_provider import fetch_stock_info, is_available as ts_ok
-        if ts_ok():
-            info = fetch_stock_info(symbol)
-            info["symbol"] = fsym
-            return info
-    except (ImportError, Exception):
-        pass
-
-    try:
-        import akshare as ak
-        info = ak.stock_individual_info_em(symbol=symbol)
-        result = {"symbol": fsym}
-        for _, row in info.iterrows():
-            item, value = str(row["item"]), row["value"]
-            if item == "股票简称":
-                result["name"] = str(value)
-            elif item == "行业":
-                result["industry"] = str(value)
-            elif item == "上市时间":
-                result["list_date"] = str(value)
-            elif item == "总市值":
-                result["market_cap"] = float(value)
-            elif item == "流通市值":
-                result["float_market_cap"] = float(value)
-        return result
-    except (ImportError, Exception) as e:
-        return {"symbol": fsym, "error": str(e)}
+    return {"symbol": fsym, "error": "all providers failed"}
 
 
 def cmd_stock_pool(args):
@@ -515,8 +491,22 @@ def cmd_sync_cache(args):
 
 
 def cmd_data_source_status(args):
-    """Return status of available data sources."""
-    result = {"primary": None, "available": [], "akshare": False, "tushare": False, "yfinance": False}
+    """Return status of available and configured data sources."""
+    from data_source_config import get_providers, is_cache_only
+
+    result = {
+        "primary": None,
+        "available": [],
+        "akshare": False,
+        "tushare": False,
+        "yfinance": False,
+        "configured": {
+            "CN": get_providers("CN"),
+            "US": get_providers("US"),
+            "HK": get_providers("HK"),
+        },
+        "cache_only": is_cache_only(),
+    }
     try:
         from tushare_provider import is_available as ts_ok
         if ts_ok():
@@ -527,7 +517,6 @@ def cmd_data_source_status(args):
     try:
         import akshare
         import threading
-        # Actually test connectivity (not just importability)
         ak_ok = [False]
         def _ak_test():
             try:

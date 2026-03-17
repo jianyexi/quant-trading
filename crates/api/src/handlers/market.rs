@@ -27,11 +27,20 @@ fn call_market_data_logged(args: &[&str], log_store: Option<&crate::log_store::L
         return Err(msg);
     }
 
+    // Load data source config and pass as env vars to Python
+    let ds_config = quant_config::AppConfig::from_default()
+        .map(|c| c.data_source)
+        .unwrap_or_default();
+
     let start = std::time::Instant::now();
     let mut child = Command::new(&python)
         .arg(script)
         .args(args)
         .env("PYTHONIOENCODING", "utf-8")
+        .env("QUANT_CN_PROVIDERS", ds_config.cn_providers.join(","))
+        .env("QUANT_US_PROVIDERS", ds_config.us_providers.join(","))
+        .env("QUANT_HK_PROVIDERS", ds_config.hk_providers.join(","))
+        .env("QUANT_CACHE_ONLY", if ds_config.cache_only { "true" } else { "false" })
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()

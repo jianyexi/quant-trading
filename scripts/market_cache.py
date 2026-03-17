@@ -110,6 +110,15 @@ class MarketCache:
         start = self._normalize_date(start_date)
         end = self._normalize_date(end_date)
 
+        # Check config-level cache_only (overrides parameter)
+        if not cache_only:
+            try:
+                from data_source_config import is_cache_only
+                if is_cache_only():
+                    cache_only = True
+            except ImportError:
+                pass
+
         # Check what we already have
         meta = self._get_meta(cache_key)
         gaps = self._find_gaps(cache_key, start, end, meta)
@@ -314,131 +323,149 @@ class MarketCache:
         max_retries: int, base_delay: float,
         market: str = "CN", raw_symbol: str = "",
     ) -> List[Tuple[str, str]]:
-        """Fetch missing date ranges and store in cache.
+        """Fetch missing date ranges using configured providers.
 
-        For CN: tushare (primary) → akshare (fallback).
-        For US/HK: yfinance.
-
+        Provider priority is read from data_source_config (env vars / TOML).
         Returns list of (gap_start, gap_end) tuples that could NOT be filled.
         """
         import sys
+        from data_source_config import get_providers, is_cache_only
+
+        if is_cache_only():
+            return list(gaps)
+
+        providers = get_providers(market)
         unfilled = []
 
         for gap_start, gap_end in gaps:
             fetched = False
 
-            # Skip tiny gaps (≤3 calendar days) — likely holidays/weekends, no trading data
+            # Skip tiny gaps (≤3 calendar days) — likely holidays/weekends
             gap_days = (datetime.strptime(gap_end, "%Y-%m-%d") - datetime.strptime(gap_start, "%Y-%m-%d")).days
             if gap_days <= 3:
                 print(f"[cache] Skipping small gap for {symbol} ({gap_start}~{gap_end}, {gap_days}d)", file=sys.stderr)
                 continue
 
-            # US/HK: use yfinance
-            if market in ("US", "HK"):
-                last_err = None
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        from yfinance_provider import fetch_daily as yf_fetch, is_available as yf_ok
-                        if yf_ok():
-                            df = yf_fetch(raw_symbol or symbol, gap_start, gap_end, market=market)
-                            if df is not None and not df.empty:
-                                self._store_klines_df(symbol, df)
-                                fetched = True
-                            break
-                        else:
-                            last_err = "yfinance not available"
-                            break
-                    except ImportError:
-                        last_err = "yfinance not installed"
-                        break
-                    except Exception as e:
-                        last_err = str(e)
-                        if attempt < max_retries:
-                            time.sleep(base_delay * (2 ** (attempt - 1)))
-                if not fetched and last_err:
-                    print(f"[cache] yfinance failed for {symbol} ({gap_start}~{gap_end}): {last_err}", file=sys.stderr)
-                if fetched or market in ("US", "HK"):
-                    if len(gaps) > 1:
-                        time.sleep(base_delay)
-                    continue
-
-            # CN: tushare first
-            ts_err = None
-            for attempt in range(1, max_retries + 1):
-                try:
-                    from tushare_provider import fetch_daily as ts_fetch_daily, is_available as ts_ok
-                    if ts_ok():
-                        df = ts_fetch_daily(symbol, gap_start, gap_end)
-                        if df is not None and not df.empty:
-                            self._store_klines_df(symbol, df)
-                            fetched = True
-                        break
-                    else:
-                        ts_err = "tushare unavailable (token missing or insufficient permissions)"
-                        break  # Skip to akshare
-                except ImportError:
-                    ts_err = "tushare not installed"
-                    break  # tushare not installed
-                except Exception as e:
-                    ts_err = str(e)
-                    # Permission errors won't be fixed by retrying
-                    if "权限" in str(e) or "permission" in str(e).lower():
-                        ts_err = f"tushare权限不足 (需要120积分): {e}"
-                        break
-                    if attempt < max_retries:
-                        time.sleep(base_delay * (2 ** (attempt - 1)))
-
-            # 2) Fallback to akshare (with 10s timeout to avoid hanging)
-            ak_err = None
-            if not fetched:
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        import akshare as ak
-                        import threading
-                        result_holder = [None, None]  # [df, error]
-                        def _ak_fetch():
-                            try:
-                                result_holder[0] = ak.stock_zh_a_hist(
-                                    symbol=symbol, period="daily",
-                                    start_date=gap_start.replace("-", ""),
-                                    end_date=gap_end.replace("-", ""),
-                                    adjust="qfq",
-                                )
-                            except Exception as e:
-                                result_holder[1] = e
-                        t = threading.Thread(target=_ak_fetch, daemon=True)
-                        t.start()
-                        t.join(timeout=10)
-                        if t.is_alive():
-                            ak_err = "akshare timed out (10s)"
-                            break
-                        if result_holder[1]:
-                            raise result_holder[1]
-                        df = result_holder[0]
-                        if df is not None and not df.empty:
-                            self._store_klines(symbol, df)
-                            fetched = True
-                        break
-                    except ImportError:
-                        ak_err = "akshare not installed"
-                        break
-                    except Exception as e:
-                        ak_err = str(e)
-                        if attempt < max_retries:
-                            time.sleep(base_delay * (2 ** (attempt - 1)))
+            errors = {}
+            for provider in providers:
+                if fetched:
+                    break
+                err = self._try_provider(
+                    provider, symbol, gap_start, gap_end,
+                    max_retries, base_delay, market, raw_symbol,
+                )
+                if err is None:
+                    fetched = True
+                else:
+                    errors[provider] = err
 
             if not fetched:
-                reasons = []
-                if ts_err: reasons.append(f"tushare: {ts_err}")
-                if ak_err: reasons.append(f"akshare: {ak_err}")
+                reasons = [f"{p}: {e}" for p, e in errors.items()]
                 print(f"[cache] All providers failed for {symbol} ({gap_start}~{gap_end}): {'; '.join(reasons) or 'empty data'}", file=sys.stderr)
                 unfilled.append((gap_start, gap_end))
 
-            # Throttle between gap fetches
             if len(gaps) > 1:
                 time.sleep(base_delay)
 
         return unfilled
+
+    def _try_provider(
+        self, provider: str, symbol: str, gap_start: str, gap_end: str,
+        max_retries: int, base_delay: float, market: str, raw_symbol: str,
+    ) -> Optional[str]:
+        """Try fetching data from a single provider.
+
+        Returns None on success, error message string on failure.
+        """
+        import sys
+
+        if provider == "tushare":
+            return self._try_tushare(symbol, gap_start, gap_end, max_retries, base_delay)
+        elif provider == "akshare":
+            return self._try_akshare(symbol, gap_start, gap_end, max_retries, base_delay)
+        elif provider == "yfinance":
+            return self._try_yfinance(symbol, gap_start, gap_end, max_retries, base_delay, market, raw_symbol)
+        else:
+            return f"unknown provider: {provider}"
+
+    def _try_tushare(self, symbol, gap_start, gap_end, max_retries, base_delay) -> Optional[str]:
+        for attempt in range(1, max_retries + 1):
+            try:
+                from tushare_provider import fetch_daily as ts_fetch_daily, is_available as ts_ok
+                if not ts_ok():
+                    return "tushare unavailable (token missing or insufficient permissions)"
+                df = ts_fetch_daily(symbol, gap_start, gap_end)
+                if df is not None and not df.empty:
+                    self._store_klines_df(symbol, df)
+                    return None  # success
+                return "tushare returned empty data"
+            except ImportError:
+                return "tushare not installed"
+            except Exception as e:
+                if "权限" in str(e) or "permission" in str(e).lower():
+                    return f"tushare权限不足 (需要120积分): {e}"
+                if attempt < max_retries:
+                    time.sleep(base_delay * (2 ** (attempt - 1)))
+                else:
+                    return str(e)
+        return "tushare max retries exceeded"
+
+    def _try_akshare(self, symbol, gap_start, gap_end, max_retries, base_delay) -> Optional[str]:
+        import threading
+        for attempt in range(1, max_retries + 1):
+            try:
+                import akshare as ak
+                result_holder = [None, None]  # [df, error]
+                def _ak_fetch():
+                    try:
+                        result_holder[0] = ak.stock_zh_a_hist(
+                            symbol=symbol, period="daily",
+                            start_date=gap_start.replace("-", ""),
+                            end_date=gap_end.replace("-", ""),
+                            adjust="qfq",
+                        )
+                    except Exception as e:
+                        result_holder[1] = e
+                t = threading.Thread(target=_ak_fetch, daemon=True)
+                t.start()
+                t.join(timeout=10)
+                if t.is_alive():
+                    return "akshare timed out (10s)"
+                if result_holder[1]:
+                    raise result_holder[1]
+                df = result_holder[0]
+                if df is not None and not df.empty:
+                    self._store_klines(symbol, df)
+                    return None  # success
+                return "akshare returned empty data"
+            except ImportError:
+                return "akshare not installed"
+            except Exception as e:
+                if attempt < max_retries:
+                    time.sleep(base_delay * (2 ** (attempt - 1)))
+                else:
+                    return str(e)
+        return "akshare max retries exceeded"
+
+    def _try_yfinance(self, symbol, gap_start, gap_end, max_retries, base_delay, market, raw_symbol) -> Optional[str]:
+        for attempt in range(1, max_retries + 1):
+            try:
+                from yfinance_provider import fetch_daily as yf_fetch, is_available as yf_ok
+                if not yf_ok():
+                    return "yfinance not available"
+                df = yf_fetch(raw_symbol or symbol, gap_start, gap_end, market=market)
+                if df is not None and not df.empty:
+                    self._store_klines_df(symbol, df)
+                    return None  # success
+                return "yfinance returned empty data"
+            except ImportError:
+                return "yfinance not installed"
+            except Exception as e:
+                if attempt < max_retries:
+                    time.sleep(base_delay * (2 ** (attempt - 1)))
+                else:
+                    return str(e)
+        return "yfinance max retries exceeded"
 
     def _store_klines_df(self, symbol: str, df: pd.DataFrame):
         """Store a standardized DataFrame (date index, OHLCV columns) into cache."""

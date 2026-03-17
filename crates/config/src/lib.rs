@@ -13,6 +13,8 @@ pub struct AppConfig {
     pub server: ServerConfig,
     #[serde(default)]
     pub sentiment: SentimentConfig,
+    #[serde(default)]
+    pub data_source: DataSourceConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -130,6 +132,49 @@ fn default_collect_interval() -> u64 { 3600 }
 fn default_max_news_per_symbol() -> usize { 10 }
 fn default_max_llm_calls() -> usize { 50 }
 fn default_news_sources() -> Vec<String> { vec!["eastmoney".to_string(), "sina".to_string()] }
+
+fn default_cn_providers() -> Vec<String> { vec!["tushare".into(), "akshare".into()] }
+fn default_us_providers() -> Vec<String> { vec!["yfinance".into()] }
+fn default_hk_providers() -> Vec<String> { vec!["yfinance".into()] }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DataSourceConfig {
+    /// Provider priority for CN stocks (first available wins)
+    #[serde(default = "default_cn_providers")]
+    pub cn_providers: Vec<String>,
+    /// Provider priority for US stocks
+    #[serde(default = "default_us_providers")]
+    pub us_providers: Vec<String>,
+    /// Provider priority for HK stocks
+    #[serde(default = "default_hk_providers")]
+    pub hk_providers: Vec<String>,
+    /// If true, never fetch from network
+    #[serde(default)]
+    pub cache_only: bool,
+}
+
+impl Default for DataSourceConfig {
+    fn default() -> Self {
+        Self {
+            cn_providers: default_cn_providers(),
+            us_providers: default_us_providers(),
+            hk_providers: default_hk_providers(),
+            cache_only: false,
+        }
+    }
+}
+
+impl DataSourceConfig {
+    /// Get provider list for a given market region.
+    pub fn providers_for_market(&self, market: &str) -> &[String] {
+        match market {
+            "CN" => &self.cn_providers,
+            "US" => &self.us_providers,
+            "HK" => &self.hk_providers,
+            _ => &self.cn_providers,
+        }
+    }
+}
 
 impl Default for SentimentConfig {
     fn default() -> Self {

@@ -11,6 +11,15 @@ base_url = "http://api.tushare.pro"
 [akshare]
 base_url = "https://akshare.akfamily.xyz"
 
+[data_source]
+# Provider priority per market (first available wins)
+# Valid: "tushare", "akshare", "yfinance"
+cn_providers = ["tushare", "akshare"]
+us_providers = ["yfinance"]
+hk_providers = ["yfinance"]
+# If true, never fetch from network — only read from local cache
+cache_only = false
+
 [llm]
 api_url = "https://models.inference.ai.azure.com"
 api_key = "REDACTED_TOKEN"   # Your GitHub PAT with Copilot access
