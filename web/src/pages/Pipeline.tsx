@@ -235,7 +235,7 @@ function PipelineContent() {
     await tmSync.submit(() => syncData(syms, shared.start_date, shared.end_date));
   }, [shared, tmSync]);
 
-  // Watch sync task completion
+  // Watch sync task completion — only react to status changes
   useEffect(() => {
     if (tmSync.task?.status === 'Completed') {
       checkCache(); // Refresh cache info
@@ -263,7 +263,8 @@ function PipelineContent() {
       setStepLogs(prev => { const n = [...prev]; n[0] = '❌ 数据同步失败: ' + (tmSync.error || ''); return n; });
       autoRef.current = false;
     }
-  }, [tmSync.task?.status, tmSync.error, tmSync.output, checkCache]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tmSync.task?.status, checkCache]);
 
   /* ── Step 1: Factor Mining ──────────────────────────────────────── */
 
@@ -304,7 +305,8 @@ function PipelineContent() {
       appendLog(1, '❌ 因子挖掘失败: ' + (tmMine.error || ''));
       autoRef.current = false;
     }
-  }, [tmMine.task?.status, tmMine.error]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tmMine.task?.status]);
 
   /* ── Step 2: ML Training ────────────────────────────────────────── */
 
@@ -332,7 +334,8 @@ function PipelineContent() {
       appendLog(2, '❌ 模型训练失败: ' + (tmTrain.error || ''));
       autoRef.current = false;
     }
-  }, [tmTrain.task?.status, tmTrain.error]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tmTrain.task?.status]);
 
   /* ── Step 3: Backtest ───────────────────────────────────────────── */
 

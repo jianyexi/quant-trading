@@ -45,6 +45,7 @@ export function useTaskManager(storageKey: string) {
 
   /** Submit a task. `apiFn` should return `{ task_id: string }`. */
   const submit = useCallback(async (apiFn: () => Promise<{ task_id: string }>) => {
+    resetPoller();  // Reset old task state first to prevent stale status triggering effects
     setError('');
     setOutput('');
     try {
@@ -54,7 +55,7 @@ export function useTaskManager(storageKey: string) {
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '请求失败');
     }
-  }, [storageKey, startPolling]);
+  }, [storageKey, startPolling, resetPoller]);
 
   /** Cancel running task and clear state. */
   const cancel = useCallback(async () => {
