@@ -22,6 +22,7 @@ interface SharedConfig {
   symbols: string;
   start_date: string;
   end_date: string;
+  cn_providers: string; // comma-separated, e.g. "tushare,akshare"
 }
 
 interface MiningConfig {
@@ -151,6 +152,7 @@ function PipelineContent() {
     symbols: defaultSymbol,
     start_date: '2023-01-01',
     end_date: '2024-12-31',
+    cn_providers: 'tushare,akshare',
   });
 
   // Per-step configs
@@ -232,7 +234,8 @@ function PipelineContent() {
     setStepLogs(prev => { const n = [...prev]; n[0] = ''; return n; });
 
     const syms = shared.symbols.split(',').map(s => s.trim()).filter(Boolean);
-    await tmSync.submit(() => syncData(syms, shared.start_date, shared.end_date));
+    const cnProviders = shared.cn_providers.split(',').map(s => s.trim()).filter(Boolean);
+    await tmSync.submit(() => syncData(syms, shared.start_date, shared.end_date, { cn_providers: cnProviders }));
   }, [shared, tmSync]);
 
   // Watch sync task completion — only react to status changes
@@ -547,7 +550,7 @@ function PipelineContent() {
       {/* Shared Config Panel */}
       <div className="rounded-xl border border-[#334155] bg-[#1e293b] p-5">
         <h3 className="text-sm font-bold text-[#f8fafc] mb-3">📋 共享配置</h3>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <InputField label="股票代码 (逗号分隔)">
             <input className={inputCls} value={shared.symbols}
               onChange={e => setShared(p => ({ ...p, symbols: e.target.value }))} />
@@ -559,6 +562,15 @@ function PipelineContent() {
           <InputField label="结束日期">
             <input type="date" className={inputCls} value={shared.end_date}
               onChange={e => setShared(p => ({ ...p, end_date: e.target.value }))} />
+          </InputField>
+          <InputField label="CN 数据源">
+            <select className={inputCls} value={shared.cn_providers}
+              onChange={e => setShared(p => ({ ...p, cn_providers: e.target.value }))}>
+              <option value="tushare,akshare">Tushare → AKShare</option>
+              <option value="tushare">仅 Tushare</option>
+              <option value="akshare">仅 AKShare</option>
+              <option value="akshare,tushare">AKShare → Tushare</option>
+            </select>
           </InputField>
         </div>
         <div className="flex gap-2 mt-3">

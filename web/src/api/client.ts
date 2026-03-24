@@ -65,11 +65,18 @@ export async function getDataSourceStatus(): Promise<{ primary: string | null; a
   return fetchJson('/market/data-source');
 }
 
-export async function syncData(symbols: string[], start_date: string, end_date: string): Promise<{ task_id: string }> {
+export interface SyncDataOptions {
+  cn_providers?: string[];
+  us_providers?: string[];
+  hk_providers?: string[];
+  cache_only?: boolean;
+}
+
+export async function syncData(symbols: string[], start_date: string, end_date: string, opts?: SyncDataOptions): Promise<{ task_id: string }> {
   return fetchJson('/market/sync-data', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbols, start_date, end_date }),
+    body: JSON.stringify({ symbols, start_date, end_date, ...opts }),
   });
 }
 

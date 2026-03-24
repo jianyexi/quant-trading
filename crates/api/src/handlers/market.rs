@@ -498,6 +498,14 @@ pub struct SyncDataRequest {
     pub start_date: String,
     #[serde(default = "default_sync_end")]
     pub end_date: String,
+    /// Override CN provider list (e.g. ["tushare"], ["akshare"], ["tushare","akshare"])
+    pub cn_providers: Option<Vec<String>>,
+    /// Override US provider list (e.g. ["yfinance"])
+    pub us_providers: Option<Vec<String>>,
+    /// Override HK provider list (e.g. ["yfinance"])
+    pub hk_providers: Option<Vec<String>>,
+    /// If true, only read from local cache — never fetch from network
+    pub cache_only: Option<bool>,
 }
 
 fn default_sync_start() -> String { "2020-01-01".to_string() }
@@ -512,6 +520,8 @@ pub async fn sync_data(
     let ts = state.task_store.clone();
     let params_json = serde_json::to_string(&json!({
         "symbols": req.symbols, "start_date": req.start_date, "end_date": req.end_date,
+        "cn_providers": req.cn_providers, "us_providers": req.us_providers,
+        "hk_providers": req.hk_providers, "cache_only": req.cache_only,
     })).unwrap_or_default();
     let task_id = ts.create_with_params("data_sync", Some(&params_json));
     ts.set_progress(&task_id, &format!("Syncing {} symbols...", req.symbols.len()));
@@ -521,6 +531,21 @@ pub async fn sync_data(
     let end = req.end_date.clone();
     let tid = task_id.clone();
 
+    // Resolve provider config: request overrides > TOML config > defaults
+    let ds_config = quant_config::AppConfig::from_default()
+        .map(|c| c.data_source)
+        .unwrap_or_default();
+    let cn = req.cn_providers.as_ref()
+        .map(|v| v.join(","))
+        .unwrap_or_else(|| ds_config.cn_providers.join(","));
+    let us = req.us_providers.as_ref()
+        .map(|v| v.join(","))
+        .unwrap_or_else(|| ds_config.us_providers.join(","));
+    let hk = req.hk_providers.as_ref()
+        .map(|v| v.join(","))
+        .unwrap_or_else(|| ds_config.hk_providers.join(","));
+    let cache_only = req.cache_only.unwrap_or(ds_config.cache_only);
+
     tokio::task::spawn_blocking(move || {
         let python = match super::find_python() {
             Some(p) => p,
@@ -529,6 +554,10 @@ pub async fn sync_data(
         let result = std::process::Command::new(&python)
             .args(["scripts/market_cache.py", "warm_symbols", &symbols_str, &start, &end])
             .env("PYTHONIOENCODING", "utf-8")
+            .env("QUANT_CN_PROVIDERS", &cn)
+            .env("QUANT_US_PROVIDERS", &us)
+            .env("QUANT_HK_PROVIDERS", &hk)
+            .env("QUANT_CACHE_ONLY", if cache_only { "true" } else { "false" })
             .output();
         match result {
             Ok(output) => {

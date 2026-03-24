@@ -1,10 +1,11 @@
 {
-  "DashboardUrl": "http://quant-7193c2e8.eastasia.cloudapp.azure.com:8080",
+  "DashboardUrl": "",
   "AdminUser": "quant",
   "ResourceGroup": "rg-quant-trading",
-  "PublicIP": "20.205.98.189",
+  "PublicIP": "",
   "Location": "eastasia",
   "VmName": "quant-trading-vm",
   "VmSize": "Standard_B2ms",
-  "FQDN": "quant-7193c2e8.eastasia.cloudapp.azure.com"
+  "FQDN": "",
+  "_note": "VM was deprovisioned. Run scripts/deploy-azure.ps1 to recreate."
 }
