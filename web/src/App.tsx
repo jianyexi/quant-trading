@@ -10,6 +10,7 @@ import Screener from './pages/Screener';
 import AutoTrade from './pages/AutoTrade';
 import Sentiment from './pages/Sentiment';
 import DLModels from './pages/DLModels';
+import LLMTraining from './pages/LLMTraining';
 import RiskManagement from './pages/RiskManagement';
 import Logs from './pages/Logs';
 import Notifications from './pages/Notifications';
@@ -37,6 +38,7 @@ export default function App() {
           <Route path="risk" element={<RiskManagement />} />
           <Route path="sentiment" element={<Sentiment />} />
           <Route path="dl-models" element={<DLModels />} />
+          <Route path="llm-training" element={<LLMTraining />} />
           <Route path="portfolio" element={<Portfolio />} />
           <Route path="notifications" element={<Notifications />} />
           <Route path="logs" element={<Logs />} />

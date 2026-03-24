@@ -8,6 +8,7 @@ mod reports;
 mod latency;
 mod tasks;
 mod services;
+mod llm_training;
 
 pub use market::*;
 pub use backtest::*;
@@ -19,6 +20,7 @@ pub use reports::*;
 pub use latency::*;
 pub use tasks::*;
 pub use services::*;
+pub use llm_training::*;
 
 use axum::{
     extract::{Path, Query, State},

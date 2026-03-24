@@ -77,6 +77,14 @@ fn ml_routes() -> Router<AppState> {
         .route("/training-history/:id", get(handlers::ml_training_run_detail))
 }
 
+fn llm_routes() -> Router<AppState> {
+    Router::new()
+        .route("/export-dataset", post(handlers::llm_export_dataset))
+        .route("/train", post(handlers::llm_train))
+        .route("/models", get(handlers::llm_list_models))
+        .route("/models/:name/activate", post(handlers::llm_activate_model))
+}
+
 fn screen_routes() -> Router<AppState> {
     Router::new()
         .route("/scan", post(handlers::screen_scan))
@@ -197,6 +205,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/monitor", monitor_routes())
         .nest("/api/trade", trade_routes())
         .nest("/api/ml", ml_routes())
+        .nest("/api/llm", llm_routes())
         .nest("/api/screen", screen_routes())
         .nest("/api/sentiment", sentiment_routes())
         .nest("/api/research", research_routes())

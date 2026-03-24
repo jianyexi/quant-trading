@@ -21,6 +21,7 @@ import {
   Workflow,
   History,
   Server,
+  Sparkles,
   ChevronDown,
   ChevronRight,
   type LucideIcon,
@@ -54,6 +55,7 @@ const navigation: NavEntry[] = [
     items: [
       { to: '/pipeline', label: '量化流水线', icon: Workflow },
       { to: '/dl-models', label: 'DL模型研究', icon: Brain },
+      { to: '/llm-training', label: 'LLM训练', icon: Sparkles },
       { to: '/history', label: '任务历史', icon: History },
     ],
   },

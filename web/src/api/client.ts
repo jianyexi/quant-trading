@@ -920,3 +920,49 @@ export async function cancelTask(taskId: string): Promise<{ status: string }> {
   if (!res.ok) throw new Error(`Cancel failed: ${res.status}`);
   return res.json();
 }
+
+// ── LLM Post-Training ───────────────────────────────────────────────
+
+export interface LlmModelsResponse {
+  models: Array<{
+    name: string;
+    adapter_path: string;
+    has_adapter: boolean;
+    report: Record<string, unknown> | null;
+  }>;
+  dataset: {
+    sft_chat: number;
+    sft_sentiment: number;
+    dpo_trades: number;
+    manifest: Record<string, unknown> | null;
+  };
+}
+
+export async function llmExportDataset(): Promise<TaskSubmitResult> {
+  return fetchJson('/llm/export-dataset', { method: 'POST' });
+}
+
+export async function llmTrain(opts: {
+  train_type: 'sft' | 'dpo';
+  base_model?: string;
+  sft_adapter?: string;
+  lora_rank?: number;
+  epochs?: number;
+  batch_size?: number;
+  learning_rate?: number;
+  beta?: number;
+}): Promise<TaskSubmitResult> {
+  return fetchJson('/llm/train', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  });
+}
+
+export async function llmListModels(): Promise<LlmModelsResponse> {
+  return fetchJson('/llm/models');
+}
+
+export async function llmActivateModel(name: string): Promise<{ status: string }> {
+  return fetchJson(`/llm/models/${name}/activate`, { method: 'POST' });
+}
