@@ -966,3 +966,34 @@ export async function llmListModels(): Promise<LlmModelsResponse> {
 export async function llmActivateModel(name: string): Promise<{ status: string }> {
   return fetchJson(`/llm/models/${name}/activate`, { method: 'POST' });
 }
+
+// ── LLM Signal Server Management ──────────────────────────────
+
+export interface LlmSignalServeStartOpts {
+  base_model?: string;
+  adapter?: string;
+  port?: number;
+  device?: string;
+  no_quantize?: boolean;
+}
+
+export async function llmSignalServeStart(opts?: LlmSignalServeStartOpts): Promise<{ status: string; pid?: number }> {
+  return fetchJson('/services/llm-signal-serve/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts ?? {}),
+  });
+}
+
+export async function llmSignalServeStop(): Promise<{ status: string }> {
+  return fetchJson('/services/llm-signal-serve/stop', { method: 'POST' });
+}
+
+export async function llmSignalServeStatus(): Promise<{
+  service: string;
+  managed: boolean;
+  process_info: { process: string; pid?: number; started_at?: string; uptime_secs?: number };
+  health: { reachable: boolean; data?: Record<string, unknown> };
+}> {
+  return fetchJson('/services/llm-signal-serve/status');
+}

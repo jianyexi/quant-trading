@@ -136,6 +136,9 @@ fn service_routes() -> Router<AppState> {
         .route("/ml-serve/start", post(handlers::ml_serve_start))
         .route("/ml-serve/stop", post(handlers::ml_serve_stop))
         .route("/ml-serve/status", get(handlers::ml_serve_status))
+        .route("/llm-signal-serve/start", post(handlers::llm_signal_serve_start))
+        .route("/llm-signal-serve/stop", post(handlers::llm_signal_serve_stop))
+        .route("/llm-signal-serve/status", get(handlers::llm_signal_serve_status))
 }
 
 fn journal_routes() -> Router<AppState> {

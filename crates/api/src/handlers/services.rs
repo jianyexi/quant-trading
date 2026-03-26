@@ -228,6 +228,11 @@ pub async fn services_status(State(state): State<AppState>) -> Json<Value> {
 
 /// Probe ml_serve health endpoint via HTTP.
 async fn probe_ml_serve_health(port: u16) -> Value {
+    probe_service_health(port).await
+}
+
+/// Probe any service health endpoint via HTTP.
+async fn probe_service_health(port: u16) -> Value {
     let url = format!("http://127.0.0.1:{}/health", port);
     match reqwest::Client::new()
         .get(&url)
@@ -247,4 +252,182 @@ async fn probe_ml_serve_health(port: u16) -> Value {
         }
         Err(_) => json!({ "reachable": false }),
     }
+}
+
+// ── LLM Signal Serve Management ────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct LlmSignalServeStartRequest {
+    /// HuggingFace model ID or local path (default: Qwen/Qwen2.5-7B-Instruct)
+    pub base_model: Option<String>,
+    /// Path to LoRA adapter directory (auto-detected if None)
+    pub adapter: Option<String>,
+    /// HTTP port (default: 18095)
+    pub port: Option<u16>,
+    /// Device: "auto", "cpu", "cuda" (default: auto)
+    pub device: Option<String>,
+    /// Disable 4-bit quantization
+    pub no_quantize: Option<bool>,
+}
+
+/// POST /api/services/llm-signal-serve/start — start llm_signal_serve.py.
+pub async fn llm_signal_serve_start(
+    State(state): State<AppState>,
+    Json(req): Json<LlmSignalServeStartRequest>,
+) -> Json<Value> {
+    let mut procs = state.managed_processes.lock().await;
+
+    if let Some(proc) = procs.get_mut("llm_signal_serve") {
+        match proc.child.try_wait() {
+            Ok(None) => {
+                return Json(json!({
+                    "status": "already_running",
+                    "pid": proc.child.id(),
+                    "started_at": proc.started_at.to_rfc3339(),
+                }));
+            }
+            _ => {
+                procs.remove("llm_signal_serve");
+            }
+        }
+    }
+
+    let python = match super::find_python() {
+        Some(p) => p,
+        None => return Json(json!({ "error": "Python not found" })),
+    };
+
+    let script = "ml_models/llm_signal_serve.py";
+    if !std::path::Path::new(script).exists() {
+        return Json(json!({ "error": format!("{} not found", script) }));
+    }
+
+    let base_model = req.base_model.unwrap_or_else(|| "Qwen/Qwen2.5-7B-Instruct".to_string());
+    let port = req.port.unwrap_or(18095);
+    let device = req.device.unwrap_or_else(|| "auto".to_string());
+
+    let mut args: Vec<String> = vec![
+        script.to_string(),
+        "--base-model".to_string(), base_model.clone(),
+        "--port".to_string(), port.to_string(),
+        "--device".to_string(), device.clone(),
+    ];
+
+    if let Some(adapter) = &req.adapter {
+        args.push("--adapter".to_string());
+        args.push(adapter.clone());
+    }
+    if req.no_quantize.unwrap_or(false) {
+        args.push("--no-quantize".to_string());
+    }
+
+    match std::process::Command::new(&python)
+        .args(&args)
+        .env("PYTHONIOENCODING", "utf-8")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => {
+            let pid = child.id();
+            info!(pid=%pid, base_model=%base_model, port, device=%device, "LLM signal serve started");
+            state.log_store.push(
+                crate::log_store::LogLevel::Info, "SERVICE", "llm_signal_serve/start",
+                0, 0, &format!("LLM signal serve started (pid={}, model={}, port={})", pid, base_model, port), None,
+            );
+
+            let proc = crate::state::ManagedProcess {
+                name: "llm_signal_serve".to_string(),
+                child,
+                started_at: chrono::Utc::now(),
+                args: args.clone(),
+            };
+            procs.insert("llm_signal_serve".to_string(), proc);
+
+            Json(json!({
+                "status": "started",
+                "pid": pid,
+                "base_model": base_model,
+                "port": port,
+                "device": device,
+            }))
+        }
+        Err(e) => {
+            error!(error=%e, "Failed to start llm_signal_serve.py");
+            Json(json!({ "error": format!("Failed to start: {}", e) }))
+        }
+    }
+}
+
+/// POST /api/services/llm-signal-serve/stop — stop llm_signal_serve.py.
+pub async fn llm_signal_serve_stop(State(state): State<AppState>) -> Json<Value> {
+    let mut procs = state.managed_processes.lock().await;
+
+    if let Some(mut proc) = procs.remove("llm_signal_serve") {
+        let pid = proc.child.id();
+        match proc.child.kill() {
+            Ok(_) => {
+                let _ = proc.child.wait();
+                info!(pid=%pid, "LLM signal serve stopped");
+                state.log_store.push(
+                    crate::log_store::LogLevel::Info, "SERVICE", "llm_signal_serve/stop",
+                    0, 0, &format!("LLM signal serve stopped (pid={})", pid), None,
+                );
+                Json(json!({ "status": "stopped", "pid": pid }))
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                warn!(pid=%pid, error=%msg, "LLM signal serve kill failed");
+                Json(json!({ "status": "stop_failed", "error": msg }))
+            }
+        }
+    } else {
+        Json(json!({ "status": "not_running" }))
+    }
+}
+
+/// GET /api/services/llm-signal-serve/status — check llm_signal_serve status + health.
+pub async fn llm_signal_serve_status(State(state): State<AppState>) -> Json<Value> {
+    let mut procs = state.managed_processes.lock().await;
+
+    let process_info = if let Some(proc) = procs.get_mut("llm_signal_serve") {
+        match proc.child.try_wait() {
+            Ok(None) => {
+                Some(json!({
+                    "process": "running",
+                    "pid": proc.child.id(),
+                    "started_at": proc.started_at.to_rfc3339(),
+                    "uptime_secs": (chrono::Utc::now() - proc.started_at).num_seconds(),
+                }))
+            }
+            Ok(Some(exit)) => {
+                let code = exit.code().unwrap_or(-1);
+                procs.remove("llm_signal_serve");
+                Some(json!({
+                    "process": "exited",
+                    "exit_code": code,
+                }))
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                procs.remove("llm_signal_serve");
+                Some(json!({
+                    "process": "error",
+                    "error": msg,
+                }))
+            }
+        }
+    } else {
+        None
+    };
+    drop(procs);
+
+    let health = probe_service_health(18095).await;
+
+    Json(json!({
+        "service": "llm_signal_serve",
+        "managed": process_info.is_some(),
+        "process_info": process_info.unwrap_or(json!({"process": "not_managed"})),
+        "health": health,
+    }))
 }

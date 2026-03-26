@@ -7,6 +7,7 @@ use quant_core::traits::Strategy;
 
 use crate::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy, MultiFactorConfig};
 use crate::ml_factor::{MlFactorStrategy, MlFactorConfig, MlInferenceMode};
+use crate::llm_strategy::{LlmSignalStrategy, LlmSignalConfig};
 use crate::sentiment::{SentimentAwareStrategy, SentimentStore};
 
 /// Strategy creation options.
@@ -42,6 +43,7 @@ pub const STRATEGY_NAMES: &[&str] = &[
     "multi_factor",
     "sentiment_aware",
     "ml_factor",
+    "llm_signal",
 ];
 
 /// Create a strategy by name. Returns `Err` if the name is unknown.
@@ -88,6 +90,10 @@ pub fn create_strategy(name: &str, opts: StrategyOptions) -> Result<CreatedStrat
                 active_inference_mode: active,
             })
         }
+        "llm_signal" | "LlmSignal" => Ok(CreatedStrategy {
+            strategy: Box::new(LlmSignalStrategy::new(LlmSignalConfig::default())),
+            active_inference_mode: "llm_http".to_string(),
+        }),
         _ => Err(format!(
             "Unknown strategy: '{}'. Available: {}",
             name,

@@ -1,4 +1,5 @@
 pub mod ml_factor;
+pub mod llm_strategy;
 pub mod fast_factors;
 pub mod lgb_inference;
 pub mod dl_models;

@@ -22,7 +22,7 @@ interface SharedConfig {
   symbols: string;
   start_date: string;
   end_date: string;
-  cn_providers: string; // comma-separated, e.g. "tushare,akshare"
+  cn_providers: string;
 }
 
 interface MiningConfig {
@@ -53,6 +53,7 @@ const STEP_ICONS = ['📡', '🔬', '🧠', '📊'] as const;
 
 const STRATEGIES = [
   { value: 'ml_factor', label: 'ML因子 (推荐)' },
+  { value: 'llm_signal', label: 'LLM信号' },
   { value: 'multi_factor', label: '多因子' },
   { value: 'rsi_reversal', label: 'RSI反转' },
   { value: 'sma_cross', label: 'SMA交叉' },

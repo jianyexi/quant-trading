@@ -5,6 +5,9 @@ import {
   llmTrain,
   llmListModels,
   llmActivateModel,
+  llmSignalServeStart,
+  llmSignalServeStop,
+  llmSignalServeStatus,
   type LlmModelsResponse,
 } from '../api/client';
 
@@ -29,12 +32,38 @@ export default function LLMTraining() {
   const tmExport = useTaskManager();
   const tmTrain = useTaskManager();
 
+  // LLM Signal Server state
+  const [signalServerStatus, setSignalServerStatus] = useState<{
+    managed: boolean;
+    process: string;
+    pid?: number;
+    uptime_secs?: number;
+    reachable: boolean;
+    model?: string;
+    device?: string;
+  } | null>(null);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
       const res = await llmListModels();
       setData(res);
     } catch { /* ignore */ }
+    // Also refresh signal server status
+    try {
+      const ss = await llmSignalServeStatus();
+      setSignalServerStatus({
+        managed: ss.managed,
+        process: ss.process_info.process,
+        pid: ss.process_info.pid,
+        uptime_secs: ss.process_info.uptime_secs,
+        reachable: ss.health.reachable,
+        model: (ss.health.data as Record<string, unknown>)?.base_model as string | undefined,
+        device: (ss.health.data as Record<string, unknown>)?.device as string | undefined,
+      });
+    } catch {
+      setSignalServerStatus(null);
+    }
     setLoading(false);
   }, []);
 
@@ -70,6 +99,20 @@ export default function LLMTraining() {
   const handleActivate = async (name: string) => {
     try {
       await llmActivateModel(name);
+      refresh();
+    } catch { /* ignore */ }
+  };
+
+  const handleSignalServerStart = async () => {
+    try {
+      await llmSignalServeStart({ base_model: baseModel });
+      setTimeout(refresh, 3000); // Give the server time to load the model
+    } catch { /* ignore */ }
+  };
+
+  const handleSignalServerStop = async () => {
+    try {
+      await llmSignalServeStop();
       refresh();
     } catch { /* ignore */ }
   };
@@ -231,6 +274,59 @@ export default function LLMTraining() {
         )}
       </div>
 
+      {/* LLM Signal Server */}
+      <div className={cardCls}>
+        <h2 className="text-lg font-semibold text-[#f8fafc] mb-3">🤖 LLM 信号服务</h2>
+        <p className="text-xs text-[#64748b] mb-4">
+          启动本地 LLM 信号服务后，可在回测和实盘中使用 "LLM信号" 策略。模型将分析行情数据并生成买入/卖出/持有信号。
+        </p>
+        <div className="flex items-center gap-4 mb-4">
+          <div className="flex items-center gap-2">
+            <span className={`inline-block w-2.5 h-2.5 rounded-full ${
+              signalServerStatus?.reachable ? 'bg-green-500' :
+              signalServerStatus?.process === 'running' ? 'bg-yellow-500 animate-pulse' :
+              'bg-red-500'
+            }`} />
+            <span className="text-sm text-[#94a3b8]">
+              {signalServerStatus?.reachable ? '运行中' :
+               signalServerStatus?.process === 'running' ? '启动中...' :
+               '未运行'}
+            </span>
+          </div>
+          {signalServerStatus?.pid && (
+            <span className="text-xs text-[#64748b]">PID: {signalServerStatus.pid}</span>
+          )}
+          {signalServerStatus?.uptime_secs != null && signalServerStatus.uptime_secs > 0 && (
+            <span className="text-xs text-[#64748b]">
+              运行 {Math.floor(signalServerStatus.uptime_secs / 60)}分钟
+            </span>
+          )}
+          {signalServerStatus?.model && (
+            <span className="text-xs text-[#64748b]">模型: {signalServerStatus.model}</span>
+          )}
+          {signalServerStatus?.device && (
+            <span className="text-xs text-[#64748b]">设备: {signalServerStatus.device}</span>
+          )}
+        </div>
+        <div className="flex gap-3">
+          {signalServerStatus?.process !== 'running' ? (
+            <button onClick={handleSignalServerStart}
+              className={`${btnCls} bg-[#3b82f6] text-white hover:bg-[#2563eb]`}>
+              🚀 启动信号服务
+            </button>
+          ) : (
+            <button onClick={handleSignalServerStop}
+              className={`${btnCls} bg-[#dc2626] text-white hover:bg-[#b91c1c]`}>
+              ⏹ 停止服务
+            </button>
+          )}
+          <button onClick={refresh}
+            className={`${btnCls} bg-[#334155] text-[#94a3b8] hover:bg-[#475569]`}>
+            🔄 刷新状态
+          </button>
+        </div>
+      </div>
+
       {/* How it works */}
       <div className={cardCls}>
         <h2 className="text-lg font-semibold text-[#f8fafc] mb-3">ℹ️ 工作原理</h2>
@@ -239,7 +335,8 @@ export default function LLMTraining() {
           <p><strong>2. SFT 微调</strong> — 使用 LoRA 在对话和舆情数据上进行指令微调，让模型更懂A股</p>
           <p><strong>3. DPO 对齐</strong> — 用盈利/亏损交易作为偏好对，让模型的交易建议更倾向盈利策略</p>
           <p><strong>4. 激活使用</strong> — 将训练好的 LoRA 适配器加载到推理服务中</p>
-          <p className="text-[#64748b] mt-2">推荐流程：导出 → SFT → DPO → 激活。需要 GPU (≥16GB VRAM) 进行训练。</p>
+          <p><strong>5. 信号服务</strong> — 启动 LLM 信号服务后，在回测/实盘中选择 "LLM信号" 策略即可使用微调模型生成交易信号</p>
+          <p className="text-[#64748b] mt-2">推荐流程：导出 → SFT → DPO → 激活 → 启动信号服务 → 使用 LLM信号 策略。需要 GPU (≥16GB VRAM)。</p>
         </div>
       </div>
     </div>

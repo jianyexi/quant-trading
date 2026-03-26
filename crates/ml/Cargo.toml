@@ -16,5 +16,6 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+ureq = { version = "2", features = ["json"] }
 ort = { version = "2.0.0-rc.11", features = ["ndarray"], optional = true }
 ndarray = { version = "0.17", optional = true }
