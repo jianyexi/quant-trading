@@ -9,6 +9,7 @@ mod latency;
 mod tasks;
 mod services;
 mod llm_training;
+pub mod export;
 
 pub use market::*;
 pub use backtest::*;
@@ -21,6 +22,7 @@ pub use latency::*;
 pub use tasks::*;
 pub use services::*;
 pub use llm_training::*;
+pub use export::{export_backtest_csv, export_trades_csv, export_metrics_csv};
 
 use axum::{
     extract::{Path, Query, State},

@@ -159,6 +159,13 @@ fn notification_routes() -> Router<AppState> {
         .route("/:id/read", post(handlers::notification_mark_read))
 }
 
+fn export_routes() -> Router<AppState> {
+    Router::new()
+        .route("/backtest", post(handlers::export_backtest_csv))
+        .route("/trades", post(handlers::export_trades_csv))
+        .route("/metrics", post(handlers::export_metrics_csv))
+}
+
 fn log_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(handlers::get_logs).delete(handlers::clear_logs))
@@ -219,6 +226,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/services", service_routes())
         .nest("/api/journal", journal_routes())
         .nest("/api/notifications", notification_routes())
+        .nest("/api/export", export_routes())
         .nest("/api/logs", log_routes())
         .layer(middleware::from_fn(api_key_auth))
         .layer(middleware::from_fn_with_state(state.clone(), request_logger))

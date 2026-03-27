@@ -12,6 +12,7 @@ import {
   Loader2,
   X,
   Plus,
+  Download,
 } from 'lucide-react';
 import {
   XAxis,
@@ -169,6 +170,7 @@ export default function Backtest() {
   const [result, setResult] = useState<BacktestResultData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [taskId, setTaskId] = useState<string | null>(null);
 
   const stopPolling = useCallback(() => {
     if (pollerRef.current) {
@@ -202,6 +204,7 @@ export default function Backtest() {
         symbols: config.extraSymbols.length > 0 ? config.extraSymbols : undefined,
         benchmark_symbol: config.benchmark_symbol || undefined,
       });
+      setTaskId(task_id);
 
       // Poll for progress
       const poll = async () => {
@@ -239,6 +242,21 @@ export default function Backtest() {
 
   const updateConfig = (key: keyof BacktestConfig, value: string | number) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const downloadCsv = async (url: string, body: Record<string, unknown>, filename: string) => {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
   };
 
   const equityCurve = result?.equity_curve ?? [];
@@ -538,6 +556,33 @@ export default function Backtest() {
               </span>
             </div>
           </div>
+
+          {/* Export Buttons */}
+          {taskId && (
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                onClick={() => downloadCsv('/api/export/backtest', { task_id: taskId }, 'backtest_equity.csv')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[#334155] text-[#94a3b8] hover:bg-[#475569] hover:text-white transition-colors"
+              >
+                <Download size={14} />
+                导出权益曲线 CSV
+              </button>
+              <button
+                onClick={() => downloadCsv('/api/export/trades', {}, 'trades.csv')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[#334155] text-[#94a3b8] hover:bg-[#475569] hover:text-white transition-colors"
+              >
+                <Download size={14} />
+                导出交易记录 CSV
+              </button>
+              <button
+                onClick={() => downloadCsv('/api/export/metrics', { task_id: taskId }, 'metrics.csv')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[#334155] text-[#94a3b8] hover:bg-[#475569] hover:text-white transition-colors"
+              >
+                <Download size={14} />
+                导出绩效指标 CSV
+              </button>
+            </div>
+          )}
 
           {/* Metrics */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
