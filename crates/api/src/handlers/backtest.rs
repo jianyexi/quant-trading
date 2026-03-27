@@ -287,6 +287,13 @@ fn run_backtest_task(
         }).collect()
     });
 
+    // Serialize drawdown curve if present
+    let drawdown_curve_json: Option<Vec<Value>> = result.drawdown_curve.as_ref().map(|dc| {
+        dc.iter().map(|(dt, val)| {
+            json!({ "date": dt.format(eq_fmt).to_string(), "drawdown": ((*val) * 10000.0).round() / 10000.0 })
+        }).collect()
+    });
+
     let mut report = json!({
         "id": id,
         "strategy": req.strategy,
@@ -333,8 +340,11 @@ fn run_backtest_task(
         "status": "completed"
     });
 
-    // Add benchmark fields if present
+    // Add optional curve fields
     if let Some(obj) = report.as_object_mut() {
+        if let Some(dc) = drawdown_curve_json {
+            obj.insert("drawdown_curve".into(), json!(dc));
+        }
         if let Some(bc) = benchmark_curve_json {
             obj.insert("benchmark_curve".into(), json!(bc));
         }

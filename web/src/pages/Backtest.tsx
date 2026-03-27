@@ -49,6 +49,11 @@ interface EquityPoint {
   value: number;
 }
 
+interface DrawdownPoint {
+  date: string;
+  drawdown: number;
+}
+
 interface TradeRecord {
   date: string;
   symbol: string;
@@ -98,6 +103,7 @@ interface BacktestResultData {
   // Benchmark fields
   benchmark_symbol?: string;
   benchmark_curve?: EquityPoint[];
+  drawdown_curve?: DrawdownPoint[];
   alpha?: number;
   beta?: number;
   information_ratio?: number;
@@ -463,6 +469,7 @@ export default function Backtest() {
   };
 
   const equityCurve = result?.equity_curve ?? [];
+  const drawdownCurve: DrawdownPoint[] = result?.drawdown_curve ?? [];
   const trades = result?.trades ?? [];
 
   const metrics = result
@@ -991,6 +998,119 @@ export default function Backtest() {
               </ResponsiveContainer>
             </div>
           )}
+
+          {/* Drawdown (Underwater) Chart */}
+          {drawdownCurve.length > 0 && (
+            <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-6">
+              <h3 className="text-base font-semibold text-[#f8fafc] mb-4">📉 回撤曲线</h3>
+              <ResponsiveContainer width="100%" height={200}>
+                <AreaChart data={drawdownCurve}>
+                  <defs>
+                    <linearGradient id="drawdownGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#ef4444" stopOpacity={0.1}/>
+                      <stop offset="100%" stopColor="#ef4444" stopOpacity={0.6}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                  <XAxis dataKey="date"
+                    tick={{ fill: '#94a3b8', fontSize: 11 }}
+                    tickLine={{ stroke: '#334155' }} axisLine={{ stroke: '#334155' }}
+                    interval={Math.floor(drawdownCurve.length / 6)} />
+                  <YAxis
+                    tick={{ fill: '#94a3b8', fontSize: 11 }}
+                    tickLine={{ stroke: '#334155' }} axisLine={{ stroke: '#334155' }}
+                    tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', color: '#f8fafc', fontSize: '12px' }}
+                    formatter={(v: number) => [`${(Number(v) * 100).toFixed(2)}%`, '回撤']}
+                    labelStyle={{ color: '#94a3b8' }} />
+                  <Area type="monotone" dataKey="drawdown" stroke="#ef4444" fill="url(#drawdownGrad)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Monthly Returns Heatmap */}
+          {equityCurve.length > 0 && (() => {
+            const computeMonthlyReturns = (curve: EquityPoint[]): Map<string, Map<number, number>> => {
+              const monthly = new Map<string, { first: number; last: number }>();
+              for (const pt of curve) {
+                const key = pt.date.substring(0, 7);
+                const existing = monthly.get(key);
+                if (!existing) monthly.set(key, { first: pt.value, last: pt.value });
+                else existing.last = pt.value;
+              }
+              const res = new Map<string, Map<number, number>>();
+              for (const [key, vals] of monthly) {
+                const [year, monthStr] = key.split('-');
+                const month = parseInt(monthStr);
+                const ret = vals.first !== 0 ? (vals.last - vals.first) / vals.first : 0;
+                if (!res.has(year)) res.set(year, new Map());
+                res.get(year)!.set(month, ret);
+              }
+              return res;
+            };
+            const getReturnColor = (ret: number): string => {
+              if (ret > 0) return `rgba(34, 197, 94, ${Math.min(Math.abs(ret) * 5, 0.8)})`;
+              return `rgba(239, 68, 68, ${Math.min(Math.abs(ret) * 5, 0.8)})`;
+            };
+            const monthlyReturns = computeMonthlyReturns(equityCurve);
+            const years = Array.from(monthlyReturns.keys()).sort();
+            const months = [1,2,3,4,5,6,7,8,9,10,11,12];
+            const monthLabels = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+
+            return (
+              <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-6">
+                <h3 className="text-base font-semibold text-[#f8fafc] mb-4">📅 月度收益热力图</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#334155]">
+                        <th className="text-left py-2 px-3 text-xs font-medium text-[#94a3b8]">年份</th>
+                        {monthLabels.map(m => (
+                          <th key={m} className="text-center py-2 px-2 text-xs font-medium text-[#94a3b8]">{m}</th>
+                        ))}
+                        <th className="text-center py-2 px-3 text-xs font-medium text-[#f59e0b]">全年</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {years.map(year => {
+                        const yearData = monthlyReturns.get(year)!;
+                        const yearVals = Array.from(yearData.values());
+                        const annualReturn = yearVals.reduce((acc, r) => acc * (1 + r), 1) - 1;
+                        return (
+                          <tr key={year} className="border-b border-[#334155]/50">
+                            <td className="py-2 px-3 text-xs font-medium text-[#e2e8f0]">{year}</td>
+                            {months.map(m => {
+                              const ret = yearData.get(m);
+                              return (
+                                <td key={m} className="text-center py-2 px-2">
+                                  {ret !== undefined ? (
+                                    <span className="inline-block rounded px-1.5 py-0.5 text-xs font-mono text-white"
+                                      style={{ backgroundColor: getReturnColor(ret) }}>
+                                      {ret >= 0 ? '+' : ''}{(ret * 100).toFixed(1)}%
+                                    </span>
+                                  ) : (
+                                    <span className="text-[#475569] text-xs">—</span>
+                                  )}
+                                </td>
+                              );
+                            })}
+                            <td className="text-center py-2 px-3">
+                              <span className="inline-block rounded px-1.5 py-0.5 text-xs font-bold font-mono text-white"
+                                style={{ backgroundColor: getReturnColor(annualReturn) }}>
+                                {annualReturn >= 0 ? '+' : ''}{(annualReturn * 100).toFixed(1)}%
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Trade List */}
           {trades.length > 0 && (

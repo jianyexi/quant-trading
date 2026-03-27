@@ -179,6 +179,8 @@ pub struct BacktestResult {
     pub symbol_metrics: Vec<SymbolMetrics>,
     /// Benchmark buy-and-hold equity curve (if benchmark was specified)
     pub benchmark_curve: Option<Vec<(NaiveDateTime, f64)>>,
+    /// Drawdown (underwater) curve: fraction below peak at each point
+    pub drawdown_curve: Option<Vec<(NaiveDateTime, f64)>>,
 }
 
 pub struct BacktestEngine {
@@ -618,6 +620,18 @@ impl BacktestEngine {
 
         strategy.on_stop();
 
+        // Compute drawdown (underwater) curve from equity curve
+        let drawdown_curve: Option<Vec<(NaiveDateTime, f64)>> = if equity_curve.is_empty() {
+            None
+        } else {
+            let mut peak = equity_curve[0].1;
+            Some(equity_curve.iter().map(|(dt, val)| {
+                if *val > peak { peak = *val; }
+                let dd = if peak > 0.0 { (*val - peak) / peak } else { 0.0 };
+                (*dt, dd)
+            }).collect())
+        };
+
         let metrics =
             PerformanceMetrics::calculate(&equity_curve, &trades, self.config.initial_capital);
         let symbol_metrics = compute_symbol_metrics(&trades, &events);
@@ -631,6 +645,7 @@ impl BacktestEngine {
             events,
             symbol_metrics,
             benchmark_curve: None,
+            drawdown_curve,
         }
     }
 
