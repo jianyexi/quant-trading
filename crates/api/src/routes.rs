@@ -19,6 +19,7 @@ use crate::ws;
 fn data_quality_routes() -> Router<AppState> {
     Router::new()
         .route("/quality", post(handlers::data_quality::check_data_quality))
+        .route("/adjust", post(handlers::data_adjust))
 }
 
 fn market_routes() -> Router<AppState> {

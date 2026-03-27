@@ -12,6 +12,7 @@ mod services;
 mod llm_training;
 pub mod export;
 pub mod data_quality;
+pub mod data_adjust;
 mod ml;
 mod monte_carlo;
 mod risk_metrics;
@@ -29,6 +30,7 @@ pub use tasks::*;
 pub use services::*;
 pub use llm_training::*;
 pub use export::{export_backtest_csv, export_trades_csv, export_metrics_csv};
+pub use data_adjust::data_adjust;
 pub use ml::*;
 pub use monte_carlo::run_monte_carlo;
 pub use risk_metrics::{risk_var, risk_stress_test};
@@ -75,6 +77,9 @@ pub struct BacktestRequest {
     /// Optional benchmark symbol for comparison (e.g. "000300" for CSI300)
     #[serde(default)]
     pub benchmark_symbol: Option<String>,
+    /// If true, detect and apply split/dividend adjustment before backtesting
+    #[serde(default)]
+    pub adjust: Option<bool>,
 }
 
 // ── Chat Request ────────────────────────────────────────────────────

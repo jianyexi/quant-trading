@@ -1216,6 +1216,38 @@ export async function checkDataQuality(
   });
 }
 
+// ── Data Adjust (Split/Dividend Detection) ─────────────────────────
+
+export interface SplitEvent {
+  date: string;
+  ratio: number;
+  split_type: string;
+}
+
+export interface AdjustResult {
+  symbol: string;
+  splits_detected: SplitEvent[];
+  adjustments_applied: boolean;
+  original_bars: number;
+  adjusted_bars: number;
+  error?: string;
+}
+
+export interface DataAdjustResponse {
+  results: AdjustResult[];
+}
+
+export async function checkDataAdjust(
+  symbols: string[],
+  start: string,
+  end: string,
+): Promise<DataAdjustResponse> {
+  return fetchJson('/data/adjust', {
+    method: 'POST',
+    body: JSON.stringify({ symbols, start, end }),
+  });
+}
+
 export async function llmSignalServeStatus(): Promise<{
   service: string;
   managed: boolean;

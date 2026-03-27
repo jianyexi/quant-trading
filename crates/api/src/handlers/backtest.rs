@@ -80,7 +80,7 @@ fn run_backtest_task(
     // Stage 1: Fetch data
     ts.set_progress(tid, "📊 Fetching market data...");
 
-    let (klines, data_source) = match fetch_real_klines_with_period(&req.symbol, &req.start, &req.end, period) {
+    let (mut klines, data_source) = match fetch_real_klines_with_period(&req.symbol, &req.start, &req.end, period) {
         Ok(k) if !k.is_empty() => {
             let n = k.len();
             let label = if period == "daily" { "日线" } else { &format!("{}分钟线", period) };
@@ -103,6 +103,14 @@ fn run_backtest_task(
     if klines.is_empty() {
         ts.fail(tid, "No kline data for date range");
         return;
+    }
+
+    // Apply split/dividend price adjustment if requested
+    if req.adjust.unwrap_or(false) {
+        let splits = super::data_adjust::detect_and_adjust(&mut klines);
+        if !splits.is_empty() {
+            ts.set_progress(tid, &format!("🔧 Applied {} split adjustment(s)", splits.len()));
+        }
     }
 
     // Track actual data date range (may differ from requested range)
@@ -465,7 +473,13 @@ fn run_multi_backtest_task(
     let mut failed_symbols: Vec<(String, String)> = Vec::new();
     for (sym, res) in fetch_results {
         match res {
-            Ok(k) if !k.is_empty() => symbol_klines.push((sym, k)),
+            Ok(k) if !k.is_empty() => {
+                let mut kdata = k;
+                if req.adjust.unwrap_or(false) {
+                    super::data_adjust::detect_and_adjust(&mut kdata);
+                }
+                symbol_klines.push((sym, kdata));
+            }
             Ok(_) => failed_symbols.push((sym, "空数据".into())),
             Err(e) => failed_symbols.push((sym, e)),
         }

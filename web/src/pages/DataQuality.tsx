@@ -1,6 +1,6 @@
-import { useState, useCallback } from 'react';
-import { ClipboardCheck, Loader2, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
-import { checkDataQuality, type SymbolQualityResult, type DataQualityIssue } from '../api/client';
+import { useState, useCallback, useEffect } from 'react';
+import { ClipboardCheck, Loader2, ChevronDown, ChevronRight, AlertTriangle, SplitSquareVertical } from 'lucide-react';
+import { checkDataQuality, checkDataAdjust, type SymbolQualityResult, type DataQualityIssue, type AdjustResult } from '../api/client';
 
 const ISSUE_LABELS: Record<string, string> = {
   missing_bars: '缺失K线',
@@ -90,6 +90,16 @@ export default function DataQuality() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // ── Split / Dividend adjustment state ───────────────────────────
+  const [adjustResults, setAdjustResults] = useState<AdjustResult[] | null>(null);
+  const [adjustLoading, setAdjustLoading] = useState(false);
+  const [adjustError, setAdjustError] = useState<string | null>(null);
+  const [autoAdjust, setAutoAdjust] = useState(() => localStorage.getItem('autoAdjustBacktest') === 'true');
+
+  useEffect(() => {
+    localStorage.setItem('autoAdjustBacktest', autoAdjust ? 'true' : 'false');
+  }, [autoAdjust]);
+
   const run = useCallback(async () => {
     const symbols = symbolsInput
       .split(/[,\s]+/)
@@ -105,6 +115,24 @@ export default function DataQuality() {
       setError(e instanceof Error ? e.message : 'Unknown error');
     } finally {
       setLoading(false);
+    }
+  }, [symbolsInput, startDate, endDate]);
+
+  const runAdjust = useCallback(async () => {
+    const symbols = symbolsInput
+      .split(/[,\s]+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    if (symbols.length === 0) return;
+    setAdjustLoading(true);
+    setAdjustError(null);
+    try {
+      const resp = await checkDataAdjust(symbols, startDate, endDate);
+      setAdjustResults(resp.results);
+    } catch (e: unknown) {
+      setAdjustError(e instanceof Error ? e.message : 'Unknown error');
+    } finally {
+      setAdjustLoading(false);
     }
   }, [symbolsInput, startDate, endDate]);
 
@@ -178,6 +206,83 @@ export default function DataQuality() {
           )}
         </div>
       )}
+
+      {/* ── 复权处理 (Split/Dividend Adjustment) ────────────────── */}
+      <div className="rounded-xl bg-[#1e293b] border border-[#334155] p-5 space-y-4">
+        <div className="flex items-center gap-3">
+          <SplitSquareVertical className="h-5 w-5 text-[#a78bfa]" />
+          <h2 className="text-lg font-bold text-[#f8fafc]">复权处理</h2>
+        </div>
+
+        <div className="flex items-center gap-4 flex-wrap">
+          <button
+            onClick={runAdjust}
+            disabled={adjustLoading}
+            className="rounded-lg bg-[#7c3aed] px-4 py-2 text-sm font-medium text-white hover:bg-[#6d28d9] disabled:opacity-50 flex items-center gap-2"
+          >
+            {adjustLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+            检测除权除息
+          </button>
+
+          <label className="flex items-center gap-2 text-sm text-[#94a3b8] cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoAdjust}
+              onChange={e => setAutoAdjust(e.target.checked)}
+              className="rounded border-[#475569] bg-[#0f172a] text-[#7c3aed] focus:ring-[#7c3aed]/50"
+            />
+            回测时自动复权
+          </label>
+        </div>
+
+        {adjustError && (
+          <div className="rounded-lg bg-red-500/15 border border-red-500/30 px-4 py-3 text-sm text-red-400">
+            {adjustError}
+          </div>
+        )}
+
+        {adjustResults && (
+          <div className="space-y-3">
+            {adjustResults.map(r => (
+              <div key={r.symbol} className="rounded-lg border border-[#334155] bg-[#0f172a] p-4 space-y-2">
+                <div className="flex items-center gap-3">
+                  <span className="font-mono font-bold text-[#f8fafc]">{r.symbol}</span>
+                  <span className="text-xs text-[#94a3b8]">{r.original_bars} bars</span>
+                  {r.adjustments_applied ? (
+                    <span className="text-xs text-[#a78bfa] bg-[#7c3aed]/15 px-2 py-0.5 rounded">已复权</span>
+                  ) : (
+                    <span className="text-xs text-[#64748b]">无需复权</span>
+                  )}
+                  {r.error && <span className="text-xs text-red-400">{r.error}</span>}
+                </div>
+
+                {r.splits_detected.length > 0 && (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-[#64748b] text-left text-xs">
+                        <th className="py-1 pr-4">日期</th>
+                        <th className="py-1 pr-4">比例</th>
+                        <th className="py-1">类型</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {r.splits_detected.map((s, idx) => (
+                        <tr key={idx} className="text-[#cbd5e1]">
+                          <td className="py-1 pr-4 font-mono">{s.date}</td>
+                          <td className="py-1 pr-4">{s.ratio}:1</td>
+                          <td className="py-1">
+                            {s.split_type === 'forward_split' ? '正向拆股' : '反向合股'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
