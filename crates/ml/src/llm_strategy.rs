@@ -3,14 +3,24 @@
 //! Mirrors `MlFactorStrategy`: buffers Kline bars, computes technical indicators,
 //! sends market context to `llm_signal_serve.py` via HTTP, and converts the LLM
 //! response into a `Signal(Buy/Sell/Hold)` for the trading engine.
+//!
+//! **Performance note:** LLM inference is slow (1-30s per call), so this strategy
+//! uses a background thread for HTTP requests. `on_bar()` returns the latest cached
+//! signal instantly, while the background thread fetches new signals asynchronously.
+//! This avoids blocking the trading engine's event loop.
 
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
 
 use quant_core::models::Kline;
 use quant_core::traits::Strategy;
 use quant_core::types::Signal;
 
 use crate::ml_factor::{FEATURE_NAMES, NUM_FEATURES};
+
+/// Max response body size (10 KB) to prevent memory exhaustion from malformed server.
+const MAX_RESPONSE_SIZE: usize = 10_000;
 
 // ── Configuration ───────────────────────────────────────────────
 
@@ -38,16 +48,28 @@ impl Default for LlmSignalConfig {
             sell_threshold: 0.65,
             context_bars: 10,
             lookback: 61,
-            timeout_secs: 30,
+            timeout_secs: 10,
         }
     }
+}
+
+// ── Cached signal from background inference ─────────────────────
+
+#[derive(Debug, Clone)]
+struct CachedSignal {
+    action: String,
+    confidence: f64,
+}
+
+/// Request payload sent to the background inference thread.
+struct InferenceRequest {
+    body: serde_json::Value,
 }
 
 // ── Strategy ────────────────────────────────────────────────────
 
 pub struct LlmSignalStrategy {
     cfg: LlmSignalConfig,
-    http_agent: ureq::Agent,
     bar_buffer: VecDeque<Kline>,
     incr_engine: crate::fast_factors::IncrementalFactorEngine,
     prev_action: Option<String>,
@@ -57,16 +79,22 @@ pub struct LlmSignalStrategy {
     server_available: bool,
     /// Bars since the last health check (retries every 100 bars).
     bars_since_check: usize,
+    /// Latest signal from the background inference thread.
+    cached_signal: Arc<Mutex<Option<CachedSignal>>>,
+    /// Channel to send requests to the background thread.
+    request_tx: mpsc::Sender<InferenceRequest>,
+    /// Whether the background thread has a pending request.
+    pending: Arc<Mutex<bool>>,
 }
 
 impl LlmSignalStrategy {
     pub fn new(cfg: LlmSignalConfig) -> Self {
         let http_agent = ureq::AgentBuilder::new()
             .timeout_read(std::time::Duration::from_secs(cfg.timeout_secs))
-            .timeout_write(std::time::Duration::from_secs(10))
+            .timeout_write(std::time::Duration::from_secs(5))
             .build();
 
-        let server_available = Self::check_health(&http_agent, &cfg.signal_url);
+        let server_available = Self::check_health_sync(&http_agent, &cfg.signal_url);
         if !server_available {
             tracing::warn!(
                 url = %cfg.signal_url,
@@ -74,30 +102,104 @@ impl LlmSignalStrategy {
             );
         }
 
+        let cached_signal: Arc<Mutex<Option<CachedSignal>>> = Arc::new(Mutex::new(None));
+        let pending: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+        let (request_tx, request_rx) = mpsc::channel::<InferenceRequest>();
+
+        // Spawn background inference thread
+        {
+            let cached = Arc::clone(&cached_signal);
+            let pending_flag = Arc::clone(&pending);
+            let signal_url = cfg.signal_url.clone();
+            let agent = http_agent;
+            std::thread::Builder::new()
+                .name("llm-signal-infer".into())
+                .spawn(move || {
+                    Self::inference_loop(agent, &signal_url, request_rx, cached, pending_flag);
+                })
+                .expect("Failed to spawn LLM inference thread");
+        }
+
         Self {
             cfg,
-            http_agent,
             bar_buffer: VecDeque::with_capacity(80),
             incr_engine: crate::fast_factors::IncrementalFactorEngine::new(),
             prev_action: None,
             cooldown: 0,
             server_available,
             bars_since_check: 0,
+            cached_signal,
+            request_tx,
+            pending,
         }
     }
 
-    fn check_health(agent: &ureq::Agent, signal_url: &str) -> bool {
+    fn check_health_sync(agent: &ureq::Agent, signal_url: &str) -> bool {
         let health_url = signal_url.replace("/signal", "/health");
         matches!(agent.get(&health_url).call(), Ok(resp) if resp.status() == 200)
     }
 
-    /// Send market context to the LLM signal server and parse the response.
-    fn call_server(
+    /// Background thread: reads requests from channel, calls server, caches result.
+    fn inference_loop(
+        agent: ureq::Agent,
+        signal_url: &str,
+        rx: mpsc::Receiver<InferenceRequest>,
+        cached: Arc<Mutex<Option<CachedSignal>>>,
+        pending: Arc<Mutex<bool>>,
+    ) {
+        while let Ok(req) = rx.recv() {
+            let result = match agent.post(signal_url).send_json(&req.body) {
+                Ok(resp) => {
+                    let text = match resp.into_string() {
+                        Ok(t) if t.len() <= MAX_RESPONSE_SIZE => t,
+                        Ok(t) => {
+                            tracing::warn!("LLM response too large: {} bytes", t.len());
+                            *pending.lock().unwrap() = false;
+                            continue;
+                        }
+                        Err(_) => {
+                            *pending.lock().unwrap() = false;
+                            continue;
+                        }
+                    };
+                    match serde_json::from_str::<serde_json::Value>(&text) {
+                        Ok(json) => {
+                            let action = json
+                                .get("action")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("hold")
+                                .to_lowercase();
+                            let confidence = json
+                                .get("confidence")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0);
+                            Some(CachedSignal { action, confidence })
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to parse LLM response: {}", e);
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("LLM signal request failed: {}", e);
+                    None
+                }
+            };
+
+            if let Some(sig) = result {
+                *cached.lock().unwrap() = Some(sig);
+            }
+            *pending.lock().unwrap() = false;
+        }
+    }
+
+    /// Build the JSON request body for the signal server.
+    fn build_request_body(
         &self,
         kline: &Kline,
         features: &[f32; NUM_FEATURES],
-    ) -> Option<(String, f64)> {
-        // Build recent bars context
+    ) -> serde_json::Value {
         let bars: Vec<serde_json::Value> = self
             .bar_buffer
             .iter()
@@ -116,7 +218,6 @@ impl LlmSignalStrategy {
             })
             .collect();
 
-        // Build indicators map from computed features
         let mut indicators = serde_json::Map::new();
         for (i, &val) in features.iter().enumerate() {
             if i < FEATURE_NAMES.len() {
@@ -124,31 +225,27 @@ impl LlmSignalStrategy {
             }
         }
 
-        let body = serde_json::json!({
+        serde_json::json!({
             "symbol": kline.symbol,
             "bars": bars,
             "indicators": indicators,
-        });
+        })
+    }
 
-        match self.http_agent.post(&self.cfg.signal_url).send_json(&body) {
-            Ok(resp) => {
-                let text = resp.into_string().ok()?;
-                let json: serde_json::Value = serde_json::from_str(&text).ok()?;
-                let action = json.get("action")?.as_str()?.to_lowercase();
-                let confidence = json.get("confidence")?.as_f64()?;
-                tracing::debug!(
-                    symbol = %kline.symbol,
-                    action = %action,
-                    confidence = %confidence,
-                    "LLM signal received"
-                );
-                Some((action, confidence))
-            }
-            Err(e) => {
-                tracing::warn!("LLM signal request failed: {}", e);
-                None
-            }
+    /// Submit an inference request to the background thread (non-blocking).
+    fn submit_request(&self, kline: &Kline, features: &[f32; NUM_FEATURES]) {
+        let mut is_pending = self.pending.lock().unwrap();
+        if *is_pending {
+            return; // Previous request still in flight
         }
+        *is_pending = true;
+        let body = self.build_request_body(kline, features);
+        let _ = self.request_tx.send(InferenceRequest { body });
+    }
+
+    /// Read the latest cached signal (non-blocking).
+    fn read_cached_signal(&self) -> Option<CachedSignal> {
+        self.cached_signal.lock().unwrap().clone()
     }
 }
 
@@ -182,46 +279,53 @@ impl Strategy for LlmSignalStrategy {
             self.bars_since_check += 1;
             if self.bars_since_check >= 100 {
                 self.bars_since_check = 0;
-                self.server_available =
-                    Self::check_health(&self.http_agent, &self.cfg.signal_url);
-                if self.server_available {
+                // Submit a request to test connectivity
+                self.submit_request(kline, &features);
+                if self.read_cached_signal().is_some() {
+                    self.server_available = true;
                     tracing::info!("LLM signal server reconnected");
                 }
             }
             return None;
         }
 
-        // Call LLM signal server
-        let (action, confidence) = match self.call_server(kline, &features) {
-            Some(r) => r,
-            None => {
-                self.server_available = false;
-                self.bars_since_check = 0;
-                return None;
-            }
+        // Submit async inference request (non-blocking)
+        self.submit_request(kline, &features);
+
+        // Read the latest cached signal (non-blocking)
+        let cached = match self.read_cached_signal() {
+            Some(c) => c,
+            None => return None,
         };
 
+        tracing::debug!(
+            symbol = %kline.symbol,
+            action = %cached.action,
+            confidence = %cached.confidence,
+            "LLM signal (cached)"
+        );
+
         // Generate signal based on action + confidence thresholds
-        let signal = match action.as_str() {
+        let signal = match cached.action.as_str() {
             "buy"
-                if confidence >= self.cfg.buy_threshold
+                if cached.confidence >= self.cfg.buy_threshold
                     && self.prev_action.as_deref() != Some("buy") =>
             {
                 self.cooldown = 5;
-                Some(Signal::buy(&kline.symbol, confidence, kline.datetime))
+                Some(Signal::buy(&kline.symbol, cached.confidence, kline.datetime))
             }
             "sell"
-                if confidence >= self.cfg.sell_threshold
+                if cached.confidence >= self.cfg.sell_threshold
                     && self.prev_action.as_deref() != Some("sell") =>
             {
                 self.cooldown = 5;
-                Some(Signal::sell(&kline.symbol, confidence, kline.datetime))
+                Some(Signal::sell(&kline.symbol, cached.confidence, kline.datetime))
             }
             _ => None,
         };
 
         if signal.is_some() {
-            self.prev_action = Some(action);
+            self.prev_action = Some(cached.action);
         }
 
         signal

@@ -306,6 +306,17 @@ pub async fn llm_signal_serve_start(
     let port = req.port.unwrap_or(18095);
     let device = req.device.unwrap_or_else(|| "auto".to_string());
 
+    // Validate inputs
+    let allowed_devices = ["auto", "cpu", "cuda", "mps"];
+    if !allowed_devices.contains(&device.as_str()) {
+        return Json(json!({ "error": format!("Invalid device '{}'. Allowed: {:?}", device, allowed_devices) }));
+    }
+    if let Some(ref adapter) = req.adapter {
+        if adapter.contains(';') || adapter.contains('&') || adapter.contains('|') || adapter.contains('`') {
+            return Json(json!({ "error": "Invalid adapter path" }));
+        }
+    }
+
     let mut args: Vec<String> = vec![
         script.to_string(),
         "--base-model".to_string(), base_model.clone(),

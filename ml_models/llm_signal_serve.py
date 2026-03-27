@@ -137,6 +137,9 @@ def load_model(base_model: str, adapter_path: str = None,
 def build_signal_prompt(data: dict) -> str:
     """Build a structured prompt from market context."""
     symbol = data.get("symbol", "UNKNOWN")
+    # Sanitize symbol to prevent prompt injection
+    symbol = re.sub(r'[^A-Za-z0-9._\-]', '', symbol)[:20] or "UNKNOWN"
+
     bars = data.get("bars", [])
     indicators = data.get("indicators", {})
 
