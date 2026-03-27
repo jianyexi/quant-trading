@@ -1,0 +1,33 @@
+{
+  "enabled": true,
+  "in_app": true,
+  "email": {
+    "enabled": false,
+    "smtp_host": "",
+    "smtp_port": 465,
+    "username": "",
+    "password": "",
+    "from": "",
+    "to": [],
+    "tls": true
+  },
+  "webhook": {
+    "enabled": false,
+    "provider": "custom",
+    "url": "",
+    "secret": ""
+  },
+  "events": {
+    "order_filled": true,
+    "order_rejected": true,
+    "risk_alert": true,
+    "engine_started": false,
+    "engine_stopped": true,
+    "stop_loss_triggered": true,
+    "drawdown_halted": true,
+    "daily_loss_paused": true,
+    "actor_crashed": true,
+    "data_fetch_failed": false,
+    "strategy_panic": true
+  }
+}

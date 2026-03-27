@@ -1,34 +1,43 @@
 // Technical indicators
 
-/// Simple Moving Average
+use std::collections::VecDeque;
+
+/// Simple Moving Average — O(1) per update using running sum + ring buffer
 pub struct SMA {
     period: usize,
-    values: Vec<f64>,
+    values: VecDeque<f64>,
+    running_sum: f64,
 }
 
 impl SMA {
     pub fn new(period: usize) -> Self {
         Self {
             period,
-            values: Vec::with_capacity(period),
+            values: VecDeque::with_capacity(period + 1),
+            running_sum: 0.0,
         }
     }
 
     pub fn update(&mut self, value: f64) -> Option<f64> {
-        self.values.push(value);
+        self.running_sum += value;
+        self.values.push_back(value);
         if self.values.len() > self.period {
-            self.values.remove(0);
+            self.running_sum -= self.values.pop_front().unwrap();
         }
         self.value()
     }
 
     pub fn value(&self) -> Option<f64> {
         if self.values.len() == self.period {
-            let sum: f64 = self.values.iter().sum();
-            Some(sum / self.period as f64)
+            Some(self.running_sum / self.period as f64)
         } else {
             None
         }
+    }
+
+    /// Access the underlying values for std-dev computation (used by BollingerBands)
+    pub fn values(&self) -> &VecDeque<f64> {
+        &self.values
     }
 }
 
@@ -202,7 +211,6 @@ pub struct BollingerBands {
     sma: SMA,
     period: usize,
     std_dev_multiplier: f64,
-    values: Vec<f64>,
     upper: Option<f64>,
     middle: Option<f64>,
     lower: Option<f64>,
@@ -214,7 +222,6 @@ impl BollingerBands {
             sma: SMA::new(period),
             period,
             std_dev_multiplier: std_dev,
-            values: Vec::with_capacity(period),
             upper: None,
             middle: None,
             lower: None,
@@ -222,15 +229,10 @@ impl BollingerBands {
     }
 
     pub fn update(&mut self, value: f64) {
-        self.values.push(value);
-        if self.values.len() > self.period {
-            self.values.remove(0);
-        }
-
         if let Some(mid) = self.sma.update(value) {
             self.middle = Some(mid);
 
-            let variance = self.values.iter().map(|v| (v - mid).powi(2)).sum::<f64>()
+            let variance = self.sma.values().iter().map(|v| (v - mid).powi(2)).sum::<f64>()
                 / self.period as f64;
             let std_dev = variance.sqrt();
 
@@ -257,8 +259,8 @@ pub struct KDJ {
     period: usize,
     k_period: usize,
     d_period: usize,
-    highs: Vec<f64>,
-    lows: Vec<f64>,
+    highs: VecDeque<f64>,
+    lows: VecDeque<f64>,
     k: Option<f64>,
     d: Option<f64>,
     j: Option<f64>,
@@ -270,8 +272,8 @@ impl KDJ {
             period,
             k_period,
             d_period,
-            highs: Vec::with_capacity(period),
-            lows: Vec::with_capacity(period),
+            highs: VecDeque::with_capacity(period + 1),
+            lows: VecDeque::with_capacity(period + 1),
             k: None,
             d: None,
             j: None,
@@ -279,11 +281,11 @@ impl KDJ {
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) {
-        self.highs.push(high);
-        self.lows.push(low);
+        self.highs.push_back(high);
+        self.lows.push_back(low);
         if self.highs.len() > self.period {
-            self.highs.remove(0);
-            self.lows.remove(0);
+            self.highs.pop_front();
+            self.lows.pop_front();
         }
 
         if self.highs.len() < self.period {
