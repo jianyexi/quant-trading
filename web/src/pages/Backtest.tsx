@@ -13,6 +13,7 @@ import {
   X,
   Plus,
   Download,
+  Grid3X3,
 } from 'lucide-react';
 import {
   XAxis,
@@ -26,7 +27,7 @@ import {
   Line,
   Legend,
 } from 'recharts';
-import { runBacktest, getBacktestResults } from '../api/client';
+import { runBacktest, getBacktestResults, runOptimization } from '../api/client';
 
 interface BacktestConfig {
   strategy: string;
@@ -118,6 +119,29 @@ interface PerSymbolResult {
   error?: string;
 }
 
+interface OptGridEntry {
+  param1: number;
+  param2: number;
+  total_return: number | null;
+  sharpe: number | null;
+  max_drawdown: number | null;
+  win_rate: number | null;
+  skipped?: boolean;
+  error?: string;
+}
+
+interface OptimizeResultData {
+  status: string;
+  grid: OptGridEntry[];
+  best: { param1: number; param2: number; total_return: number; sharpe: number } | null;
+  param1_name: string;
+  param2_name: string;
+  strategy: string;
+  symbol: string;
+  total_combinations: number;
+  completed_combinations: number;
+}
+
 const STRATEGIES = [
   { value: 'sma_cross', label: 'SMA 交叉 (5/20)' },
   { value: 'rsi_reversal', label: 'RSI 均值回归 (14)' },
@@ -172,6 +196,19 @@ export default function Backtest() {
   const pollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
 
+  // ── Optimization state ────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState<'backtest' | 'optimize'>('backtest');
+  const [optParam1Name, setOptParam1Name] = useState('fast_period');
+  const [optParam1Values, setOptParam1Values] = useState('3,5,8,10,13,15,20');
+  const [optParam2Name, setOptParam2Name] = useState('slow_period');
+  const [optParam2Values, setOptParam2Values] = useState('10,15,20,25,30,40,50,60');
+  const [optRunning, setOptRunning] = useState(false);
+  const [optProgress, setOptProgress] = useState<string | null>(null);
+  const [optError, setOptError] = useState<string | null>(null);
+  const [optResult, setOptResult] = useState<OptimizeResultData | null>(null);
+  const [optMetric, setOptMetric] = useState<'sharpe' | 'total_return' | 'max_drawdown' | 'win_rate'>('sharpe');
+  const optPollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const stopPolling = useCallback(() => {
     if (pollerRef.current) {
       clearInterval(pollerRef.current);
@@ -180,6 +217,15 @@ export default function Backtest() {
   }, []);
 
   useEffect(() => stopPolling, [stopPolling]);
+
+  const stopOptPolling = useCallback(() => {
+    if (optPollerRef.current) {
+      clearInterval(optPollerRef.current);
+      optPollerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => stopOptPolling, [stopOptPolling]);
 
   // Auto-save config to localStorage whenever it changes
   useEffect(() => {
@@ -237,6 +283,63 @@ export default function Backtest() {
       setError(err instanceof Error ? err.message : '回测提交失败');
       setProgress(null);
       setRunning(false);
+    }
+  };
+
+  const handleOptimize = async () => {
+    const p1vals = optParam1Values.split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
+    const p2vals = optParam2Values.split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
+    if (p1vals.length === 0 || p2vals.length === 0) {
+      setOptError('请输入有效的参数值（逗号分隔的数字）');
+      return;
+    }
+    setOptRunning(true);
+    setOptError(null);
+    setOptProgress('⏳ Submitting optimization...');
+    setOptResult(null);
+    stopOptPolling();
+    try {
+      const { task_id } = await runOptimization({
+        strategy: config.strategy,
+        symbol: config.symbol,
+        start: config.start,
+        end: config.end,
+        capital: config.capital,
+        period: config.period,
+        param1_name: optParam1Name,
+        param1_values: p1vals,
+        param2_name: optParam2Name,
+        param2_values: p2vals,
+      });
+
+      const poll = async () => {
+        try {
+          const data = await getBacktestResults(task_id) as Record<string, unknown>;
+          const status = data.status as string;
+          if (status === 'completed' || status === 'Completed') {
+            stopOptPolling();
+            setOptResult(data as unknown as OptimizeResultData);
+            setOptProgress(null);
+            setOptRunning(false);
+          } else if (status === 'Failed' || status === 'failed') {
+            stopOptPolling();
+            setOptError((data.error as string) ?? 'Optimization failed');
+            setOptProgress(null);
+            setOptRunning(false);
+          } else {
+            setOptProgress((data.progress as string) ?? '⏳ Running...');
+          }
+        } catch {
+          // transient error, keep polling
+        }
+      };
+
+      setTimeout(() => void poll(), 500);
+      optPollerRef.current = setInterval(() => void poll(), 1000);
+    } catch (err) {
+      setOptError(err instanceof Error ? err.message : '优化提交失败');
+      setOptProgress(null);
+      setOptRunning(false);
     }
   };
 
@@ -359,6 +462,31 @@ export default function Backtest() {
 
   return (
     <div className="space-y-6">
+      {/* Tab Switcher */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => setActiveTab('backtest')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+            activeTab === 'backtest'
+              ? 'bg-[#3b82f6] text-white'
+              : 'bg-[#1e293b] text-[#94a3b8] hover:text-[#f8fafc] border border-[#334155]'
+          }`}
+        >
+          <Play size={16} /> 回测
+        </button>
+        <button
+          onClick={() => setActiveTab('optimize')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+            activeTab === 'optimize'
+              ? 'bg-[#8b5cf6] text-white'
+              : 'bg-[#1e293b] text-[#94a3b8] hover:text-[#f8fafc] border border-[#334155]'
+          }`}
+        >
+          <Grid3X3 size={16} /> 参数优化
+        </button>
+      </div>
+
+      {activeTab === 'backtest' && (<>
       {/* Config Form */}
       <div className="bg-[#1e293b] rounded-xl border border-[#334155]">
         <button
@@ -789,6 +917,125 @@ export default function Backtest() {
           )}
         </>
       )}
+      </>)}
+
+      {/* ── Parameter Optimization Tab ────────────────────────────────── */}
+      {activeTab === 'optimize' && (
+        <>
+          <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-6 space-y-4">
+            <h2 className="text-lg font-semibold text-[#f8fafc] flex items-center gap-2">
+              <Grid3X3 size={20} className="text-[#8b5cf6]" /> 参数优化 (Grid Search)
+            </h2>
+            <p className="text-sm text-[#94a3b8]">
+              选择两个策略参数，输入候选值范围，系统将遍历所有组合并生成灵敏度热力图。
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm text-[#94a3b8] mb-1.5">策略</label>
+                <select
+                  value={config.strategy}
+                  onChange={(e) => updateConfig('strategy', e.target.value)}
+                  className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#8b5cf6]"
+                >
+                  {STRATEGIES.map((s) => (
+                    <option key={s.value} value={s.value}>{s.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-[#94a3b8] mb-1.5">股票代码</label>
+                <input type="text" value={config.symbol}
+                  onChange={(e) => updateConfig('symbol', e.target.value)}
+                  placeholder="600519.SH"
+                  className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#8b5cf6]" />
+              </div>
+              <div>
+                <label className="block text-sm text-[#94a3b8] mb-1.5">K线周期</label>
+                <select
+                  value={config.period}
+                  onChange={(e) => updateConfig('period', e.target.value)}
+                  className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#8b5cf6]"
+                >
+                  {PERIODS.map((p) => (
+                    <option key={p.value} value={p.value}>{p.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-[#94a3b8] mb-1.5">开始日期</label>
+                <input type="date" value={config.start}
+                  onChange={(e) => updateConfig('start', e.target.value)}
+                  className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#8b5cf6]" />
+              </div>
+              <div>
+                <label className="block text-sm text-[#94a3b8] mb-1.5">结束日期</label>
+                <input type="date" value={config.end}
+                  onChange={(e) => updateConfig('end', e.target.value)}
+                  className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#8b5cf6]" />
+              </div>
+              <div>
+                <label className="block text-sm text-[#94a3b8] mb-1.5">初始资金 (¥)</label>
+                <input type="number" value={config.capital} min={1000} step={10000}
+                  onChange={(e) => updateConfig('capital', Number(e.target.value))}
+                  className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#8b5cf6]" />
+              </div>
+            </div>
+
+            <div className="border-t border-[#334155] pt-4 mt-4">
+              <h3 className="text-sm font-semibold text-[#f8fafc] mb-3">参数网格配置</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="block text-sm text-[#94a3b8]">参数1 名称</label>
+                  <input type="text" value={optParam1Name}
+                    onChange={(e) => setOptParam1Name(e.target.value)}
+                    placeholder="fast_period"
+                    className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#8b5cf6]" />
+                  <label className="block text-sm text-[#94a3b8]">参数1 候选值 (逗号分隔)</label>
+                  <input type="text" value={optParam1Values}
+                    onChange={(e) => setOptParam1Values(e.target.value)}
+                    placeholder="3,5,8,10,13,15,20"
+                    className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] font-mono outline-none focus:border-[#8b5cf6]" />
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-sm text-[#94a3b8]">参数2 名称</label>
+                  <input type="text" value={optParam2Name}
+                    onChange={(e) => setOptParam2Name(e.target.value)}
+                    placeholder="slow_period"
+                    className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#8b5cf6]" />
+                  <label className="block text-sm text-[#94a3b8]">参数2 候选值 (逗号分隔)</label>
+                  <input type="text" value={optParam2Values}
+                    onChange={(e) => setOptParam2Values(e.target.value)}
+                    placeholder="10,15,20,25,30,40,50,60"
+                    className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] font-mono outline-none focus:border-[#8b5cf6]" />
+                </div>
+              </div>
+            </div>
+
+            {optError && (
+              <div className="text-sm text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-4 py-2">{optError}</div>
+            )}
+
+            {optRunning && optProgress && (
+              <div className="flex items-center gap-3 text-sm text-[#a78bfa] bg-[#8b5cf6]/10 border border-[#8b5cf6]/20 rounded-lg px-4 py-2.5">
+                <Loader2 size={16} className="animate-spin flex-shrink-0" />
+                <span>{optProgress}</span>
+              </div>
+            )}
+
+            <button onClick={() => void handleOptimize()} disabled={optRunning}
+              className="flex items-center gap-2 px-6 py-2.5 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors cursor-pointer">
+              {optRunning ? <Loader2 size={16} className="animate-spin" /> : <Grid3X3 size={16} />}
+              {optRunning ? '优化中…' : '开始优化'}
+            </button>
+          </div>
+
+          {/* Optimization Results */}
+          {optResult && optResult.grid && (
+            <OptimizationResults result={optResult} metric={optMetric} onMetricChange={setOptMetric} />
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -799,5 +1046,229 @@ function MiniCard({ label, value, color }: { label: string; value: string; color
       <p className="text-xs text-[#94a3b8]">{label}</p>
       <p className="text-sm font-bold mt-0.5" style={{ color }}>{value}</p>
     </div>
+  );
+}
+
+// ── Heatmap color helpers ────────────────────────────────────────────
+
+function interpolateColor(t: number): string {
+  // 0 = red (#ef4444), 0.5 = yellow (#eab308), 1 = green (#22c55e)
+  const clamp = Math.max(0, Math.min(1, t));
+  let r: number, g: number, b: number;
+  if (clamp < 0.5) {
+    const p = clamp / 0.5;
+    r = Math.round(239 + (234 - 239) * p);
+    g = Math.round(68 + (179 - 68) * p);
+    b = Math.round(68 + (8 - 68) * p);
+  } else {
+    const p = (clamp - 0.5) / 0.5;
+    r = Math.round(234 + (34 - 234) * p);
+    g = Math.round(179 + (197 - 179) * p);
+    b = Math.round(8 + (94 - 8) * p);
+  }
+  return `rgb(${r},${g},${b})`;
+}
+
+const METRIC_LABELS: Record<string, string> = {
+  sharpe: '夏普比率',
+  total_return: '总收益率 (%)',
+  max_drawdown: '最大回撤 (%)',
+  win_rate: '胜率 (%)',
+};
+
+function OptimizationResults({
+  result,
+  metric,
+  onMetricChange,
+}: {
+  result: OptimizeResultData;
+  metric: 'sharpe' | 'total_return' | 'max_drawdown' | 'win_rate';
+  onMetricChange: (m: 'sharpe' | 'total_return' | 'max_drawdown' | 'win_rate') => void;
+}) {
+  const { grid, best, param1_name, param2_name } = result;
+
+  // Extract unique sorted param values
+  const p1Set = [...new Set(grid.map(g => g.param1))].sort((a, b) => a - b);
+  const p2Set = [...new Set(grid.map(g => g.param2))].sort((a, b) => a - b);
+
+  // Build lookup
+  const lookup = new Map<string, OptGridEntry>();
+  for (const g of grid) {
+    lookup.set(`${g.param1}_${g.param2}`, g);
+  }
+
+  // Collect valid metric values for normalization
+  const values: number[] = [];
+  for (const g of grid) {
+    const v = g[metric];
+    if (v != null && !g.skipped) values.push(v);
+  }
+  const minVal = values.length > 0 ? Math.min(...values) : 0;
+  const maxVal = values.length > 0 ? Math.max(...values) : 1;
+  const range = maxVal - minVal || 1;
+
+  const normalize = (v: number | null, entry: OptGridEntry): number | null => {
+    if (v == null || entry.skipped) return null;
+    const t = (v - minVal) / range;
+    // For max_drawdown, invert: less negative (closer to 0) = better = green
+    return metric === 'max_drawdown' ? 1 - t : t;
+  };
+
+  const formatCell = (v: number | null, entry: OptGridEntry): string => {
+    if (entry.skipped) return '—';
+    if (v == null) return 'ERR';
+    return v.toFixed(2);
+  };
+
+  return (
+    <>
+      {/* Best Parameters Banner */}
+      {best && (
+        <div className="bg-[#1e293b] rounded-xl border border-[#8b5cf6]/40 p-4">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">🏆</span>
+            <div>
+              <p className="text-sm text-[#94a3b8]">最优参数</p>
+              <p className="text-lg font-bold text-[#f8fafc]">
+                {param1_name}={best.param1}, {param2_name}={best.param2}
+              </p>
+              <p className="text-sm text-[#94a3b8]">
+                收益率: <span className={best.total_return >= 0 ? 'text-green-400' : 'text-red-400'}>{best.total_return >= 0 ? '+' : ''}{best.total_return.toFixed(2)}%</span>
+                {' · '}夏普: <span className={best.sharpe >= 1 ? 'text-green-400' : 'text-yellow-400'}>{best.sharpe.toFixed(2)}</span>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Heatmap */}
+      <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-base font-semibold text-[#f8fafc]">🔥 灵敏度热力图</h3>
+          <div className="flex gap-1">
+            {(['sharpe', 'total_return', 'max_drawdown', 'win_rate'] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => onMetricChange(m)}
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors cursor-pointer ${
+                  metric === m
+                    ? 'bg-[#8b5cf6] text-white'
+                    : 'bg-[#334155] text-[#94a3b8] hover:text-[#f8fafc]'
+                }`}
+              >
+                {METRIC_LABELS[m]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="text-sm border-collapse">
+            <thead>
+              <tr>
+                <th className="px-3 py-2 text-xs text-[#94a3b8] font-medium text-left border-b border-r border-[#334155]">
+                  {param1_name} ↓ \ {param2_name} →
+                </th>
+                {p2Set.map((p2) => (
+                  <th key={p2} className="px-3 py-2 text-xs text-[#f8fafc] font-mono font-medium text-center border-b border-[#334155]">
+                    {p2}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {p1Set.map((p1) => (
+                <tr key={p1}>
+                  <td className="px-3 py-2 text-xs text-[#f8fafc] font-mono font-medium border-r border-[#334155]">
+                    {p1}
+                  </td>
+                  {p2Set.map((p2) => {
+                    const entry = lookup.get(`${p1}_${p2}`);
+                    if (!entry) return <td key={p2} className="px-3 py-2 text-center text-xs text-[#475569]">—</td>;
+                    const val = entry[metric];
+                    const t = normalize(val, entry);
+                    const isBest = best && p1 === best.param1 && p2 === best.param2;
+                    return (
+                      <td
+                        key={p2}
+                        className={`px-3 py-2 text-center text-xs font-mono font-medium ${
+                          isBest ? 'ring-2 ring-[#f8fafc] ring-offset-1 ring-offset-[#1e293b]' : ''
+                        }`}
+                        style={{
+                          backgroundColor: t != null ? interpolateColor(t) + '33' : 'transparent',
+                          color: t != null ? interpolateColor(t) : '#475569',
+                        }}
+                        title={`${param1_name}=${p1}, ${param2_name}=${p2}`}
+                      >
+                        {formatCell(val, entry)}
+                        {isBest && ' ★'}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Color scale legend */}
+        <div className="flex items-center gap-2 mt-4 text-xs text-[#94a3b8]">
+          <span>{metric === 'max_drawdown' ? '差' : '差'}</span>
+          <div className="flex h-3 rounded overflow-hidden flex-1 max-w-[200px]">
+            {Array.from({ length: 20 }, (_, i) => (
+              <div
+                key={i}
+                className="flex-1"
+                style={{ backgroundColor: interpolateColor(i / 19) }}
+              />
+            ))}
+          </div>
+          <span>{metric === 'max_drawdown' ? '好' : '好'}</span>
+          <span className="ml-2 text-[#475569]">({METRIC_LABELS[metric]})</span>
+        </div>
+      </div>
+
+      {/* Full Grid Data Table */}
+      <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-6">
+        <h3 className="text-base font-semibold text-[#f8fafc] mb-4">📊 完整网格数据</h3>
+        <div className="overflow-x-auto max-h-96 overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-[#1e293b]">
+              <tr className="border-b border-[#334155]">
+                {[param1_name, param2_name, '收益率 (%)', '夏普比率', '最大回撤 (%)', '胜率 (%)'].map((h) => (
+                  <th key={h} className="text-left py-3 px-4 text-xs font-medium text-[#94a3b8]">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {grid
+                .filter((g) => !g.skipped)
+                .sort((a, b) => (b.sharpe ?? 0) - (a.sharpe ?? 0))
+                .map((g, i) => {
+                  const isBest = best && g.param1 === best.param1 && g.param2 === best.param2;
+                  return (
+                    <tr key={i} className={`border-b border-[#334155]/50 hover:bg-[#334155]/30 ${isBest ? 'bg-[#8b5cf6]/10' : ''}`}>
+                      <td className="py-2 px-4 text-[#f8fafc] font-mono">{g.param1}</td>
+                      <td className="py-2 px-4 text-[#f8fafc] font-mono">{g.param2}</td>
+                      <td className={`py-2 px-4 font-mono font-bold ${(g.total_return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {g.total_return != null ? g.total_return.toFixed(2) : '—'}
+                      </td>
+                      <td className={`py-2 px-4 font-mono ${(g.sharpe ?? 0) >= 1 ? 'text-green-400' : (g.sharpe ?? 0) >= 0 ? 'text-yellow-400' : 'text-red-400'}`}>
+                        {g.sharpe != null ? g.sharpe.toFixed(2) : '—'}
+                      </td>
+                      <td className="py-2 px-4 text-red-400 font-mono">
+                        {g.max_drawdown != null ? `-${Math.abs(g.max_drawdown).toFixed(2)}` : '—'}
+                      </td>
+                      <td className={`py-2 px-4 font-mono ${(g.win_rate ?? 0) >= 50 ? 'text-green-400' : 'text-[#94a3b8]'}`}>
+                        {g.win_rate != null ? g.win_rate.toFixed(1) : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
   );
 }

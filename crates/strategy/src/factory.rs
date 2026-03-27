@@ -5,6 +5,8 @@
 
 use quant_core::traits::Strategy;
 
+use serde_json::Value;
+
 use crate::builtin::{DualMaCrossover, RsiMeanReversion, MacdMomentum, MultiFactorStrategy, MultiFactorConfig};
 use crate::ml_factor::{MlFactorStrategy, MlFactorConfig, MlInferenceMode};
 use crate::llm_strategy::{LlmSignalStrategy, LlmSignalConfig};
@@ -99,6 +101,77 @@ pub fn create_strategy(name: &str, opts: StrategyOptions) -> Result<CreatedStrat
             name,
             STRATEGY_NAMES.join(", ")
         )),
+    }
+}
+
+/// Create a strategy by name with custom parameters from a JSON map.
+///
+/// This is the entry point for parameter-optimization workflows where each
+/// iteration may supply different numeric parameters.  Parameters that are
+/// absent or non-numeric fall back to sensible defaults.
+///
+/// For strategies that do not support custom parameters the call is forwarded
+/// to [`create_strategy`] with default options.
+pub fn create_strategy_with_params(
+    name: &str,
+    params: &Value,
+) -> Result<CreatedStrategy, String> {
+    /// Read an integer param, trying `key` first.
+    fn int_param(params: &Value, key: &str, default: usize) -> usize {
+        params
+            .get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(default)
+    }
+
+    /// Read an integer param, trying `primary` then `fallback`.
+    fn int_param2(params: &Value, primary: &str, fallback: &str, default: usize) -> usize {
+        params
+            .get(primary)
+            .or_else(|| params.get(fallback))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(default)
+    }
+
+    /// Read a float param, trying `primary` then `fallback`.
+    fn float_param2(params: &Value, primary: &str, fallback: &str, default: f64) -> f64 {
+        params
+            .get(primary)
+            .or_else(|| params.get(fallback))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(default)
+    }
+
+    match name {
+        "sma_cross" | "DualMaCrossover" => {
+            let fast = int_param(params, "fast_period", 5);
+            let slow = int_param(params, "slow_period", 20);
+            Ok(CreatedStrategy {
+                strategy: Box::new(DualMaCrossover::new(fast, slow)),
+                active_inference_mode: String::new(),
+            })
+        }
+        "rsi_reversal" | "RsiMeanReversion" => {
+            let period = int_param2(params, "rsi_period", "period", 14);
+            let oversold = float_param2(params, "oversold_threshold", "oversold", 30.0);
+            let overbought = float_param2(params, "overbought_threshold", "overbought", 70.0);
+            Ok(CreatedStrategy {
+                strategy: Box::new(RsiMeanReversion::new(period, overbought, oversold)),
+                active_inference_mode: String::new(),
+            })
+        }
+        "macd_trend" | "MacdMomentum" => {
+            let fast = int_param(params, "fast_period", 12);
+            let slow = int_param(params, "slow_period", 26);
+            let signal = int_param(params, "signal_period", 9);
+            Ok(CreatedStrategy {
+                strategy: Box::new(MacdMomentum::new(fast, slow, signal)),
+                active_inference_mode: String::new(),
+            })
+        }
+        _ => create_strategy(name, StrategyOptions::default()),
     }
 }
 

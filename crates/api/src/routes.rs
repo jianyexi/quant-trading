@@ -29,6 +29,7 @@ fn market_routes() -> Router<AppState> {
 fn backtest_routes() -> Router<AppState> {
     Router::new()
         .route("/run", post(handlers::run_backtest))
+        .route("/optimize", post(handlers::run_optimization))
         .route("/walk-forward", post(handlers::walk_forward))
         .route("/results/:id", get(handlers::get_backtest_results))
 }

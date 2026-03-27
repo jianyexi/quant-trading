@@ -1,5 +1,6 @@
 mod market;
 mod backtest;
+mod optimize;
 mod trade;
 mod factor;
 mod notification;
@@ -13,6 +14,7 @@ pub mod export;
 
 pub use market::*;
 pub use backtest::*;
+pub use optimize::*;
 pub use trade::*;
 pub use factor::*;
 pub use notification::*;

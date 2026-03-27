@@ -105,6 +105,24 @@ export async function getBacktestResults(taskId: string) {
   return fetchJson(`/backtest/results/${taskId}`);
 }
 
+export async function runOptimization(params: {
+  strategy: string;
+  symbol: string;
+  start: string;
+  end: string;
+  capital?: number;
+  period?: string;
+  param1_name: string;
+  param1_values: number[];
+  param2_name: string;
+  param2_values: number[];
+}): Promise<{ task_id: string; status: string; total_combinations: number }> {
+  return fetchJson('/backtest/optimize', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
 export async function getPortfolio() {
   return fetchJson('/portfolio');
 }
