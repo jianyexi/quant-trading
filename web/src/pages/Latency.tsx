@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Navigate } from 'react-router-dom';
 import { getLatency } from '../api/client';
 
 interface ModuleInfo {
@@ -113,7 +114,7 @@ function PipelineBar({ modules }: { modules: ModuleInfo[] }) {
   );
 }
 
-export default function Latency() {
+function LatencyContent() {
   const [data, setData] = useState<LatencyData | null>(null);
   const [refreshInterval, setRefreshInterval] = useState(3);
   const [error, setError] = useState('');
@@ -277,4 +278,8 @@ export default function Latency() {
       )}
     </div>
   );
+}
+
+export default function Latency() {
+  return <Navigate to="/dashboard" replace />;
 }

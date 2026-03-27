@@ -5,6 +5,8 @@ import {
 } from 'lucide-react';
 import { getDashboard } from '../api/client';
 import { useMarket } from '../contexts/MarketContext';
+import { MetricsContent } from './Metrics';
+import { ReportsContent } from './Reports';
 
 interface Position {
   symbol: string;
@@ -113,6 +115,7 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [activeTab, setActiveTab] = useState<'overview' | 'metrics' | 'reports'>('overview');
   const { filterByMarket } = useMarket();
 
   const refresh = useCallback(async () => {
@@ -162,6 +165,28 @@ export default function Dashboard() {
         </button>
       </div>
 
+      {/* Tab Bar */}
+      <div className="flex gap-2">
+        {([
+          { id: 'overview' as const, label: '概览' },
+          { id: 'metrics' as const, label: '系统指标' },
+          { id: 'reports' as const, label: '报告' },
+        ]).map(t => (
+          <button
+            key={t.id}
+            onClick={() => setActiveTab(t.id)}
+            className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+              activeTab === t.id
+                ? 'bg-[#3b82f6] text-white'
+                : 'bg-[#334155] text-[#94a3b8] hover:bg-[#475569] hover:text-[#f8fafc]'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'overview' && (<>
       {/* Risk Alerts */}
       {riskAlert && (
         <div className="flex items-center gap-2 rounded-lg bg-[#ef4444]/10 border border-[#ef4444]/30 px-4 py-3 text-sm text-[#ef4444]">
@@ -349,6 +374,10 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+      </>)}
+
+      {activeTab === 'metrics' && <MetricsContent />}
+      {activeTab === 'reports' && <ReportsContent />}
     </div>
   );
 }

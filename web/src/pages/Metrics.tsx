@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Navigate } from 'react-router-dom';
 import { getMetrics } from '../api/client';
 
 interface Metrics {
@@ -105,7 +106,7 @@ function Sparkline({ data, color }: { data: number[]; color: string }) {
   );
 }
 
-export default function MetricsPage() {
+export function MetricsContent() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [error, setError] = useState('');
   const [history, setHistory] = useState<Array<{ t: number; factor: number; bars: number; pnl: number }>>([]);
@@ -318,4 +319,8 @@ export default function MetricsPage() {
       </div>
     </div>
   );
+}
+
+export default function MetricsPage() {
+  return <Navigate to="/dashboard" replace />;
 }

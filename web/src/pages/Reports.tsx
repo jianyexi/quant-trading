@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Navigate } from 'react-router-dom';
 import { getReports } from '../api/client';
 
 // ── Helpers ──
@@ -93,7 +94,7 @@ function BarChart({ data, width = 500, height = 120, barKey, labelKey, color = '
 
 // ── Main Component ──
 
-export default function Reports() {
+export function ReportsContent() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response
   const [data, setData] = useState<any>(null);
   const [tab, setTab] = useState<'overview' | 'symbols' | 'daily' | 'risk' | 'orders' | 'hourly'>('overview');
@@ -490,4 +491,8 @@ function HourlyTab({ data, cardStyle, headStyle }: any) {
       )}
     </>
   );
+}
+
+export default function Reports() {
+  return <Navigate to="/dashboard" replace />;
 }
