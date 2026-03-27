@@ -54,6 +54,7 @@ const navigation: NavEntry[] = [
     icon: Dna,
     items: [
       { to: '/pipeline', label: '量化流水线', icon: Workflow },
+      { to: '/factor-mining', label: '因子挖掘', icon: Brain },
       { to: '/dl-models', label: 'DL模型研究', icon: Brain },
       { to: '/llm-training', label: 'LLM训练', icon: Sparkles },
       { to: '/history', label: '任务历史', icon: History },

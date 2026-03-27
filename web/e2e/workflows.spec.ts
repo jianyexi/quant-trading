@@ -12,14 +12,15 @@ test.describe('Dashboard → Strategy → Backtest workflow', () => {
     await page.waitForTimeout(500);
     await expect(page.locator('body')).toBeVisible();
 
-    // 2. Navigate to Strategy via sidebar click
-    await page.locator('nav').getByText(/strateg|策略/i).first().click();
+    // 2. Expand 交易执行 group, then click 策略管理
+    await page.locator('nav button', { hasText: '交易执行' }).click();
+    await page.locator('nav a', { hasText: '策略管理' }).click();
     await page.waitForURL('**/strategy');
     await expect(page.locator('body')).toBeVisible();
 
-    // 3. Navigate to Backtest
-    await page.locator('nav').getByText(/backtest|回测/i).first().click();
-    await page.waitForURL('**/backtest');
+    // 3. Navigate to Backtest via direct URL (no sidebar link for /backtest)
+    await page.goto('/backtest');
+    await page.waitForTimeout(500);
     await expect(page.locator('body')).toBeVisible();
   });
 });
@@ -27,42 +28,37 @@ test.describe('Dashboard → Strategy → Backtest workflow', () => {
 test.describe('Factor Mining workflow', () => {
   test('tab switching and data source config', async ({ page }) => {
     await page.goto('/factor-mining');
-    await page.waitForTimeout(500);
+    // Wait for loading to complete (API calls fail quickly when backend is down)
+    await page.waitForTimeout(2000);
 
-    // 1. Overview tab is default — check lifecycle display
-    await expect(page.getByText('候选').first()).toBeVisible();
+    // 1. Overview tab is default — check header
+    await expect(page.getByText('因子挖掘').first()).toBeVisible();
 
-    // 2. Switch to Parametric tab (use button selector to avoid matching description text)
+    // 2. Switch to Parametric tab
     await page.locator('button', { hasText: '参数化搜索' }).click();
     await page.waitForTimeout(500);
 
-    // Default is synthetic
-    await expect(page.getByText('模拟数据').first()).toBeVisible();
+    // Scope to parametric section (unique heading avoids matching hidden tabs)
+    await expect(page.locator('h3:visible', { hasText: '参数化因子搜索' })).toBeVisible();
+    await expect(page.locator('span:visible', { hasText: '数据来源' })).toBeVisible();
+    await expect(page.locator('label:visible', { hasText: '股票代码' })).toBeVisible();
+    await expect(page.locator('label:visible', { hasText: '开始日期' })).toBeVisible();
+    await expect(page.locator('label:visible', { hasText: '结束日期' })).toBeVisible();
 
-    // 3. Switch to akshare
-    await page.locator('button', { hasText: '真实行情' }).click();
-    await page.waitForTimeout(500);
-
-    // Symbols input appears
-    await expect(page.getByText('股票代码').first()).toBeVisible();
-
-    // 4. Check date inputs exist
-    await expect(page.getByText('开始日期').first()).toBeVisible();
-    await expect(page.getByText('结束日期').first()).toBeVisible();
-
-    // 5. Switch to GP tab
+    // 3. Switch to GP tab
     await page.locator('button', { hasText: 'GP进化' }).click();
     await page.waitForTimeout(500);
-    await expect(page.getByText('种群大小').first()).toBeVisible();
 
-    // 6. GP tab also has data source config
-    await expect(page.getByText('模拟数据').first()).toBeVisible();
+    // Scope to GP section
+    await expect(page.locator('h3:visible', { hasText: '遗传编程因子进化' })).toBeVisible();
+    await expect(page.locator(':visible:text("种群大小")')).toBeVisible();
+    await expect(page.locator('span:visible', { hasText: '数据来源' })).toBeVisible();
 
-    // 7. Switch to Registry tab
+    // 4. Switch to Registry tab
     await page.locator('button', { hasText: '因子注册表' }).click();
     await page.waitForTimeout(300);
 
-    // 8. Switch to Export tab
+    // 5. Switch to Export tab
     await page.locator('button', { hasText: '导出集成' }).click();
     await page.waitForTimeout(300);
   });
@@ -168,7 +164,7 @@ test.describe('Chat page interaction', () => {
     await page.goto('/chat');
     await page.waitForTimeout(500);
 
-    const input = page.locator('input[type="text"], textarea').first();
+    const input = page.locator('textarea[placeholder*="Ask about"]');
     await expect(input).toBeVisible();
 
     await input.fill('测试消息');

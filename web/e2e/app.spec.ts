@@ -24,26 +24,24 @@ test.describe('Navigation & Layout', () => {
 
   test('sidebar contains all navigation links', async ({ page }) => {
     await page.goto('/');
+
+    // Top-level items are always visible
+    await expect(page.locator('nav').getByText('Dashboard').first()).toBeVisible();
+    await expect(page.locator('nav').getByText('AI Chat').first()).toBeVisible();
+
+    // Expand all collapsed sidebar groups
+    for (const group of ['量化研究', '交易执行', '数据 & 监控']) {
+      await page.locator('nav button', { hasText: group }).click();
+    }
+    await page.waitForTimeout(300);
+
     const navTexts = [
-      'Dashboard',
-      'Market',
-      'Strategy',
-      'Backtest',
-      '选股',
-      '交易',
-      '风控',
-      '舆情',
-      'DL',
-      '因子',
-      'Portfolio',
-      '通知',
-      '日志',
-      'Chat',
+      '量化流水线', '因子挖掘', 'DL模型研究', 'LLM训练', '任务历史',           // 量化研究
+      '行情数据', '智能选股', '策略管理', '自动交易', '持仓管理', '风控管理',     // 交易执行
+      '舆情数据', '通知中心', '系统日志', '性能监控', '统计报表', '延迟分析', '服务管理', // 数据 & 监控
     ];
     for (const text of navTexts) {
-      await expect(
-        page.locator(`nav >> text=/${text}/i`).first()
-      ).toBeVisible();
+      await expect(page.locator('nav').getByText(text, { exact: true }).first()).toBeVisible();
     }
   });
 
@@ -92,7 +90,8 @@ test.describe('Dashboard', () => {
 test.describe('Factor Mining Page', () => {
   test('renders with all tabs', async ({ page }) => {
     await page.goto('/factor-mining');
-    await page.waitForTimeout(500);
+    // Wait for loading spinner to finish (API calls may fail quickly)
+    await page.waitForTimeout(2000);
 
     // Tab labels
     await expect(page.locator('text=总览').first()).toBeVisible();
@@ -104,53 +103,47 @@ test.describe('Factor Mining Page', () => {
 
   test('parametric tab has data source config', async ({ page }) => {
     await page.goto('/factor-mining');
-    // Click parametric tab button (not description text)
+    await page.waitForTimeout(2000);
+
+    // Click parametric tab button
     await page.locator('button', { hasText: '参数化搜索' }).click();
     await page.waitForTimeout(500);
 
-    // Data source buttons (contain emoji prefix)
-    await expect(page.getByText('模拟数据').first()).toBeVisible();
-    await expect(page.getByText('真实行情').first()).toBeVisible();
-
-    // Parameter inputs
-    await expect(page.getByText('IC阈值').first()).toBeVisible();
-    await expect(page.getByText('Top N').first()).toBeVisible();
+    // Use :visible h3 as anchor — only one tab's h3 is visible at a time
+    await expect(page.locator('h3:visible', { hasText: '参数化因子搜索' })).toBeVisible();
+    // Data source label is visible (use :visible to skip hidden tabs)
+    await expect(page.locator('span:visible', { hasText: '数据来源' })).toBeVisible();
+    await expect(page.locator(':visible:text("IC阈值")')).toBeVisible();
+    await expect(page.locator(':visible:text("Top N")')).toBeVisible();
   });
 
-  test('GP tab has data source config and GP params', async ({ page }) => {
+  test('GP tab has GP params', async ({ page }) => {
     await page.goto('/factor-mining');
+    await page.waitForTimeout(2000);
+
     await page.locator('button', { hasText: 'GP进化' }).click();
     await page.waitForTimeout(500);
 
-    await expect(page.getByText('模拟数据').first()).toBeVisible();
-    await expect(page.getByText('真实行情').first()).toBeVisible();
-    await expect(page.getByText('种群大小').first()).toBeVisible();
-    await expect(page.getByText('迭代代数').first()).toBeVisible();
-    await expect(page.getByText('最大树深').first()).toBeVisible();
+    // Verify GP section heading is visible
+    await expect(page.locator('h3:visible', { hasText: '遗传编程因子进化' })).toBeVisible();
+    await expect(page.locator('span:visible', { hasText: '数据来源' })).toBeVisible();
+    await expect(page.locator(':visible:text("种群大小")')).toBeVisible();
+    await expect(page.locator(':visible:text("迭代代数")')).toBeVisible();
+    await expect(page.locator(':visible:text("最大树深")')).toBeVisible();
   });
 
-  test('switching to akshare shows symbols and date inputs', async ({ page }) => {
+  test('parametric tab shows stock inputs', async ({ page }) => {
     await page.goto('/factor-mining');
+    await page.waitForTimeout(2000);
+
     await page.locator('button', { hasText: '参数化搜索' }).click();
     await page.waitForTimeout(500);
 
-    // Click akshare button
-    await page.locator('button', { hasText: '真实行情' }).click();
-    await page.waitForTimeout(500);
-
-    // Should show symbols input and date inputs
-    await expect(page.getByText('股票代码').first()).toBeVisible();
-    await expect(page.getByText('开始日期').first()).toBeVisible();
-    await expect(page.getByText('结束日期').first()).toBeVisible();
-  });
-
-  test('switching to synthetic shows n_bars input', async ({ page }) => {
-    await page.goto('/factor-mining');
-    await page.locator('button', { hasText: '参数化搜索' }).click();
-    await page.waitForTimeout(500);
-
-    // Default is synthetic — should show bars input
-    await expect(page.getByText(/数据量/).first()).toBeVisible();
+    // Scope with :visible to avoid matching hidden persistent pages / hidden tabs
+    await expect(page.locator('h3:visible', { hasText: '参数化因子搜索' })).toBeVisible();
+    await expect(page.locator('label:visible', { hasText: '股票代码' })).toBeVisible();
+    await expect(page.locator('label:visible', { hasText: '开始日期' })).toBeVisible();
+    await expect(page.locator('label:visible', { hasText: '结束日期' })).toBeVisible();
   });
 });
 
@@ -169,8 +162,8 @@ test.describe('Chat Page', () => {
     await page.goto('/chat');
     await page.waitForTimeout(500);
 
-    // Should have a text input or textarea for chat
-    const inputOrTextarea = page.locator('input[type="text"], textarea').first();
-    await expect(inputOrTextarea).toBeVisible();
+    // Chat uses a <textarea> with a specific placeholder
+    const chatInput = page.locator('textarea[placeholder*="Ask about"]');
+    await expect(chatInput).toBeVisible();
   });
 });

@@ -21,6 +21,7 @@ import Pipeline from './pages/Pipeline';
 import History from './pages/History';
 import Services from './pages/Services';
 import Backtest from './pages/Backtest';
+import FactorMining from './pages/factor-mining';
 
 export default function App() {
   return (
@@ -46,6 +47,7 @@ export default function App() {
           <Route path="reports" element={<Reports />} />
           <Route path="latency" element={<Latency />} />
           <Route path="backtest" element={<Backtest />} />
+          <Route path="factor-mining" element={<FactorMining />} />
           <Route path="services" element={<Services />} />
           <Route path="chat" element={<Chat />} />
         </Route>
