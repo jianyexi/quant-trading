@@ -20,6 +20,7 @@ function MiniBar({ value, max, color }: { value: number; max: number; color: str
 }
 
 function SimpleSvgChart({ data, width = 600, height = 160, yKey, color = '#3b82f6', xKey = 'date', fill = false }: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API chart data
   data: any[]; width?: number; height?: number; yKey: string; color?: string; xKey?: string; fill?: boolean;
 }) {
   if (!data || data.length < 2) return <div style={{ color: '#6b7280', fontSize: 13 }}>No data available</div>;
@@ -66,6 +67,7 @@ function SimpleSvgChart({ data, width = 600, height = 160, yKey, color = '#3b82f
 }
 
 function BarChart({ data, width = 500, height = 120, barKey, labelKey, color = '#3b82f6' }: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API chart data
   data: any[]; width?: number; height?: number; barKey: string; labelKey: string; color?: string;
 }) {
   if (!data || data.length === 0) return null;
@@ -92,12 +94,14 @@ function BarChart({ data, width = 500, height = 120, barKey, labelKey, color = '
 // ── Main Component ──
 
 export default function Reports() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response
   const [data, setData] = useState<any>(null);
   const [tab, setTab] = useState<'overview' | 'symbols' | 'daily' | 'risk' | 'orders' | 'hourly'>('overview');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: fetch data on mount
     setLoading(true);
     getReports()
       .then(d => { setData(d); setError(''); })
@@ -166,6 +170,7 @@ export default function Reports() {
 
 // ── Tab Components ──
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response props
 function OverviewTab({ data, cardStyle, headStyle }: { data: any; cardStyle: React.CSSProperties; headStyle: React.CSSProperties }) {
   const s = data.summary;
   const p = data.performance;
@@ -240,6 +245,7 @@ function OverviewTab({ data, cardStyle, headStyle }: { data: any; cardStyle: Rea
           <div style={{ color: '#6b7280', fontSize: 13 }}>暂无拒绝记录</div>
         ) : (
           (data.reject_summary as Array<{ reason: string; count: number }>).map((r, i) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response
             const maxCount = Math.max(...data.reject_summary.map((x: any) => x.count), 1);
             return (
               <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', fontSize: 13 }}>
@@ -255,9 +261,11 @@ function OverviewTab({ data, cardStyle, headStyle }: { data: any; cardStyle: Rea
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response props
 function SymbolsTab({ data, cardStyle, headStyle, thStyle, tdStyle }: any) {
   const symbols = data.symbols || [];
   if (symbols.length === 0) return <div style={cardStyle}><div style={{ color: '#6b7280' }}>暂无个股数据</div></div>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response
   const maxPnl = Math.max(...symbols.map((s: any) => Math.abs(s.total_pnl)), 1);
 
   return (
@@ -273,6 +281,7 @@ function SymbolsTab({ data, cardStyle, headStyle, thStyle, tdStyle }: any) {
             </tr>
           </thead>
           <tbody>
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response */}
             {symbols.map((s: any, i: number) => (
               <tr key={i} style={{ background: i % 2 === 0 ? '#111827' : 'transparent' }}>
                 <td style={{ ...tdStyle, color: '#60a5fa', fontWeight: 600 }}>{s.symbol}</td>
@@ -297,6 +306,7 @@ function SymbolsTab({ data, cardStyle, headStyle, thStyle, tdStyle }: any) {
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response props
 function DailyTab({ data, cardStyle, headStyle, thStyle, tdStyle }: any) {
   const daily = data.daily_pnl || [];
 
@@ -313,7 +323,9 @@ function DailyTab({ data, cardStyle, headStyle, thStyle, tdStyle }: any) {
         <div style={headStyle}>📊 每日损益</div>
         {daily.length > 0 ? (
           <svg width={900} height={140}>
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response */}
             {daily.map((d: any, i: number) => {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response
               const maxAbs = Math.max(...daily.map((x: any) => Math.abs(x.daily_pnl)), 1);
               const barH = Math.abs(d.daily_pnl) / maxAbs * 50;
               const x = 30 + i * Math.max(Math.floor(870 / daily.length), 3);
@@ -336,6 +348,7 @@ function DailyTab({ data, cardStyle, headStyle, thStyle, tdStyle }: any) {
                 {['日期', '组合价值', '现金', '持仓数', '日盈亏', '累计盈亏', '交易数'].map(h => <th key={h} style={thStyle}>{h}</th>)}
               </tr></thead>
               <tbody>
+                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response */}
                 {[...daily].reverse().map((d: any, i: number) => (
                   <tr key={i} style={{ background: i % 2 === 0 ? '#111827' : 'transparent' }}>
                     <td style={tdStyle}>{d.date}</td>
@@ -356,6 +369,7 @@ function DailyTab({ data, cardStyle, headStyle, thStyle, tdStyle }: any) {
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response props
 function RiskTab({ data, cardStyle, headStyle, thStyle, tdStyle }: any) {
   const events = data.risk_events || [];
   return (
@@ -368,6 +382,7 @@ function RiskTab({ data, cardStyle, headStyle, thStyle, tdStyle }: any) {
               {['时间', '代码', '方向', '数量', '价格', '原因'].map(h => <th key={h} style={thStyle}>{h}</th>)}
             </tr></thead>
             <tbody>
+              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response */}
               {events.map((e: any, i: number) => (
                 <tr key={i} style={{ background: i % 2 === 0 ? '#111827' : 'transparent' }}>
                   <td style={{ ...tdStyle, fontSize: 11 }}>{e.timestamp?.slice(0, 19)}</td>
@@ -386,6 +401,7 @@ function RiskTab({ data, cardStyle, headStyle, thStyle, tdStyle }: any) {
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response props
 function OrdersTab({ data, cardStyle, headStyle }: any) {
   const o = data.order_analysis;
   const statRow = (label: string, value: string | number, color?: string) => (
@@ -431,10 +447,14 @@ function OrdersTab({ data, cardStyle, headStyle }: any) {
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response props
 function HourlyTab({ data, cardStyle, headStyle }: any) {
   const hourly = data.hourly_distribution || [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response
   const tradingHours = hourly.filter((h: any) => h.signals > 0 || h.fills > 0);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response
   const maxSignals = Math.max(...hourly.map((h: any) => h.signals), 1);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response
   const maxFills = Math.max(...hourly.map((h: any) => h.fills), 1);
 
   return (
@@ -453,6 +473,7 @@ function HourlyTab({ data, cardStyle, headStyle }: any) {
         <div style={cardStyle}>
           <div style={headStyle}>⏰ 活跃时段明细</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8 }}>
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response */}
             {tradingHours.map((h: any) => (
               <div key={h.hour} style={{ background: '#111827', borderRadius: 6, padding: 10, textAlign: 'center' }}>
                 <div style={{ fontSize: 16, fontWeight: 600 }}>{String(h.hour).padStart(2, '0')}:00</div>

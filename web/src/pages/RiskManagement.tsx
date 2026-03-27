@@ -85,6 +85,7 @@ export default function RiskManagement() {
 
   // Fallback polling when WS is not connected
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: initial data fetch + polling setup
     fetchAll();
     pollRef.current = setInterval(fetchAll, wsConnected ? 30000 : 5000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };

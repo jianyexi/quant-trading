@@ -1,17 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
-
-/*
- * Helper: wait for the backend API to be reachable via the Vite proxy.
- * If the backend is down the UI still loads but API calls fail.
- */
-async function apiAvailable(page: Page): Promise<boolean> {
-  try {
-    const res = await page.request.get('/api/health');
-    return res.ok();
-  } catch {
-    return false;
-  }
-}
+import { test, expect } from '@playwright/test';
 
 test.describe('Navigation & Layout', () => {
   test('should load the app and show sidebar', async ({ page }) => {

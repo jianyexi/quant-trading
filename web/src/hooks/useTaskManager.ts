@@ -33,6 +33,7 @@ export function useTaskManager(storageKey: string) {
         const parsed = task.result ? JSON.parse(task.result) : null;
         let text = parsed?.stdout || task.result || '完成';
         if (parsed?.stderr) text += '\n\n--- stderr ---\n' + parsed.stderr;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: sync state from task completion
         setOutput(text);
       } catch {
         setOutput(task.result || '完成');

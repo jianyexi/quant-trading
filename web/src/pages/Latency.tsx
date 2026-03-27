@@ -129,6 +129,7 @@ export default function Latency() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: initial data fetch + polling setup
     refresh();
     const timer = setInterval(refresh, refreshInterval * 1000);
     return () => clearInterval(timer);

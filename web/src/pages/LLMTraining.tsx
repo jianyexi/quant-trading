@@ -29,8 +29,8 @@ export default function LLMTraining() {
   const [beta, setBeta] = useState(0.1);
 
   // Task managers
-  const tmExport = useTaskManager();
-  const tmTrain = useTaskManager();
+  const tmExport = useTaskManager('task_llm_export');
+  const tmTrain = useTaskManager('task_llm_train');
 
   // LLM Signal Server state
   const [signalServerStatus, setSignalServerStatus] = useState<{
@@ -67,15 +67,18 @@ export default function LLMTraining() {
     setLoading(false);
   }, []);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: fetch data on mount
   useEffect(() => { refresh(); }, [refresh]);
 
   // Watch export completion
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: refresh after task completion
     if (tmExport.task?.status === 'Completed') refresh();
   }, [tmExport.task?.status, refresh]);
 
   // Watch train completion
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: refresh after task completion
     if (tmTrain.task?.status === 'Completed') refresh();
   }, [tmTrain.task?.status, refresh]);
 

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, type ReactNode } from 'react';
 
 export type MarketRegion = 'ALL' | 'CN' | 'US' | 'HK';
 
@@ -13,6 +13,7 @@ const MarketContext = createContext<MarketContextType | null>(null);
 
 const STORAGE_KEY = 'quant_selected_market';
 
+// eslint-disable-next-line react-refresh/only-export-components -- shared helper co-located with context
 export function extractMarketFromSymbol(symbol: string): 'CN' | 'US' | 'HK' {
   const s = symbol.toUpperCase();
   if (s.endsWith('.SH') || s.endsWith('.SZ')) return 'CN';
@@ -34,11 +35,6 @@ export function MarketProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(STORAGE_KEY, m);
   };
 
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved && saved !== market) setMarketState(saved as MarketRegion);
-  }, []);
-
   const filterByMarket = <T,>(items: T[], symbolKey: keyof T): T[] => {
     if (market === 'ALL') return items;
     return items.filter(item => {
@@ -54,12 +50,14 @@ export function MarketProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- hook co-located with its provider
 export function useMarket(): MarketContextType {
   const ctx = useContext(MarketContext);
   if (!ctx) throw new Error('useMarket must be used within MarketProvider');
   return ctx;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- constant co-located with context
 export const MARKET_OPTIONS: { value: MarketRegion; label: string; flag: string }[] = [
   { value: 'ALL', label: '全部市场', flag: '🌐' },
   { value: 'CN', label: 'A股', flag: '🇨🇳' },

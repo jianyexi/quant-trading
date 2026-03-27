@@ -65,6 +65,7 @@ export default function Sentiment() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: fetch data on mount
     refreshOverview();
   }, [refreshOverview]);
 

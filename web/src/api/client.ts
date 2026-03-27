@@ -859,18 +859,21 @@ export async function testNotification(): Promise<{ results: Array<{ channel: st
 
 // ── Metrics ─────────────────────────────────────────────────────────
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response
 export async function getMetrics(): Promise<any> {
   return fetchJson('/metrics');
 }
 
 // ── Reports ─────────────────────────────────────────────────────────
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response
 export async function getReports(): Promise<any> {
   return fetchJson('/reports');
 }
 
 // ── Latency ─────────────────────────────────────────────────────────
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped API response
 export async function getLatency(): Promise<any> {
   return fetchJson('/latency');
 }

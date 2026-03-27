@@ -89,6 +89,22 @@ function LatencyBar({ label, value, max }: { label: string; value: number; max: 
   );
 }
 
+// Sparkline: simple SVG mini chart
+function Sparkline({ data, color }: { data: number[]; color: string }) {
+  if (data.length < 2) return null;
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  const w = 200;
+  const h = 30;
+  const points = data.map((v, i) => `${(i / (data.length - 1)) * w},${h - ((v - min) / range) * h}`).join(' ');
+  return (
+    <svg width={w} height={h} style={{ display: 'block', marginTop: 4 }}>
+      <polyline points={points} fill="none" stroke={color} strokeWidth={1.5} />
+    </svg>
+  );
+}
+
 export default function MetricsPage() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [error, setError] = useState('');
@@ -96,7 +112,6 @@ export default function MetricsPage() {
   const [refreshInterval, setRefreshInterval] = useState(5);
 
   useEffect(() => {
-    let timer: ReturnType<typeof setInterval>;
     const load = async () => {
       try {
         const m = await getMetrics();
@@ -116,7 +131,7 @@ export default function MetricsPage() {
       }
     };
     load();
-    timer = setInterval(load, refreshInterval * 1000);
+    const timer = setInterval(load, refreshInterval * 1000);
     return () => clearInterval(timer);
   }, [refreshInterval]);
 
@@ -142,22 +157,6 @@ export default function MetricsPage() {
     display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, borderBottom: '1px solid #374151',
   };
   const valStyle: React.CSSProperties = { fontFamily: 'monospace', color: '#e5e7eb' };
-
-  // Sparkline: simple SVG mini chart
-  const Sparkline = ({ data, color }: { data: number[]; color: string }) => {
-    if (data.length < 2) return null;
-    const min = Math.min(...data);
-    const max = Math.max(...data);
-    const range = max - min || 1;
-    const w = 200;
-    const h = 30;
-    const points = data.map((v, i) => `${(i / (data.length - 1)) * w},${h - ((v - min) / range) * h}`).join(' ');
-    return (
-      <svg width={w} height={h} style={{ display: 'block', marginTop: 4 }}>
-        <polyline points={points} fill="none" stroke={color} strokeWidth={1.5} />
-      </svg>
-    );
-  };
 
   // Sort endpoints by call count
   const sortedEndpoints = [...(a.endpoints || [])].sort((x, y) => y.calls - x.calls).slice(0, 10);

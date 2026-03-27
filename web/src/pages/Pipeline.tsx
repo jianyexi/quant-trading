@@ -383,8 +383,8 @@ function PipelineContent() {
           }
         } catch { /* continue polling */ }
       }, 1500);
-    } catch (e: any) {
-      setBtError(e.message || '回测请求失败');
+    } catch (e: unknown) {
+      setBtError(e instanceof Error ? e.message : '回测请求失败');
       updateStatus(3, 'error');
       autoRef.current = false;
     }
@@ -506,6 +506,7 @@ function PipelineContent() {
                 </tr>
               </thead>
               <tbody>
+                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped backtest result */}
                 {r.per_symbol_results.filter((s: any) => s.status === 'completed').map((s: any) => (
                   <tr key={s.symbol} className="border-b border-[#1e293b]">
                     <td className="py-1 font-medium">{s.symbol}</td>
