@@ -796,6 +796,18 @@ export async function factorResults(): Promise<FactorResults> {
   return fetchJson('/factor/results');
 }
 
+// ── Factor Correlation Matrix ────────────────────────────────────────
+
+export interface FactorCorrelation {
+  factors: string[];
+  matrix: number[][];
+  error?: string;
+}
+
+export async function factorCorrelation(): Promise<FactorCorrelation> {
+  return fetchJson('/factor/correlation', { method: 'POST' });
+}
+
 // ── Manual Factor Evaluation ────────────────────────────────────────
 
 export interface ManualFactorMetrics {

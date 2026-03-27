@@ -333,6 +333,35 @@ pub async fn evaluate_manual_factor(
     (StatusCode::ACCEPTED, Json(json!({ "task_id": task_id, "status": "running" })))
 }
 
+/// Compute factor correlation matrix via Python helper
+pub async fn factor_correlation() -> (StatusCode, Json<Value>) {
+    let script = std::path::Path::new("ml_models/factor_correlation.py");
+    if !script.exists() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "factor_correlation.py not found"})),
+        );
+    }
+    let python = match find_python() {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Python not found"})),
+            );
+        }
+    };
+
+    let args = vec!["ml_models/factor_correlation.py".to_string()];
+    match run_python_script(&python, &args) {
+        Ok(val) => (StatusCode::OK, Json(val)),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e})),
+        ),
+    }
+}
+
 /// Save a manually evaluated factor to registry
 pub async fn save_manual_factor(
     body: Option<Json<Value>>,
