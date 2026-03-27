@@ -22,7 +22,7 @@ cache_only = false
 
 [llm]
 api_url = "https://models.inference.ai.azure.com"
-api_key = "REDACTED_TOKEN"   # Your GitHub PAT with Copilot access
+api_key = ""   # Set your GitHub PAT with Copilot access (or use GITHUB_TOKEN env var)
 model = "gpt-4o"              # Or any model available via Copilot
 temperature = 0.7
 max_tokens = 10000
