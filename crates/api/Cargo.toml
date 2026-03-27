@@ -32,3 +32,4 @@ futures = { workspace = true }
 sqlx = { workspace = true }
 rusqlite = { workspace = true }
 rand = { workspace = true }
+rayon = { workspace = true }

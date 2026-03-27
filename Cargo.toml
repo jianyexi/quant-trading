@@ -58,6 +58,8 @@ futures = "0.3"
 tokio-stream = "0.1"
 # Random
 rand = "0.8"
+# Parallelism
+rayon = "1.10"
 # Internal crates
 quant-config = { path = "crates/config" }
 quant-core = { path = "crates/core" }

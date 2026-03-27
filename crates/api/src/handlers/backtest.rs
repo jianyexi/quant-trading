@@ -437,6 +437,7 @@ fn run_multi_backtest_task(
 ) {
     use quant_backtest::engine::{BacktestConfig, BacktestEngine};
     use quant_strategy::factory::{create_strategy, StrategyOptions};
+    use rayon::prelude::*;
 
     let n_symbols = symbols.len();
     let capital_per_symbol = capital / n_symbols as f64;
@@ -445,19 +446,10 @@ fn run_multi_backtest_task(
 
     // Stage 1: Fetch data for all symbols in parallel
     let fetch_results: Vec<(String, Result<Vec<quant_core::models::Kline>, String>)> =
-        std::thread::scope(|s| {
-            let handles: Vec<_> = symbols.iter().map(|sym| {
-                let sym = sym.clone();
-                let start = req.start.clone();
-                let end = req.end.clone();
-                let period = period.to_string();
-                s.spawn(move || {
-                    let res = fetch_real_klines_with_period(&sym, &start, &end, &period);
-                    (sym, res)
-                })
-            }).collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        });
+        symbols.par_iter().map(|sym| {
+            let res = fetch_real_klines_with_period(sym, &req.start, &req.end, period);
+            (sym.clone(), res)
+        }).collect();
 
     let mut symbol_klines: Vec<(String, Vec<quant_core::models::Kline>)> = Vec::new();
     let mut failed_symbols: Vec<(String, String)> = Vec::new();
@@ -500,70 +492,59 @@ fn run_multi_backtest_task(
     // Each thread returns either Ok(result_tuple) or Err(symbol, error)
     type BtResult = Result<(String, Value, Vec<Value>, Vec<(String, f64)>, f64, f64, u64, u64, u64, f64), (String, String)>;
 
-    let bt_results: Vec<BtResult> = std::thread::scope(|s| {
-        let handles: Vec<_> = symbol_klines.iter().map(|(sym, klines)| {
-            let strategy_name = req.strategy.clone();
-            let inference_mode = req.inference_mode.clone();
-            let config = bt_config.clone();
-            let sym = sym.clone();
-            let klines = klines.clone();
-            let eq_fmt = eq_fmt;
-            s.spawn(move || {
-                let created = match create_strategy(&strategy_name, StrategyOptions {
-                    inference_mode,
-                    ..Default::default()
-                }) {
-                    Ok(c) => c,
-                    Err(e) => return Err((sym, e)),
-                };
-                let mut strategy = created.strategy;
-                let engine = BacktestEngine::new(config);
-                let result = engine.run(strategy.as_mut(), &klines);
+    let bt_results: Vec<BtResult> = symbol_klines.par_iter().map(|(sym, klines)| {
+        let created = match create_strategy(&req.strategy, StrategyOptions {
+            inference_mode: req.inference_mode.clone(),
+            ..Default::default()
+        }) {
+            Ok(c) => c,
+            Err(e) => return Err((sym.clone(), e)),
+        };
+        let mut strategy = created.strategy;
+        let engine = BacktestEngine::new(bt_config.clone());
+        let result = engine.run(strategy.as_mut(), klines);
 
-                let m = &result.metrics;
-                let ec: Vec<(String, f64)> = result.equity_curve.iter().map(|(dt, val)| {
-                    (dt.format(eq_fmt).to_string(), (*val * 100.0).round() / 100.0)
-                }).collect();
+        let m = &result.metrics;
+        let ec: Vec<(String, f64)> = result.equity_curve.iter().map(|(dt, val)| {
+            (dt.format(eq_fmt).to_string(), (*val * 100.0).round() / 100.0)
+        }).collect();
 
-                let sym_trades: Vec<Value> = result.trades.iter().map(|t| {
-                    json!({
-                        "date": t.timestamp.format("%Y-%m-%d %H:%M").to_string(),
-                        "symbol": t.symbol,
-                        "side": if t.side == quant_core::types::OrderSide::Buy { "BUY" } else { "SELL" },
-                        "price": (t.price * 100.0).round() / 100.0,
-                        "quantity": t.quantity as i64,
-                        "commission": (t.commission * 100.0).round() / 100.0,
-                    })
-                }).collect();
-
-                let actual_start = klines.first().map(|k| k.datetime.format("%Y-%m-%d").to_string()).unwrap_or_default();
-                let actual_end = klines.last().map(|k| k.datetime.format("%Y-%m-%d").to_string()).unwrap_or_default();
-
-                let sym_json = json!({
-                    "symbol": sym,
-                    "initial_capital": result.config.initial_capital,
-                    "final_value": (result.final_portfolio.total_value * 100.0).round() / 100.0,
-                    "total_return_percent": (m.total_return * 10000.0).round() / 100.0,
-                    "annual_return_percent": (m.annual_return * 10000.0).round() / 100.0,
-                    "sharpe_ratio": (m.sharpe_ratio * 100.0).round() / 100.0,
-                    "max_drawdown_percent": (m.max_drawdown * 10000.0).round() / 100.0,
-                    "total_trades": m.total_trades,
-                    "win_rate_percent": (m.win_rate * 10000.0).round() / 100.0,
-                    "profit_factor": (m.profit_factor * 100.0).round() / 100.0,
-                    "data_bars": klines.len(),
-                    "actual_start": actual_start,
-                    "actual_end": actual_end,
-                    "status": "completed"
-                });
-
-                Ok((sym, sym_json, sym_trades, ec,
-                    result.final_portfolio.total_value, m.total_commission,
-                    m.total_trades as u64, m.winning_trades as u64, m.losing_trades as u64,
-                    m.max_drawdown))
+        let sym_trades: Vec<Value> = result.trades.iter().map(|t| {
+            json!({
+                "date": t.timestamp.format("%Y-%m-%d %H:%M").to_string(),
+                "symbol": t.symbol,
+                "side": if t.side == quant_core::types::OrderSide::Buy { "BUY" } else { "SELL" },
+                "price": (t.price * 100.0).round() / 100.0,
+                "quantity": t.quantity as i64,
+                "commission": (t.commission * 100.0).round() / 100.0,
             })
         }).collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
-    });
+
+        let actual_start = klines.first().map(|k| k.datetime.format("%Y-%m-%d").to_string()).unwrap_or_default();
+        let actual_end = klines.last().map(|k| k.datetime.format("%Y-%m-%d").to_string()).unwrap_or_default();
+
+        let sym_json = json!({
+            "symbol": sym,
+            "initial_capital": result.config.initial_capital,
+            "final_value": (result.final_portfolio.total_value * 100.0).round() / 100.0,
+            "total_return_percent": (m.total_return * 10000.0).round() / 100.0,
+            "annual_return_percent": (m.annual_return * 10000.0).round() / 100.0,
+            "sharpe_ratio": (m.sharpe_ratio * 100.0).round() / 100.0,
+            "max_drawdown_percent": (m.max_drawdown * 10000.0).round() / 100.0,
+            "total_trades": m.total_trades,
+            "win_rate_percent": (m.win_rate * 10000.0).round() / 100.0,
+            "profit_factor": (m.profit_factor * 100.0).round() / 100.0,
+            "data_bars": klines.len(),
+            "actual_start": actual_start,
+            "actual_end": actual_end,
+            "status": "completed"
+        });
+
+        Ok((sym.clone(), sym_json, sym_trades, ec,
+            result.final_portfolio.total_value, m.total_commission,
+            m.total_trades as u64, m.winning_trades as u64, m.losing_trades as u64,
+            m.max_drawdown))
+    }).collect();
 
     // Aggregate results
     let mut per_symbol_results: Vec<Value> = Vec::new();

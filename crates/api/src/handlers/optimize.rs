@@ -78,6 +78,8 @@ fn run_optimization_task(
 ) {
     use quant_backtest::engine::{BacktestConfig, BacktestEngine};
     use quant_strategy::factory::create_strategy_with_params;
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Stage 1: Fetch data once (shared across all combos)
     ts.set_progress(tid, "📊 Fetching market data...");
@@ -127,94 +129,88 @@ fn run_optimization_task(
     let is_ma_cross = matches!(req.strategy.as_str(), "sma_cross" | "macd_trend");
     let is_fast_slow_pair = req.param1_name.contains("fast") && req.param2_name.contains("slow");
 
-    let mut grid: Vec<Value> = Vec::with_capacity(total);
-    let mut best_sharpe = f64::NEG_INFINITY;
-    let mut best_entry: Option<Value> = None;
-    let mut completed = 0usize;
+    // Build all parameter combinations for parallel iteration
+    let combinations: Vec<(f64, f64)> = req.param1_values.iter()
+        .flat_map(|&p1| req.param2_values.iter().map(move |&p2| (p1, p2)))
+        .collect();
 
-    for &p1 in &req.param1_values {
-        for &p2 in &req.param2_values {
-            // Skip invalid combos where fast >= slow for MA-based strategies
-            if is_ma_cross && is_fast_slow_pair && p1 >= p2 {
-                let entry = json!({
+    let completed_count = AtomicUsize::new(0);
+
+    let grid: Vec<Value> = combinations.par_iter().map(|&(p1, p2)| {
+        // Skip invalid combos where fast >= slow for MA-based strategies
+        if is_ma_cross && is_fast_slow_pair && p1 >= p2 {
+            completed_count.fetch_add(1, Ordering::Relaxed);
+            return json!({
+                "param1": p1,
+                "param2": p2,
+                "total_return": null,
+                "sharpe": null,
+                "max_drawdown": null,
+                "win_rate": null,
+                "skipped": true,
+            });
+        }
+
+        // Build strategy config with these params
+        let params_map = json!({
+            req.param1_name.clone(): p1,
+            req.param2_name.clone(): p2,
+        });
+
+        let entry = match create_strategy_with_params(&req.strategy, &params_map) {
+            Ok(created) => {
+                let mut strategy = created.strategy;
+                let engine = BacktestEngine::new(bt_config.clone());
+                let result = engine.run_with_benchmark(strategy.as_mut(), &klines, None);
+
+                let m = &result.metrics;
+                json!({
+                    "param1": p1,
+                    "param2": p2,
+                    "total_return": (m.total_return * 10000.0).round() / 100.0,
+                    "sharpe": (m.sharpe_ratio * 100.0).round() / 100.0,
+                    "max_drawdown": (m.max_drawdown * 10000.0).round() / 100.0,
+                    "win_rate": (m.win_rate * 10000.0).round() / 100.0,
+                })
+            }
+            Err(e) => {
+                json!({
                     "param1": p1,
                     "param2": p2,
                     "total_return": null,
                     "sharpe": null,
                     "max_drawdown": null,
                     "win_rate": null,
-                    "skipped": true,
-                });
-                grid.push(entry);
-                completed += 1;
-                continue;
+                    "error": e,
+                })
             }
+        };
 
-            // Build strategy config with these params
-            let params_map = json!({
-                req.param1_name.clone(): p1,
-                req.param2_name.clone(): p2,
-            });
-
-            let created = match create_strategy_with_params(&req.strategy, &params_map) {
-                Ok(c) => c,
-                Err(e) => {
-                    let entry = json!({
-                        "param1": p1,
-                        "param2": p2,
-                        "total_return": null,
-                        "sharpe": null,
-                        "max_drawdown": null,
-                        "win_rate": null,
-                        "error": e,
-                    });
-                    grid.push(entry);
-                    completed += 1;
-                    continue;
-                }
-            };
-
-            let mut strategy = created.strategy;
-            let engine = BacktestEngine::new(bt_config.clone());
-            let result = engine.run_with_benchmark(strategy.as_mut(), &klines, None);
-
-            let m = &result.metrics;
-            let total_return = (m.total_return * 10000.0).round() / 100.0;
-            let sharpe = (m.sharpe_ratio * 100.0).round() / 100.0;
-            let max_drawdown = (m.max_drawdown * 10000.0).round() / 100.0;
-            let win_rate = (m.win_rate * 10000.0).round() / 100.0;
-
-            let entry = json!({
-                "param1": p1,
-                "param2": p2,
-                "total_return": total_return,
-                "sharpe": sharpe,
-                "max_drawdown": max_drawdown,
-                "win_rate": win_rate,
-            });
-
-            if sharpe > best_sharpe {
-                best_sharpe = sharpe;
-                best_entry = Some(json!({
-                    "param1": p1,
-                    "param2": p2,
-                    "total_return": total_return,
-                    "sharpe": sharpe,
-                }));
-            }
-
-            grid.push(entry);
-            completed += 1;
-
-            // Update progress periodically
-            if completed % 5 == 0 || completed == total {
-                ts.set_progress(tid, &format!(
-                    "🔄 Optimizing... {}/{} combinations completed",
-                    completed, total
-                ));
-            }
+        let done = completed_count.fetch_add(1, Ordering::Relaxed) + 1;
+        if done % 5 == 0 || done == total {
+            ts.set_progress(tid, &format!(
+                "🔄 Optimizing... {}/{} combinations completed",
+                done, total
+            ));
         }
-    }
+
+        entry
+    }).collect();
+
+    // Find the best entry by sharpe ratio after parallel collection
+    let best_entry = grid.iter()
+        .filter(|e| e.get("sharpe").and_then(|s| s.as_f64()).is_some())
+        .max_by(|a, b| {
+            let sa = a["sharpe"].as_f64().unwrap_or(f64::NEG_INFINITY);
+            let sb = b["sharpe"].as_f64().unwrap_or(f64::NEG_INFINITY);
+            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|e| json!({
+            "param1": e["param1"],
+            "param2": e["param2"],
+            "total_return": e["total_return"],
+            "sharpe": e["sharpe"],
+        }));
 
     let report = json!({
         "status": "completed",
@@ -225,7 +221,7 @@ fn run_optimization_task(
         "strategy": req.strategy,
         "symbol": req.symbol,
         "total_combinations": total,
-        "completed_combinations": completed,
+        "completed_combinations": grid.len(),
     });
 
     ts.complete(tid, &report.to_string());
