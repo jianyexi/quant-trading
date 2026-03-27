@@ -14,6 +14,7 @@ pub mod export;
 pub mod data_quality;
 mod ml;
 mod monte_carlo;
+mod risk_metrics;
 
 pub use market::*;
 pub use backtest::*;
@@ -30,6 +31,7 @@ pub use llm_training::*;
 pub use export::{export_backtest_csv, export_trades_csv, export_metrics_csv};
 pub use ml::*;
 pub use monte_carlo::run_monte_carlo;
+pub use risk_metrics::{risk_var, risk_stress_test};
 
 use axum::{
     extract::{Path, Query, State},

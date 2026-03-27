@@ -66,6 +66,12 @@ fn monitor_routes() -> Router<AppState> {
         .route("/ws", get(ws::ws_monitor))
 }
 
+fn risk_metrics_routes() -> Router<AppState> {
+    Router::new()
+        .route("/var", get(handlers::risk_var))
+        .route("/stress-test", post(handlers::risk_stress_test))
+}
+
 fn trade_routes() -> Router<AppState> {
     Router::new()
         .route("/start", post(handlers::trade_start))
@@ -229,6 +235,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/chat", chat_routes())
         .nest("/api/monitor", monitor_routes())
         .nest("/api/trade", trade_routes())
+        .nest("/api/risk", risk_metrics_routes())
         .nest("/api/ml", ml_routes())
         .nest("/api/llm", llm_routes())
         .nest("/api/screen", screen_routes())

@@ -2,12 +2,16 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Shield, ShieldAlert, ShieldCheck, RefreshCw, RotateCcw, AlertTriangle,
   TrendingDown, Zap, Activity, Ban, CheckCircle, XCircle, Loader2,
-  Radio, Gauge, GitBranch, Clock,
+  Radio, Gauge, GitBranch, Clock, BarChart3, FlaskConical,
 } from 'lucide-react';
 import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, Cell,
+} from 'recharts';
+import {
   getRiskSignals, getPerformance, resetCircuitBreaker, resetDailyLoss,
-  createMonitorWebSocket,
+  createMonitorWebSocket, getRiskVar, runStressTest,
   type RiskSignalsSnapshot, type RiskEvent, type TailRiskData,
+  type VarResult, type StressTestResult,
 } from '../api/client';
 
 interface PerformanceData {
@@ -36,6 +40,15 @@ export default function RiskManagement() {
   const [actionMsg, setActionMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // VaR / CVaR state
+  const [varData, setVarData] = useState<VarResult | null>(null);
+  const [varLoading, setVarLoading] = useState(false);
+
+  // Stress test state
+  const [stressResult, setStressResult] = useState<StressTestResult | null>(null);
+  const [stressLoading, setStressLoading] = useState(false);
+  const [customDrawdown, setCustomDrawdown] = useState(-20);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -115,6 +128,30 @@ export default function RiskManagement() {
       showAction('重置失败', 'error');
     }
   };
+
+  const fetchVarData = useCallback(async () => {
+    setVarLoading(true);
+    try {
+      const data = await getRiskVar();
+      setVarData(data);
+    } catch { /* ignore */ }
+    setVarLoading(false);
+  }, []);
+
+  const handleRunStressTest = useCallback(async () => {
+    setStressLoading(true);
+    try {
+      const scenarios = ['2008_financial', '2015_china', '2020_covid', 'flash_crash', 'custom'];
+      const result = await runStressTest(scenarios, customDrawdown / 100);
+      setStressResult(result);
+    } catch {
+      showAction('压力测试失败', 'error');
+    }
+    setStressLoading(false);
+  }, [customDrawdown]);
+
+  // Fetch VaR on mount
+  useEffect(() => { fetchVarData(); }, [fetchVarData]);
 
   if (loading) {
     return (
@@ -212,6 +249,137 @@ export default function RiskManagement() {
           </div>
         </div>
       )}
+
+      {/* ── 📊 风险指标 (VaR / CVaR) ────────────────────────────────── */}
+      <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <BarChart3 className="h-4 w-4 text-amber-400" /> 📊 风险指标
+          </h2>
+          <button onClick={fetchVarData} disabled={varLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#334155] hover:bg-[#475569] text-xs font-medium rounded-lg disabled:opacity-50">
+            {varLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+            刷新
+          </button>
+        </div>
+
+        {varData && !varData.error ? (
+          <>
+            {/* VaR / CVaR Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+              <VarCard label="VaR(95%)" value={varData.var_95} color="yellow" portfolioValue={perf?.portfolio_value} />
+              <VarCard label="VaR(99%)" value={varData.var_99} color="yellow" portfolioValue={perf?.portfolio_value} />
+              <VarCard label="CVaR(95%)" value={varData.cvar_95} color="red" portfolioValue={perf?.portfolio_value} />
+              <VarCard label="CVaR(99%)" value={varData.cvar_99} color="red" portfolioValue={perf?.portfolio_value} />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              {/* Return Distribution Histogram */}
+              <div>
+                <p className="text-xs text-[#94a3b8] mb-2">
+                  日收益率分布 ({varData.lookback_days}天){varData.source === 'daily_snapshots' && ' · 来源: 组合快照'}
+                </p>
+                <div className="h-48">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={varData.daily_returns_histogram} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                      <XAxis dataKey="bin" tickFormatter={(v: number) => `${(v * 100).toFixed(1)}%`} tick={{ fill: '#64748b', fontSize: 10 }} />
+                      <YAxis tick={{ fill: '#64748b', fontSize: 10 }} width={32} />
+                      <Tooltip
+                        formatter={(value: number) => [value, '频次']}
+                        labelFormatter={(v: number) => `收益率: ${(v * 100).toFixed(2)}%`}
+                        contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
+                      />
+                      <Bar dataKey="count" radius={[2, 2, 0, 0]}>
+                        {varData.daily_returns_histogram.map((entry, idx) => (
+                          <Cell key={idx} fill={entry.bin < varData.var_95 ? '#ef4444' : entry.bin < 0 ? '#f59e0b' : '#22c55e'} />
+                        ))}
+                      </Bar>
+                      <ReferenceLine x={varData.var_95} stroke="#f59e0b" strokeWidth={2} strokeDasharray="4 2" label={{ value: 'VaR95', fill: '#f59e0b', fontSize: 10, position: 'top' }} />
+                      <ReferenceLine x={varData.var_99} stroke="#ef4444" strokeWidth={2} strokeDasharray="4 2" label={{ value: 'VaR99', fill: '#ef4444', fontSize: 10, position: 'top' }} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="flex items-center gap-4 mt-2 text-xs text-[#64748b]">
+                  <span>年化波动率: <span className="text-[#f8fafc] font-mono">{(varData.portfolio_volatility * 100).toFixed(1)}%</span></span>
+                  {varData.positions.length > 0 && <span>持仓: {varData.positions.join(', ')}</span>}
+                </div>
+              </div>
+
+              {/* Correlation Heatmap */}
+              {varData.correlation_matrix && varData.correlation_matrix.symbols.length > 1 ? (
+                <div>
+                  <p className="text-xs text-[#94a3b8] mb-2">持仓相关性矩阵</p>
+                  <CorrelationHeatmap symbols={varData.correlation_matrix.symbols} matrix={varData.correlation_matrix.matrix} />
+                </div>
+              ) : (
+                <div className="flex items-center justify-center text-[#64748b] text-sm">
+                  {varData.correlation_matrix === null ? '无多持仓数据' : '单一持仓，无相关性矩阵'}
+                </div>
+              )}
+            </div>
+          </>
+        ) : varData?.error ? (
+          <div className="text-center py-6 text-[#64748b]">
+            <BarChart3 className="h-8 w-8 mx-auto mb-2 opacity-30" />
+            <p className="text-sm">{varData.message || '数据不可用'}</p>
+          </div>
+        ) : varLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="h-6 w-6 animate-spin text-[#3b82f6]" />
+          </div>
+        ) : null}
+      </div>
+
+      {/* ── 压力测试 ──────────────────────────────────────────────── */}
+      <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <FlaskConical className="h-4 w-4 text-red-400" /> 压力测试
+          </h2>
+          <button onClick={handleRunStressTest} disabled={stressLoading}
+            className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-medium rounded-lg disabled:opacity-50 transition-colors">
+            {stressLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <FlaskConical className="h-3 w-3" />}
+            运行压力测试
+          </button>
+        </div>
+
+        {/* Custom Scenario Slider */}
+        <div className="mb-5 bg-[#0f172a] rounded-lg p-4 border border-[#334155]">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-[#94a3b8]">假设市场下跌</span>
+            <span className="text-sm font-bold text-red-400">{customDrawdown}%</span>
+          </div>
+          <input type="range" min={-60} max={-5} step={1} value={customDrawdown}
+            onChange={(e) => setCustomDrawdown(Number(e.target.value))}
+            className="w-full h-2 rounded-full appearance-none bg-gradient-to-r from-green-500 via-yellow-500 to-red-600 cursor-pointer
+              [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-md
+              [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:border-0"
+          />
+          <div className="flex justify-between text-xs text-[#475569] mt-1">
+            <span>-5%</span>
+            <span>-60%</span>
+          </div>
+        </div>
+
+        {/* Scenario Cards */}
+        {stressResult ? (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mb-3">
+              {stressResult.scenarios.map((sc, i) => (
+                <ScenarioCard key={i} scenario={sc} />
+              ))}
+            </div>
+            <p className="text-xs text-[#64748b]">
+              组合价值: ¥{stressResult.portfolio_value.toLocaleString('zh-CN')} · Beta: {stressResult.portfolio_beta.toFixed(2)}
+            </p>
+          </>
+        ) : (
+          <div className="text-center py-6 text-[#64748b]">
+            <FlaskConical className="h-8 w-8 mx-auto mb-2 opacity-30" />
+            <p className="text-sm">点击「运行压力测试」查看历史危机场景对组合的影响</p>
+          </div>
+        )}
+      </div>
 
       {/* Risk Status Cards — 6 columns */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
@@ -555,6 +723,105 @@ function RuleCard({ title, value, desc, field }: {
       </div>
       <p className="text-xs text-[#64748b] leading-relaxed">{desc}</p>
       <p className="text-xs text-[#475569] mt-1 font-mono">{field}</p>
+    </div>
+  );
+}
+
+// ── VaR Card ────────────────────────────────────────────────────────
+
+function VarCard({ label, value, color, portfolioValue }: {
+  label: string; value: number; color: 'yellow' | 'red'; portfolioValue?: number;
+}) {
+  const pct = (value * 100).toFixed(1);
+  const abs = portfolioValue ? `¥${Math.abs(value * portfolioValue).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}` : '';
+  const borderClass = color === 'red' ? 'border-red-500/30 bg-red-500/5' : 'border-yellow-500/30 bg-yellow-500/5';
+  const textClass = color === 'red' ? 'text-red-400' : 'text-yellow-400';
+
+  return (
+    <div className={`rounded-lg border p-3 ${borderClass}`}>
+      <p className="text-xs text-[#94a3b8] mb-1">{label}</p>
+      <p className={`text-lg font-bold font-mono ${textClass}`}>{pct}%</p>
+      {abs && <p className="text-xs text-[#64748b] mt-0.5">日亏损 {abs}</p>}
+    </div>
+  );
+}
+
+// ── Correlation Heatmap ─────────────────────────────────────────────
+
+function CorrelationHeatmap({ symbols, matrix }: { symbols: string[]; matrix: number[][] }) {
+  const cellColor = (v: number) => {
+    if (v >= 0.7) return 'bg-red-500/70 text-white';
+    if (v >= 0.3) return 'bg-red-500/30 text-red-300';
+    if (v >= 0) return 'bg-slate-700/50 text-[#94a3b8]';
+    if (v >= -0.3) return 'bg-blue-500/30 text-blue-300';
+    return 'bg-blue-500/70 text-white';
+  };
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="text-xs">
+        <thead>
+          <tr>
+            <th className="p-1" />
+            {symbols.map((s, i) => (
+              <th key={i} className="p-1 text-[#94a3b8] font-mono font-normal text-center">{s.replace(/\.\w+$/, '')}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {symbols.map((s, i) => (
+            <tr key={i}>
+              <td className="p-1 text-[#94a3b8] font-mono pr-2">{s.replace(/\.\w+$/, '')}</td>
+              {matrix[i].map((v, j) => (
+                <td key={j} className={`p-1 text-center rounded font-mono ${cellColor(v)}`}>
+                  {v.toFixed(2)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Stress Test Scenario Card ───────────────────────────────────────
+
+import type { StressScenarioResult } from '../api/client';
+
+function ScenarioCard({ scenario }: { scenario: StressScenarioResult }) {
+  const levelConfig: Record<string, { bg: string; border: string; badge: string; text: string }> = {
+    mild: { bg: 'bg-green-500/5', border: 'border-green-500/30', badge: 'bg-green-500/20 text-green-400', text: '轻微' },
+    moderate: { bg: 'bg-yellow-500/5', border: 'border-yellow-500/30', badge: 'bg-yellow-500/20 text-yellow-400', text: '中等' },
+    severe: { bg: 'bg-red-500/5', border: 'border-red-500/30', badge: 'bg-red-500/20 text-red-400', text: '严重' },
+    extreme: { bg: 'bg-red-900/20', border: 'border-red-700/50', badge: 'bg-red-700/30 text-red-300', text: '极端' },
+  };
+  const cfg = levelConfig[scenario.risk_level] || levelConfig.moderate;
+
+  return (
+    <div className={`rounded-xl border p-4 ${cfg.bg} ${cfg.border}`}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm font-semibold text-[#f8fafc]">{scenario.name}</span>
+        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${cfg.badge}`}>{cfg.text}</span>
+      </div>
+      <div className="space-y-1.5 text-xs">
+        <div className="flex justify-between">
+          <span className="text-[#94a3b8]">市场跌幅</span>
+          <span className="text-[#f8fafc] font-mono">{scenario.market_drawdown}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-[#94a3b8]">组合影响</span>
+          <span className="text-red-400 font-bold font-mono">{scenario.estimated_portfolio_impact}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-[#94a3b8]">预估亏损</span>
+          <span className="text-red-400 font-mono">{scenario.estimated_loss}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-[#94a3b8]">恢复周期</span>
+          <span className="text-[#64748b] font-mono">{scenario.estimated_duration}</span>
+        </div>
+      </div>
     </div>
   );
 }

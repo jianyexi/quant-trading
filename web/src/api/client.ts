@@ -1034,6 +1034,60 @@ export interface TaskRecord {
   parameters: string | null;
 }
 
+// ── Risk Metrics (VaR / Stress Test) ────────────────────────────────
+
+export interface VarResult {
+  var_95: number;
+  var_99: number;
+  cvar_95: number;
+  cvar_99: number;
+  portfolio_volatility: number;
+  lookback_days: number;
+  positions: string[];
+  correlation_matrix: { symbols: string[]; matrix: number[][] } | null;
+  daily_returns_histogram: Array<{ bin: number; count: number }>;
+  source?: string;
+  error?: string;
+  message?: string;
+}
+
+export interface StressScenarioResult {
+  name: string;
+  description: string;
+  market_drawdown: string;
+  estimated_portfolio_impact: string;
+  estimated_loss: string;
+  estimated_loss_value: number;
+  impact_pct: number;
+  estimated_duration: string;
+  volatility_multiplier?: number;
+  correlation_spike?: number;
+  risk_level: 'mild' | 'moderate' | 'severe' | 'extreme';
+}
+
+export interface StressTestResult {
+  portfolio_value: number;
+  portfolio_beta: number;
+  scenarios: StressScenarioResult[];
+}
+
+export async function getRiskVar(): Promise<VarResult> {
+  return fetchJson('/risk/var');
+}
+
+export async function runStressTest(
+  scenarios?: string[],
+  customDrawdown?: number,
+): Promise<StressTestResult> {
+  return fetchJson('/risk/stress-test', {
+    method: 'POST',
+    body: JSON.stringify({
+      scenarios,
+      custom_drawdown: customDrawdown,
+    }),
+  });
+}
+
 export async function getTask(taskId: string): Promise<TaskRecord> {
   return fetchJson(`/tasks/${taskId}`);
 }
