@@ -11,6 +11,8 @@ mod tasks;
 mod services;
 mod llm_training;
 pub mod export;
+pub mod data_quality;
+mod ml;
 
 pub use market::*;
 pub use backtest::*;
@@ -25,6 +27,7 @@ pub use tasks::*;
 pub use services::*;
 pub use llm_training::*;
 pub use export::{export_backtest_csv, export_trades_csv, export_metrics_csv};
+pub use ml::*;
 
 use axum::{
     extract::{Path, Query, State},

@@ -85,6 +85,7 @@ fn ml_routes() -> Router<AppState> {
     Router::new()
         .route("/training-history", get(handlers::ml_training_history))
         .route("/training-history/:id", get(handlers::ml_training_run_detail))
+        .route("/feature-importance", get(handlers::ml_feature_importance))
 }
 
 fn llm_routes() -> Router<AppState> {

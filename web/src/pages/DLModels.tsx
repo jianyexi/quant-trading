@@ -1,10 +1,23 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Cell,
+  ResponsiveContainer,
+} from 'recharts';
 import {
   getResearchDlModels,
   collectResearch,
+  getMlFeatureImportance,
   type ResearchKnowledgeBase,
   type DlModelEntry,
   type CollectedResearch,
+  type FeatureImportanceItem,
+  type FeatureImportanceModelInfo,
 } from '../api/client';
 
 /* ── category color mapping ─────────────────────────────────────── */
@@ -133,6 +146,136 @@ function CollectedCard({ item }: { item: CollectedResearch }) {
   );
 }
 
+/* ── Feature Importance Chart ─────────────────────────────────────── */
+function FeatureImportanceSection() {
+  const [features, setFeatures] = useState<FeatureImportanceItem[]>([]);
+  const [modelInfo, setModelInfo] = useState<FeatureImportanceModelInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await getMlFeatureImportance();
+      setFeatures(data.features.slice(0, 20));
+      setModelInfo(data.model_info);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '加载失败');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  // Color gradient: most important = dark blue, least = light blue
+  const getBarColor = (index: number, total: number) => {
+    const ratio = total > 1 ? index / (total - 1) : 0;
+    const r = Math.round(30 + ratio * 117);   // 30 → 147
+    const g = Math.round(64 + ratio * 133);   // 64 → 197
+    const b = Math.round(175 + ratio * 68);   // 175 → 243
+    return `rgb(${r}, ${g}, ${b})`;
+  };
+
+  // Reverse data so highest importance is at top of vertical bar chart
+  const chartData = [...features].reverse();
+
+  return (
+    <div className="rounded-xl border border-[#334155] bg-[#1e293b] p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-base font-bold text-[#f8fafc]">📊 ML 特征重要性</h2>
+          <p className="text-xs text-[#94a3b8] mt-1">
+            LightGBM 模型 Top 20 特征（按 gain 排序）
+          </p>
+        </div>
+        <button
+          onClick={loadData}
+          disabled={loading}
+          className="rounded-lg bg-[#334155] px-3 py-1.5 text-xs font-medium text-[#f8fafc] hover:bg-[#475569] disabled:opacity-50"
+        >
+          {loading ? '加载中...' : '🔄 刷新'}
+        </button>
+      </div>
+
+      {error && <div className="text-xs text-red-400 mb-3">{error}</div>}
+
+      {/* Model Info Card */}
+      {modelInfo && (modelInfo.auc !== null || modelInfo.accuracy !== null) && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          {modelInfo.auc !== null && (
+            <div className="rounded-lg bg-[#0f172a] border border-[#334155] p-3 text-center">
+              <div className="text-lg font-bold text-[#3b82f6]">{modelInfo.auc.toFixed(3)}</div>
+              <div className="text-xs text-[#94a3b8]">AUC</div>
+            </div>
+          )}
+          {modelInfo.accuracy !== null && (
+            <div className="rounded-lg bg-[#0f172a] border border-[#334155] p-3 text-center">
+              <div className="text-lg font-bold text-[#10b981]">{(modelInfo.accuracy * 100).toFixed(1)}%</div>
+              <div className="text-xs text-[#94a3b8]">准确率</div>
+            </div>
+          )}
+          <div className="rounded-lg bg-[#0f172a] border border-[#334155] p-3 text-center">
+            <div className="text-lg font-bold text-[#f59e0b]">{modelInfo.n_features}</div>
+            <div className="text-xs text-[#94a3b8]">特征数</div>
+          </div>
+          {modelInfo.timestamp && (
+            <div className="rounded-lg bg-[#0f172a] border border-[#334155] p-3 text-center">
+              <div className="text-lg font-bold text-[#94a3b8]">{modelInfo.timestamp}</div>
+              <div className="text-xs text-[#94a3b8]">训练日期</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Chart */}
+      {loading ? (
+        <div className="flex items-center justify-center h-64">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#3b82f6]" />
+        </div>
+      ) : features.length > 0 ? (
+        <ResponsiveContainer width="100%" height={Math.max(400, chartData.length * 28)}>
+          <BarChart layout="vertical" data={chartData} margin={{ top: 5, right: 60, left: 10, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#334155" horizontal={false} />
+            <XAxis type="number" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={{ stroke: '#334155' }} />
+            <YAxis
+              type="category"
+              dataKey="name"
+              width={150}
+              tick={{ fill: '#cbd5e1', fontSize: 11 }}
+              axisLine={{ stroke: '#334155' }}
+            />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: '#1e293b',
+                border: '1px solid #334155',
+                borderRadius: '8px',
+                color: '#f8fafc',
+                fontSize: '12px',
+              }}
+              formatter={(value: number | null) => [
+                value !== null ? value.toFixed(1) : 'N/A',
+                '重要性',
+              ]}
+            />
+            <Bar dataKey="importance" radius={[0, 4, 4, 0]} label={{ position: 'right', fill: '#94a3b8', fontSize: 10, formatter: (v: number | null) => v !== null ? v.toFixed(1) : '' }}>
+              {chartData.map((_, index) => (
+                <Cell
+                  key={`cell-${index}`}
+                  fill={getBarColor(chartData.length - 1 - index, chartData.length)}
+                />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      ) : (
+        <div className="text-sm text-[#94a3b8] text-center py-8">暂无特征重要性数据</div>
+      )}
+    </div>
+  );
+}
+
 /* ── Main Page ──────────────────────────────────────────────────── */
 export default function DLModels() {
   const [kb, setKb] = useState<ResearchKnowledgeBase | null>(null);
@@ -217,6 +360,9 @@ export default function DLModels() {
           </button>
         ))}
       </div>
+
+      {/* ML Feature Importance */}
+      <FeatureImportanceSection />
 
       {/* Auto-Collect */}
       <div className="rounded-xl border border-[#334155] bg-[#1e293b] p-5">

@@ -1115,3 +1115,27 @@ export async function llmSignalServeStatus(): Promise<{
 }> {
   return fetchJson('/services/llm-signal-serve/status');
 }
+
+// ── ML Feature Importance ──────────────────────────────────────────
+
+export interface FeatureImportanceItem {
+  name: string;
+  importance: number | null;
+  rank: number;
+}
+
+export interface FeatureImportanceModelInfo {
+  auc: number | null;
+  accuracy: number | null;
+  n_features: number;
+  timestamp: string;
+}
+
+export interface FeatureImportanceResponse {
+  features: FeatureImportanceItem[];
+  model_info: FeatureImportanceModelInfo;
+}
+
+export async function getMlFeatureImportance(): Promise<FeatureImportanceResponse> {
+  return fetchJson('/ml/feature-importance');
+}
