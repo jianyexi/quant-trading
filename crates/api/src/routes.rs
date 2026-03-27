@@ -5,7 +5,9 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use tower_http::cors::CorsLayer;
+use axum::http::{header, Method};
+use tower::limit::ConcurrencyLimitLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 
 use crate::auth::api_key_auth;
@@ -218,9 +220,25 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .nest("/api/journal", journal_routes())
         .nest("/api/notifications", notification_routes())
         .nest("/api/logs", log_routes())
-        .layer(middleware::from_fn_with_state(state.clone(), request_logger))
         .layer(middleware::from_fn(api_key_auth))
-        .with_state(state);
+        .layer(middleware::from_fn_with_state(state.clone(), request_logger))
+        .with_state(state.clone());
+
+    // CORS: use allowed origins from CORS_ORIGINS env var, fall back to permissive in dev
+    let cors = match std::env::var("CORS_ORIGINS") {
+        Ok(origins) if !origins.is_empty() => {
+            let allowed: Vec<_> = origins
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list(allowed))
+                .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
+                .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, "X-API-Key".parse().unwrap()])
+                .allow_credentials(true)
+        }
+        _ => CorsLayer::permissive(),
+    };
 
     // SPA fallback: serve index.html for any non-API, non-static path (returns 200)
     let index_path = std::path::PathBuf::from(web_dist).join("index.html");
@@ -238,5 +256,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .fallback_service(
             ServeDir::new(web_dist).fallback(get(spa_handler))
         )
-        .layer(CorsLayer::permissive())
+        .layer(cors)
+        // Limit concurrent in-flight requests to prevent overload
+        .layer(ConcurrencyLimitLayer::new(200))
 }

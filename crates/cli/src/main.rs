@@ -1795,8 +1795,31 @@ async fn run_server(config: &AppConfig) -> anyhow::Result<()> {
     }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
 
+    // Graceful shutdown: drain in-flight requests on SIGTERM/SIGINT
+    let shutdown = async {
+        let ctrl_c = tokio::signal::ctrl_c();
+        #[cfg(unix)]
+        let terminate = async {
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to install SIGTERM handler")
+                .recv()
+                .await;
+        };
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
+
+        tokio::select! {
+            _ = ctrl_c => println!("\n🛑 Received SIGINT, shutting down gracefully..."),
+            _ = terminate => println!("\n🛑 Received SIGTERM, shutting down gracefully..."),
+        }
+    };
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
+
+    println!("✅ Server shutdown complete.");
     Ok(())
 }
 

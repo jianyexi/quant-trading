@@ -3,23 +3,26 @@ services:
     image: postgres:16
     restart: unless-stopped
     environment:
-      POSTGRES_DB: quant_trading
-      POSTGRES_USER: quant
-      POSTGRES_PASSWORD: quant_pass
+      POSTGRES_DB: ${POSTGRES_DB:-quant_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-quant}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U quant -d quant_trading"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-quant} -d ${POSTGRES_DB:-quant_trading}"]
       interval: 5s
       timeout: 5s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
   quant:
     build:
       context: .
-      network: host
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -27,14 +30,28 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://quant:quant_pass@postgres:5432/quant_trading
-      RUST_LOG: "quant=info"
-      TUSHARE_TOKEN: "${TUSHARE_TOKEN:-}"
+      DATABASE_URL: ${DATABASE_URL:-postgresql://quant:changeme@postgres:5432/quant_trading}
+      API_KEY: ${API_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      RUST_LOG: ${RUST_LOG:-quant=info}
+      TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     volumes:
       - ./config:/app/config
       - ./data:/app/data
       - ./ml_models:/app/ml_models
       - ./scripts:/app/scripts
+      - app-logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
   pgdata:
+  app-logs:

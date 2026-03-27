@@ -1,0 +1,77 @@
+# Production Configuration — Override via environment variables where possible
+#
+# Required env vars for production:
+#   DATABASE_URL      — PostgreSQL connection string
+#   API_KEY           — API authentication key
+#   CORS_ORIGINS      — Comma-separated allowed origins (e.g. "https://app.example.com")
+#   TUSHARE_TOKEN     — Tushare API token (if using tushare data source)
+#   GITHUB_TOKEN      — GitHub PAT for Copilot LLM access
+
+[database]
+url = "postgresql://quant:CHANGE_ME@postgres:5432/quant_trading"
+max_connections = 50
+
+[tushare]
+token = ""
+base_url = "http://api.tushare.pro"
+
+[akshare]
+base_url = "https://akshare.akfamily.xyz"
+
+[data_source]
+cn_providers = ["tushare", "akshare"]
+us_providers = ["yfinance"]
+hk_providers = ["yfinance"]
+cache_only = false
+
+[llm]
+api_url = "https://models.inference.ai.azure.com"
+api_key = ""
+model = "gpt-4o"
+temperature = 0.7
+max_tokens = 10000
+
+[trading]
+commission_rate = 0.00025
+stamp_tax_rate = 0.001
+slippage_ticks = 1
+initial_capital = 1000000.0
+
+[trading.fees.CN]
+commission_rate = 0.00025
+stamp_tax_rate = 0.001
+slippage_ticks = 1
+
+[trading.fees.US]
+commission_rate = 0.001
+stamp_tax_rate = 0.0
+slippage_ticks = 1
+
+[trading.fees.HK]
+commission_rate = 0.0008
+stamp_tax_rate = 0.001
+slippage_ticks = 1
+
+[risk]
+max_concentration = 0.2
+max_daily_loss = 0.05
+max_drawdown = 0.15
+stop_loss_pct = 0.05
+circuit_breaker_failures = 5
+halt_on_drawdown = true
+
+[qmt]
+bridge_url = "http://127.0.0.1:18090"
+account = ""
+qmt_path = ""
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[sentiment]
+collect_interval_secs = 3600
+watch_symbols = []
+max_news_per_symbol = 10
+max_llm_calls_per_cycle = 50
+news_sources = ["eastmoney", "sina"]

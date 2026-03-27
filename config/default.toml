@@ -2,7 +2,7 @@
 
 [database]
 url = "postgresql://postgres:postgres@127.0.0.1:5432/quant_trading"
-max_connections = 10
+max_connections = 20
 
 [tushare]
 token = ""
