@@ -562,6 +562,7 @@ fn cmd_backtest_run(strategy: &str, symbol: &str, start: &str, end: &str, capita
         use_atr_sizing: true,     // ATR波动率调仓
         atr_period: 14,
         risk_per_trade: 0.02,     // 每笔风险2%
+        benchmark_symbol: None,
     };
 
     let engine = BacktestEngine::new(bt_config);
@@ -671,6 +672,7 @@ fn cmd_walk_forward(strategy: &str, symbol: &str, start: &str, end: &str, n_fold
         use_atr_sizing: true,
         atr_period: 14,
         risk_per_trade: 0.02,
+        benchmark_symbol: None,
     };
 
     let strategy_name = strategy.to_string();

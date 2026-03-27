@@ -185,10 +185,29 @@ fn run_backtest_task(
         use_atr_sizing: true,
         atr_period: 14,
         risk_per_trade: 0.02,
+        benchmark_symbol: req.benchmark_symbol.clone(),
+    };
+
+    // Fetch benchmark data if requested
+    let benchmark_klines = if let Some(ref bench_sym) = req.benchmark_symbol {
+        if !bench_sym.trim().is_empty() {
+            ts.set_progress(tid, &format!("📊 Fetching benchmark data ({})...", bench_sym));
+            match fetch_real_klines_with_period(bench_sym, &req.start, &req.end, period) {
+                Ok(k) if !k.is_empty() => Some(k),
+                _ => {
+                    ts.set_progress(tid, &format!("⚠️ Could not fetch benchmark {} data, continuing without benchmark...", bench_sym));
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
     };
 
     let engine = BacktestEngine::new(bt_config);
-    let result = engine.run(strategy.as_mut(), &klines);
+    let result = engine.run_with_benchmark(strategy.as_mut(), &klines, benchmark_klines.as_deref());
 
     // Stage 4: Compute metrics
     ts.set_progress(tid, "📈 Computing metrics and building report...");
@@ -257,7 +276,14 @@ fn run_backtest_task(
     let m = &result.metrics;
     let id = format!("bt-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap());
 
-    let report = json!({
+    // Serialize benchmark curve if present
+    let benchmark_curve_json: Option<Vec<Value>> = result.benchmark_curve.as_ref().map(|bc| {
+        bc.iter().map(|(dt, val)| {
+            json!({ "date": dt.format(eq_fmt).to_string(), "value": (*val * 100.0).round() / 100.0 })
+        }).collect()
+    });
+
+    let mut report = json!({
         "id": id,
         "strategy": req.strategy,
         "symbol": req.symbol,
@@ -302,6 +328,30 @@ fn run_backtest_task(
         "active_inference_mode": active_inference_mode,
         "status": "completed"
     });
+
+    // Add benchmark fields if present
+    if let Some(obj) = report.as_object_mut() {
+        if let Some(bc) = benchmark_curve_json {
+            obj.insert("benchmark_curve".into(), json!(bc));
+        }
+        if let Some(ref bench_sym) = req.benchmark_symbol {
+            if !bench_sym.trim().is_empty() {
+                obj.insert("benchmark_symbol".into(), json!(bench_sym));
+            }
+        }
+        if let Some(alpha) = m.alpha {
+            obj.insert("alpha".into(), json!((alpha * 10000.0).round() / 100.0));
+        }
+        if let Some(beta) = m.beta {
+            obj.insert("beta".into(), json!((beta * 100.0).round() / 100.0));
+        }
+        if let Some(ir) = m.information_ratio {
+            obj.insert("information_ratio".into(), json!((ir * 100.0).round() / 100.0));
+        }
+        if let Some(te) = m.tracking_error {
+            obj.insert("tracking_error".into(), json!((te * 10000.0).round() / 100.0));
+        }
+    }
 
     ts.complete(tid, &report.to_string());
 }
@@ -372,6 +422,7 @@ fn run_multi_backtest_task(
         use_atr_sizing: true,
         atr_period: 14,
         risk_per_trade: 0.02,
+        benchmark_symbol: None,
     };
 
     let eq_fmt = if period == "daily" { "%Y-%m-%d" } else { "%Y-%m-%d %H:%M" };
@@ -620,6 +671,7 @@ pub async fn walk_forward(
         use_atr_sizing: true,
         atr_period: 14,
         risk_per_trade: 0.02,
+        benchmark_symbol: None,
     };
 
     let n_folds = 5;

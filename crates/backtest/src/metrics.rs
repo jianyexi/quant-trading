@@ -22,6 +22,18 @@ pub struct PerformanceMetrics {
     pub avg_holding_days: f64,
     pub total_commission: f64,
     pub turnover_rate: f64,
+    /// Annualized excess return vs benchmark
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alpha: Option<f64>,
+    /// Regression slope of strategy returns vs benchmark returns
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beta: Option<f64>,
+    /// Excess return / tracking error
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub information_ratio: Option<f64>,
+    /// Std dev of return difference vs benchmark
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracking_error: Option<f64>,
 }
 
 impl PerformanceMetrics {
@@ -240,6 +252,94 @@ impl PerformanceMetrics {
             avg_holding_days,
             total_commission,
             turnover_rate,
+            alpha: None,
+            beta: None,
+            information_ratio: None,
+            tracking_error: None,
         }
+    }
+
+    /// Compute benchmark-relative metrics (alpha, beta, information ratio, tracking error)
+    /// from aligned strategy and benchmark equity curves using daily log returns.
+    pub fn calculate_benchmark_metrics(
+        &mut self,
+        strategy_curve: &[(NaiveDateTime, f64)],
+        benchmark_curve: &[(NaiveDateTime, f64)],
+    ) {
+        if strategy_curve.len() < 3 || benchmark_curve.len() < 3 {
+            return;
+        }
+
+        // Build date-indexed map for benchmark values
+        let bench_map: std::collections::HashMap<chrono::NaiveDate, f64> = benchmark_curve
+            .iter()
+            .map(|(dt, v)| (dt.date(), *v))
+            .collect();
+
+        // Compute aligned daily log returns
+        let mut strat_returns = Vec::new();
+        let mut bench_returns = Vec::new();
+
+        for w in strategy_curve.windows(2) {
+            let date = w[1].0.date();
+            if let (Some(&bv0), Some(&bv1)) = (
+                bench_map.get(&w[0].0.date()),
+                bench_map.get(&date),
+            ) {
+                if w[0].1 > 0.0 && bv0 > 0.0 {
+                    strat_returns.push((w[1].1 / w[0].1).ln());
+                    bench_returns.push((bv1 / bv0).ln());
+                }
+            }
+        }
+
+        let n = strat_returns.len();
+        if n < 2 {
+            return;
+        }
+
+        // Means
+        let s_mean = strat_returns.iter().sum::<f64>() / n as f64;
+        let b_mean = bench_returns.iter().sum::<f64>() / n as f64;
+
+        // Beta = Cov(S, B) / Var(B)
+        let mut cov = 0.0;
+        let mut var_b = 0.0;
+        for i in 0..n {
+            let ds = strat_returns[i] - s_mean;
+            let db = bench_returns[i] - b_mean;
+            cov += ds * db;
+            var_b += db * db;
+        }
+        cov /= (n - 1) as f64;
+        var_b /= (n - 1) as f64;
+
+        let beta = if var_b > 1e-14 { cov / var_b } else { 1.0 };
+
+        // Alpha = annualized excess return: (mean_strat - beta * mean_bench) * 252
+        let alpha = (s_mean - beta * b_mean) * 252.0;
+
+        // Tracking error = std dev of (strat_return - bench_return), annualized
+        let excess: Vec<f64> = strat_returns
+            .iter()
+            .zip(bench_returns.iter())
+            .map(|(s, b)| s - b)
+            .collect();
+        let ex_mean = excess.iter().sum::<f64>() / n as f64;
+        let ex_var = excess.iter().map(|e| (e - ex_mean).powi(2)).sum::<f64>() / (n - 1) as f64;
+        let tracking_error = ex_var.sqrt() * (252.0_f64).sqrt();
+
+        // Information ratio = annualized excess return / tracking error
+        let annualized_excess = ex_mean * 252.0;
+        let information_ratio = if tracking_error > 1e-14 {
+            annualized_excess / tracking_error
+        } else {
+            0.0
+        };
+
+        self.alpha = Some(alpha);
+        self.beta = Some(beta);
+        self.tracking_error = Some(tracking_error);
+        self.information_ratio = Some(information_ratio);
     }
 }

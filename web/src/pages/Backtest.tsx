@@ -36,6 +36,7 @@ interface BacktestConfig {
   period: string;
   inference_mode: string;
   extraSymbols: string[];
+  benchmark_symbol: string;
 }
 
 interface EquityPoint {
@@ -89,6 +90,13 @@ interface BacktestResultData {
   per_symbol_results?: PerSymbolResult[];
   per_symbol_curves?: { symbol: string; data: EquityPoint[] }[];
   failed_symbols?: { symbol: string; error: string }[];
+  // Benchmark fields
+  benchmark_symbol?: string;
+  benchmark_curve?: EquityPoint[];
+  alpha?: number;
+  beta?: number;
+  information_ratio?: number;
+  tracking_error?: number;
 }
 
 interface PerSymbolResult {
@@ -149,6 +157,7 @@ const defaultConfig: BacktestConfig = {
   period: 'daily',
   inference_mode: 'embedded',
   extraSymbols: [],
+  benchmark_symbol: '',
 };
 
 export default function Backtest() {
@@ -191,6 +200,7 @@ export default function Backtest() {
         period: config.period,
         inference_mode: config.inference_mode,
         symbols: config.extraSymbols.length > 0 ? config.extraSymbols : undefined,
+        benchmark_symbol: config.benchmark_symbol || undefined,
       });
 
       // Poll for progress
@@ -296,6 +306,36 @@ export default function Backtest() {
           color: '#f97316',
           icon: DollarSign,
         },
+        ...(result.alpha != null
+          ? [
+              {
+                label: 'Alpha',
+                value: `${result.alpha >= 0 ? '+' : ''}${result.alpha.toFixed(2)}%`,
+                color: result.alpha >= 0 ? '#22c55e' : '#ef4444',
+                icon: TrendingUp,
+              },
+            ]
+          : []),
+        ...(result.beta != null
+          ? [
+              {
+                label: 'Beta',
+                value: result.beta.toFixed(2),
+                color: Math.abs(result.beta) <= 1 ? '#3b82f6' : '#eab308',
+                icon: BarChart3,
+              },
+            ]
+          : []),
+        ...(result.information_ratio != null
+          ? [
+              {
+                label: '信息比率',
+                value: result.information_ratio.toFixed(2),
+                color: result.information_ratio >= 0.5 ? '#22c55e' : '#eab308',
+                icon: Target,
+              },
+            ]
+          : []),
       ]
     : [];
 
@@ -422,6 +462,13 @@ export default function Backtest() {
                     <option key={p.value} value={p.value}>{p.label}</option>
                   ))}
                 </select>
+              </div>
+              <div>
+                <label className="block text-sm text-[#94a3b8] mb-1.5">基准指数 (可选)</label>
+                <input type="text" value={config.benchmark_symbol}
+                  placeholder="如 000300 (沪深300)"
+                  onChange={(e) => updateConfig('benchmark_symbol', e.target.value)}
+                  className="w-full bg-[#0f172a] border border-[#334155] rounded-lg px-3 py-2 text-sm text-[#f8fafc] outline-none focus:border-[#3b82f6] placeholder-[#475569]" />
               </div>
               {config.strategy === 'ml_factor' && (
                 <div>
@@ -619,9 +666,16 @@ export default function Backtest() {
             <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-6">
               <h3 className="text-base font-semibold text-[#f8fafc] mb-4">
                 {result.is_multi ? '📈 组合净值曲线' : '📈 净值曲线'}
+                {result.benchmark_symbol && result.benchmark_curve && (
+                  <span className="text-sm font-normal text-[#f97316] ml-2">vs {result.benchmark_symbol}</span>
+                )}
               </h3>
               <ResponsiveContainer width="100%" height={350}>
-                <AreaChart data={equityCurve}>
+                <AreaChart data={(() => {
+                  if (!result.benchmark_curve || result.benchmark_curve.length === 0) return equityCurve;
+                  const benchMap = new Map(result.benchmark_curve.map(p => [p.date, p.value]));
+                  return equityCurve.map(p => ({ ...p, benchmark: benchMap.get(p.date) ?? undefined }));
+                })()}>
                   <defs>
                     <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
@@ -638,9 +692,18 @@ export default function Backtest() {
                     tickFormatter={(v: number) => `¥${(v / 1000).toFixed(0)}k`} />
                   <Tooltip
                     contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', color: '#f8fafc', fontSize: '12px' }}
-                    formatter={(value: number | undefined) => [`¥${(value ?? 0).toLocaleString()}`, '组合净值']}
+                    formatter={(value: number | undefined, name: string) => [
+                      `¥${(value ?? 0).toLocaleString()}`,
+                      name === 'benchmark' ? `基准 (${result.benchmark_symbol})` : '策略净值',
+                    ]}
                     labelStyle={{ color: '#94a3b8' }} />
-                  <Area type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={2} fill="url(#equityGradient)" />
+                  {result.benchmark_curve && result.benchmark_curve.length > 0 && (
+                    <Legend formatter={(v: string) => v === 'benchmark' ? `基准 (${result.benchmark_symbol})` : '策略净值'} />
+                  )}
+                  <Area type="monotone" dataKey="value" name="value" stroke="#3b82f6" strokeWidth={2} fill="url(#equityGradient)" />
+                  {result.benchmark_curve && result.benchmark_curve.length > 0 && (
+                    <Area type="monotone" dataKey="benchmark" name="benchmark" stroke="#f97316" strokeWidth={2} strokeDasharray="6 3" fill="none" />
+                  )}
                 </AreaChart>
               </ResponsiveContainer>
             </div>

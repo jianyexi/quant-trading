@@ -61,6 +61,9 @@ pub struct BacktestRequest {
     pub inference_mode: Option<String>,
     /// Additional symbols for multi-stock portfolio backtest
     pub symbols: Option<Vec<String>>,
+    /// Optional benchmark symbol for comparison (e.g. "000300" for CSI300)
+    #[serde(default)]
+    pub benchmark_symbol: Option<String>,
 }
 
 // ── Chat Request ────────────────────────────────────────────────────

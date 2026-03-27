@@ -141,6 +141,9 @@ pub struct BacktestConfig {
     /// Target risk per trade as fraction of portfolio (e.g. 0.02 = 2%). Default 0.02.
     #[serde(default = "default_risk_per_trade")]
     pub risk_per_trade: f64,
+    /// Optional benchmark symbol for comparison (e.g. "000300" for CSI300).
+    #[serde(default)]
+    pub benchmark_symbol: Option<String>,
 }
 
 fn default_position_size_pct() -> f64 { 0.10 }
@@ -174,6 +177,8 @@ pub struct BacktestResult {
     pub final_portfolio: Portfolio,
     pub events: Vec<BacktestEvent>,
     pub symbol_metrics: Vec<SymbolMetrics>,
+    /// Benchmark buy-and-hold equity curve (if benchmark was specified)
+    pub benchmark_curve: Option<Vec<(NaiveDateTime, f64)>>,
 }
 
 pub struct BacktestEngine {
@@ -625,7 +630,40 @@ impl BacktestEngine {
             final_portfolio: portfolio,
             events,
             symbol_metrics,
+            benchmark_curve: None,
         }
+    }
+
+    /// Run backtest with an optional benchmark for comparison.
+    /// Benchmark data is used for buy-and-hold equity curve and relative metrics.
+    pub fn run_with_benchmark(
+        &self,
+        strategy: &mut dyn Strategy,
+        data: &[Kline],
+        benchmark_data: Option<&[Kline]>,
+    ) -> BacktestResult {
+        let mut result = self.run(strategy, data);
+
+        if let Some(bench_klines) = benchmark_data {
+            if let Some(first) = bench_klines.first() {
+                if first.close > 0.0 {
+                    let shares = self.config.initial_capital / first.close;
+                    let bench_curve: Vec<(NaiveDateTime, f64)> = bench_klines
+                        .iter()
+                        .map(|k| (k.datetime, shares * k.close))
+                        .collect();
+
+                    // Compute benchmark-relative metrics
+                    result
+                        .metrics
+                        .calculate_benchmark_metrics(&result.equity_curve, &bench_curve);
+
+                    result.benchmark_curve = Some(bench_curve);
+                }
+            }
+        }
+
+        result
     }
 }
 
