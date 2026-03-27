@@ -123,6 +123,57 @@ export async function runOptimization(params: {
   });
 }
 
+// ── Backtest comparison API ─────────────────────────────────────────
+
+export interface BacktestRunSummary {
+  id: string;
+  strategy: string;
+  symbols: string;
+  start_date: string;
+  end_date: string;
+  initial_capital: number;
+  total_return: number | null;
+  annual_return: number | null;
+  sharpe: number | null;
+  max_drawdown: number | null;
+  win_rate: number | null;
+  profit_factor: number | null;
+  total_trades: number | null;
+  created_at: string | null;
+}
+
+export interface CompareRunData {
+  id: string;
+  strategy: string;
+  symbols: string;
+  start_date: string;
+  end_date: string;
+  initial_capital: number;
+  final_capital: number | null;
+  equity_curve: { date: string; value: number; drawdown: number }[];
+  metrics: {
+    total_return: number | null;
+    annual_return: number | null;
+    sharpe_ratio: number | null;
+    max_drawdown: number | null;
+    win_rate: number | null;
+    profit_factor: number | null;
+    total_trades: number | null;
+  };
+  created_at: string | null;
+}
+
+export async function getBacktestHistory(): Promise<BacktestRunSummary[]> {
+  return fetchJson('/backtest/history');
+}
+
+export async function compareBacktestRuns(runIds: string[]): Promise<{ runs: CompareRunData[] }> {
+  return fetchJson('/backtest/compare', {
+    method: 'POST',
+    body: JSON.stringify({ run_ids: runIds }),
+  });
+}
+
 export async function getPortfolio() {
   return fetchJson('/portfolio');
 }
@@ -1009,6 +1060,39 @@ export async function llmSignalServeStart(opts?: LlmSignalServeStartOpts): Promi
 
 export async function llmSignalServeStop(): Promise<{ status: string }> {
   return fetchJson('/services/llm-signal-serve/stop', { method: 'POST' });
+}
+
+// ── Data Quality API ────────────────────────────────────────────────
+
+export interface DataQualityIssue {
+  type: string;
+  count?: number;
+  expected?: number;
+  dates?: string[];
+  details?: string;
+}
+
+export interface SymbolQualityResult {
+  symbol: string;
+  total_bars: number;
+  date_range: { start: string; end: string };
+  issues: DataQualityIssue[];
+  quality_score: number;
+}
+
+export interface DataQualityResponse {
+  results: SymbolQualityResult[];
+}
+
+export async function checkDataQuality(
+  symbols: string[],
+  start: string,
+  end: string,
+): Promise<DataQualityResponse> {
+  return fetchJson('/data/quality', {
+    method: 'POST',
+    body: JSON.stringify({ symbols, start, end }),
+  });
 }
 
 export async function llmSignalServeStatus(): Promise<{

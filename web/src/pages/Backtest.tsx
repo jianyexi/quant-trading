@@ -14,6 +14,8 @@ import {
   Plus,
   Download,
   Grid3X3,
+  Layers,
+  CheckSquare,
 } from 'lucide-react';
 import {
   XAxis,
@@ -27,7 +29,8 @@ import {
   Line,
   Legend,
 } from 'recharts';
-import { runBacktest, getBacktestResults, runOptimization } from '../api/client';
+import { runBacktest, getBacktestResults, runOptimization, getBacktestHistory, compareBacktestRuns } from '../api/client';
+import type { BacktestRunSummary, CompareRunData } from '../api/client';
 
 interface BacktestConfig {
   strategy: string;
@@ -197,7 +200,7 @@ export default function Backtest() {
   const [taskId, setTaskId] = useState<string | null>(null);
 
   // ── Optimization state ────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<'backtest' | 'optimize'>('backtest');
+  const [activeTab, setActiveTab] = useState<'backtest' | 'optimize' | 'compare'>('backtest');
   const [optParam1Name, setOptParam1Name] = useState('fast_period');
   const [optParam1Values, setOptParam1Values] = useState('3,5,8,10,13,15,20');
   const [optParam2Name, setOptParam2Name] = useState('slow_period');
@@ -208,6 +211,13 @@ export default function Backtest() {
   const [optResult, setOptResult] = useState<OptimizeResultData | null>(null);
   const [optMetric, setOptMetric] = useState<'sharpe' | 'total_return' | 'max_drawdown' | 'win_rate'>('sharpe');
   const optPollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── Comparison state ──────────────────────────────────────────────
+  const [compareHistory, setCompareHistory] = useState<BacktestRunSummary[]>([]);
+  const [compareSelected, setCompareSelected] = useState<Set<string>>(new Set());
+  const [compareResult, setCompareResult] = useState<CompareRunData[] | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
 
   const stopPolling = useCallback(() => {
     if (pollerRef.current) {
@@ -231,6 +241,46 @@ export default function Backtest() {
   useEffect(() => {
     localStorage.setItem('quant-backtest-config', JSON.stringify(config));
   }, [config]);
+
+  // Load backtest history when comparison tab is activated
+  useEffect(() => {
+    if (activeTab === 'compare') {
+      getBacktestHistory()
+        .then(setCompareHistory)
+        .catch(() => setCompareError('无法加载回测历史'));
+    }
+  }, [activeTab]);
+
+  const toggleCompareSelect = (id: string) => {
+    setCompareSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else if (next.size < 5) {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleCompare = async () => {
+    const ids = Array.from(compareSelected);
+    if (ids.length < 2) {
+      setCompareError('请至少选择2个回测进行对比');
+      return;
+    }
+    setCompareLoading(true);
+    setCompareError(null);
+    setCompareResult(null);
+    try {
+      const data = await compareBacktestRuns(ids);
+      setCompareResult(data.runs);
+    } catch (err) {
+      setCompareError(err instanceof Error ? err.message : '对比请求失败');
+    } finally {
+      setCompareLoading(false);
+    }
+  };
 
   const handleRun = async () => {
     setRunning(true);
@@ -483,6 +533,16 @@ export default function Backtest() {
           }`}
         >
           <Grid3X3 size={16} /> 参数优化
+        </button>
+        <button
+          onClick={() => setActiveTab('compare')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+            activeTab === 'compare'
+              ? 'bg-[#06b6d4] text-white'
+              : 'bg-[#1e293b] text-[#94a3b8] hover:text-[#f8fafc] border border-[#334155]'
+          }`}
+        >
+          <Layers size={16} /> 回测对比
         </button>
       </div>
 
@@ -1036,6 +1096,19 @@ export default function Backtest() {
           )}
         </>
       )}
+
+      {/* ── Comparison Tab ────────────────────────────────────── */}
+      {activeTab === 'compare' && (
+        <ComparisonTab
+          history={compareHistory}
+          selected={compareSelected}
+          onToggle={toggleCompareSelect}
+          onCompare={() => void handleCompare()}
+          compareResult={compareResult}
+          loading={compareLoading}
+          error={compareError}
+        />
+      )}
     </div>
   );
 }
@@ -1270,5 +1343,221 @@ function OptimizationResults({
         </div>
       </div>
     </>
+  );
+}
+
+// ── Comparison Tab Component ────────────────────────────────────────
+
+const COMPARE_COLORS = ['#3b82f6', '#22c55e', '#eab308', '#ef4444', '#a855f7'];
+
+function ComparisonTab({
+  history,
+  selected,
+  onToggle,
+  onCompare,
+  compareResult,
+  loading,
+  error,
+}: {
+  history: BacktestRunSummary[];
+  selected: Set<string>;
+  onToggle: (id: string) => void;
+  onCompare: () => void;
+  compareResult: CompareRunData[] | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Left Panel: History list with checkboxes */}
+      <div className="lg:col-span-1 space-y-4">
+        <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-4">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-base font-semibold text-[#f8fafc]">📋 回测历史</h3>
+            <span className="text-xs text-[#94a3b8]">{selected.size}/5 已选</span>
+          </div>
+
+          {history.length === 0 && !error && (
+            <p className="text-sm text-[#94a3b8] text-center py-8">暂无回测记录。运行回测后，结果会自动保存。</p>
+          )}
+
+          <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
+            {history.map((run) => {
+              const isSelected = selected.has(run.id);
+              const retPct = run.total_return != null ? (run.total_return * 100).toFixed(2) : '—';
+              const sharpeFmt = run.sharpe != null ? run.sharpe.toFixed(2) : '—';
+              return (
+                <button
+                  key={run.id}
+                  onClick={() => onToggle(run.id)}
+                  className={`w-full text-left p-3 rounded-lg border transition-colors cursor-pointer ${
+                    isSelected
+                      ? 'border-[#06b6d4] bg-[#06b6d4]/10'
+                      : 'border-[#334155] bg-[#0f172a] hover:border-[#475569]'
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    <CheckSquare
+                      size={16}
+                      className={`mt-0.5 flex-shrink-0 ${isSelected ? 'text-[#06b6d4]' : 'text-[#475569]'}`}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-[#f8fafc] truncate">{run.strategy}</span>
+                        <span className="text-xs text-[#94a3b8] truncate">{run.symbols}</span>
+                      </div>
+                      <div className="text-xs text-[#64748b] mt-0.5">
+                        {run.start_date} ~ {run.end_date}
+                      </div>
+                      <div className="flex gap-3 mt-1 text-xs">
+                        <span className={Number(retPct) >= 0 ? 'text-green-400' : 'text-red-400'}>
+                          收益: {retPct}%
+                        </span>
+                        <span className={Number(sharpeFmt) >= 1 ? 'text-green-400' : 'text-yellow-400'}>
+                          夏普: {sharpeFmt}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {error && (
+            <div className="text-sm text-[#ef4444] bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg px-4 py-2 mt-3">
+              {error}
+            </div>
+          )}
+
+          <button
+            onClick={onCompare}
+            disabled={selected.size < 2 || loading}
+            className="w-full mt-4 flex items-center justify-center gap-2 px-4 py-2.5 bg-[#06b6d4] hover:bg-[#0891b2] text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors cursor-pointer"
+          >
+            {loading ? <Loader2 size={16} className="animate-spin" /> : <Layers size={16} />}
+            {loading ? '对比中…' : `对比 (${selected.size})`}
+          </button>
+        </div>
+      </div>
+
+      {/* Right Panel: Comparison results */}
+      <div className="lg:col-span-2 space-y-6">
+        {!compareResult && !loading && (
+          <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-12 text-center">
+            <Layers size={48} className="mx-auto text-[#334155] mb-4" />
+            <p className="text-[#94a3b8]">选择 2-5 个回测记录，点击「对比」查看结果</p>
+          </div>
+        )}
+
+        {compareResult && compareResult.length > 0 && (
+          <>
+            {/* Overlaid Equity Curves */}
+            <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-6">
+              <h3 className="text-base font-semibold text-[#f8fafc] mb-4">📈 收益曲线对比</h3>
+              <ResponsiveContainer width="100%" height={350}>
+                <LineChart>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                  <XAxis
+                    dataKey="date"
+                    stroke="#64748b"
+                    tick={{ fontSize: 11 }}
+                    allowDuplicatedCategory={false}
+                  />
+                  <YAxis stroke="#64748b" tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${(v / 10000).toFixed(0)}万`} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px' }}
+                    labelStyle={{ color: '#94a3b8' }}
+                  />
+                  <Legend />
+                  {compareResult.map((run, i) => (
+                    <Line
+                      key={run.id}
+                      data={run.equity_curve}
+                      dataKey="value"
+                      name={`${run.strategy} (${run.symbols})`}
+                      stroke={COMPARE_COLORS[i % COMPARE_COLORS.length]}
+                      dot={false}
+                      strokeWidth={2}
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Metrics Comparison Table */}
+            <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-6">
+              <h3 className="text-base font-semibold text-[#f8fafc] mb-4">📊 指标对比</h3>
+              <div className="overflow-x-auto">
+                <MetricsComparisonTable runs={compareResult} />
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Metrics Comparison Table ────────────────────────────────────────
+
+const COMPARE_METRICS: { key: string; label: string; format: (v: number | null) => string; higherBetter: boolean }[] = [
+  { key: 'total_return', label: '总收益率', format: (v) => v != null ? `${(v * 100).toFixed(2)}%` : '—', higherBetter: true },
+  { key: 'annual_return', label: '年化收益率', format: (v) => v != null ? `${(v * 100).toFixed(2)}%` : '—', higherBetter: true },
+  { key: 'sharpe_ratio', label: '夏普比率', format: (v) => v != null ? v.toFixed(2) : '—', higherBetter: true },
+  { key: 'max_drawdown', label: '最大回撤', format: (v) => v != null ? `-${(v * 100).toFixed(2)}%` : '—', higherBetter: false },
+  { key: 'win_rate', label: '胜率', format: (v) => v != null ? `${(v * 100).toFixed(1)}%` : '—', higherBetter: true },
+  { key: 'profit_factor', label: '盈亏比', format: (v) => v != null ? v.toFixed(2) : '—', higherBetter: true },
+  { key: 'total_trades', label: '交易次数', format: (v) => v != null ? String(v) : '—', higherBetter: true },
+];
+
+function MetricsComparisonTable({ runs }: { runs: CompareRunData[] }) {
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="border-b border-[#334155]">
+          <th className="text-left py-3 px-4 text-xs font-medium text-[#94a3b8]">指标</th>
+          {runs.map((run, i) => (
+            <th key={run.id} className="text-center py-3 px-4 text-xs font-medium" style={{ color: COMPARE_COLORS[i % COMPARE_COLORS.length] }}>
+              {run.strategy}
+              <br />
+              <span className="text-[#64748b] font-normal">{run.symbols}</span>
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {COMPARE_METRICS.map((metric) => {
+          const values = runs.map((r) => {
+            const m = r.metrics as Record<string, number | null>;
+            return m[metric.key] ?? null;
+          });
+          const validValues = values.filter((v): v is number => v != null);
+          const bestVal = validValues.length > 0
+            ? (metric.higherBetter ? Math.max(...validValues) : Math.min(...validValues))
+            : null;
+          // For max_drawdown (lower better), compare absolute values
+          const isBest = (v: number | null) => {
+            if (v == null || bestVal == null) return false;
+            if (metric.key === 'max_drawdown') return v === bestVal;
+            return v === bestVal;
+          };
+
+          return (
+            <tr key={metric.key} className="border-b border-[#334155]/50 hover:bg-[#334155]/20">
+              <td className="py-2.5 px-4 text-[#94a3b8] font-medium">{metric.label}</td>
+              {values.map((v, i) => (
+                <td
+                  key={runs[i].id}
+                  className={`py-2.5 px-4 text-center font-mono ${isBest(v) ? 'text-green-400 font-bold' : 'text-[#f8fafc]'}`}
+                >
+                  {metric.format(v)}
+                </td>
+              ))}
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }

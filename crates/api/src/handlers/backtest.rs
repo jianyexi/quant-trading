@@ -3,9 +3,11 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use serde::Deserialize;
 use serde_json::{json, Value};
+use sqlx::Row;
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::state::AppState;
 use super::BacktestRequest;
@@ -38,6 +40,7 @@ pub async fn run_backtest(
     debug!(symbols=?all_symbols, "Backtest started");
 
     let ts = state.task_store.clone();
+    let db = state.db.clone();
     let params_json = serde_json::to_string(&json!({
         "strategy": req.strategy, "symbols": all_symbols,
         "start": req.start, "end": req.end,
@@ -50,9 +53,9 @@ pub async fn run_backtest(
     let ts2 = Arc::clone(&ts);
     tokio::task::spawn_blocking(move || {
         if is_multi {
-            run_multi_backtest_task(&ts2, &tid, &req, &all_symbols, capital, &period);
+            run_multi_backtest_task(&ts2, &tid, &req, &all_symbols, capital, &period, db);
         } else {
-            run_backtest_task(&ts2, &tid, &req, capital, &period);
+            run_backtest_task(&ts2, &tid, &req, capital, &period, db);
         }
     });
 
@@ -69,6 +72,7 @@ fn run_backtest_task(
     req: &BacktestRequest,
     capital: f64,
     period: &str,
+    db: Option<sqlx::PgPool>,
 ) {
     use quant_backtest::engine::{BacktestConfig, BacktestEngine};
     use quant_strategy::factory::{create_strategy, StrategyOptions};
@@ -353,10 +357,75 @@ fn run_backtest_task(
         }
     }
 
+    // Persist result to PostgreSQL
+    if let Some(pool) = &db {
+        let run_id = uuid::Uuid::new_v4();
+        let strategy_name = req.strategy.clone();
+        let symbols_str = req.symbol.clone();
+        let start_date = chrono::NaiveDate::parse_from_str(&req.start, "%Y-%m-%d").ok();
+        let end_date = chrono::NaiveDate::parse_from_str(&req.end, "%Y-%m-%d").ok();
+        let final_cap = result.final_portfolio.total_value;
+        let tr = m.total_return;
+        let ar = m.annual_return;
+        let sr = m.sharpe_ratio;
+        let md = m.max_drawdown;
+        let wr = m.win_rate;
+        let pf = m.profit_factor;
+        let tt = m.total_trades as i32;
+        let params = json!({
+            "period": period,
+            "inference_mode": req.inference_mode,
+            "benchmark": req.benchmark_symbol,
+        });
+
+        let mut peak = 0.0_f64;
+        let eq_points: Vec<(chrono::NaiveDateTime, f64, f64)> = result.equity_curve.iter().map(|(dt, val)| {
+            peak = peak.max(*val);
+            let dd = if peak > 0.0 { (peak - val) / peak } else { 0.0 };
+            (*dt, *val, dd)
+        }).collect();
+
+        let pool = pool.clone();
+        let handle = tokio::runtime::Handle::current();
+        let insert_ok = handle.block_on(async move {
+            sqlx::query(
+                "INSERT INTO backtest_runs (id, strategy_name, symbols, start_date, end_date, initial_capital, final_capital, total_return, annual_return, sharpe_ratio, max_drawdown, win_rate, profit_factor, total_trades, parameters) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)"
+            )
+            .bind(run_id).bind(&strategy_name).bind(&symbols_str)
+            .bind(start_date).bind(end_date)
+            .bind(capital).bind(final_cap)
+            .bind(tr).bind(ar).bind(sr).bind(md).bind(wr).bind(pf).bind(tt)
+            .bind(&params)
+            .execute(&pool)
+            .await?;
+
+            if !eq_points.is_empty() {
+                // Batch insert in chunks to stay within bind-param limits
+                for chunk in eq_points.chunks(5000) {
+                    let mut builder = sqlx::QueryBuilder::new(
+                        "INSERT INTO equity_curve (run_id, datetime, equity, drawdown) "
+                    );
+                    builder.push_values(chunk, |mut b, (dt, eq, dd)| {
+                        b.push_bind(run_id).push_bind(*dt).push_bind(*eq).push_bind(*dd);
+                    });
+                    builder.build().execute(&pool).await?;
+                }
+            }
+            Ok::<_, sqlx::Error>(())
+        });
+
+        if insert_ok.is_ok() {
+            if let Some(obj) = report.as_object_mut() {
+                obj.insert("run_id".into(), json!(run_id.to_string()));
+            }
+        } else if let Err(e) = insert_ok {
+            warn!("Failed to persist backtest run to DB: {}", e);
+        }
+    }
+
     ts.complete(tid, &report.to_string());
 }
-
-/// Run backtest across multiple symbols, producing per-symbol results + portfolio aggregate
 fn run_multi_backtest_task(
     ts: &crate::task_store::TaskStore,
     tid: &str,
@@ -364,6 +433,7 @@ fn run_multi_backtest_task(
     symbols: &[String],
     capital: f64,
     period: &str,
+    db: Option<sqlx::PgPool>,
 ) {
     use quant_backtest::engine::{BacktestConfig, BacktestEngine};
     use quant_strategy::factory::{create_strategy, StrategyOptions};
@@ -570,7 +640,7 @@ fn run_multi_backtest_task(
 
     let id = format!("bt-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap());
 
-    let report = json!({
+    let mut report = json!({
         "id": id,
         "strategy": req.strategy,
         "symbol": symbols.join(", "),
@@ -600,6 +670,73 @@ fn run_multi_backtest_task(
         "is_multi": true,
         "status": "completed"
     });
+
+    // Persist multi-backtest result to PostgreSQL
+    if let Some(pool) = &db {
+        let run_id = uuid::Uuid::new_v4();
+        let strategy_name = req.strategy.clone();
+        let symbols_str = symbols.join(",");
+        let start_date = chrono::NaiveDate::parse_from_str(&req.start, "%Y-%m-%d").ok();
+        let end_date = chrono::NaiveDate::parse_from_str(&req.end, "%Y-%m-%d").ok();
+        let params = json!({
+            "period": period,
+            "inference_mode": req.inference_mode,
+            "is_multi": true,
+            "symbol_count": symbols.len(),
+        });
+
+        // Build equity curve points from date_value_map
+        let mut peak = 0.0_f64;
+        let eq_points: Vec<(chrono::NaiveDateTime, f64, f64)> = date_value_map.iter().filter_map(|(d, v)| {
+            let dt = chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+                .map(|nd| nd.and_hms_opt(0, 0, 0).unwrap())
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(d, "%Y-%m-%d %H:%M"))
+                .ok()?;
+            peak = peak.max(*v);
+            let dd = if peak > 0.0 { (peak - *v) / peak } else { 0.0 };
+            Some((dt, *v, dd))
+        }).collect();
+
+        let pool = pool.clone();
+        let handle = tokio::runtime::Handle::current();
+        let insert_ok = handle.block_on(async move {
+            sqlx::query(
+                "INSERT INTO backtest_runs (id, strategy_name, symbols, start_date, end_date, initial_capital, final_capital, total_return, annual_return, sharpe_ratio, max_drawdown, win_rate, profit_factor, total_trades, parameters) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)"
+            )
+            .bind(run_id).bind(&strategy_name).bind(&symbols_str)
+            .bind(start_date).bind(end_date)
+            .bind(capital).bind(total_final_value)
+            .bind(portfolio_return).bind(annual_return)
+            .bind(0.0_f64).bind(portfolio_max_dd)
+            .bind(win_rate).bind(0.0_f64)
+            .bind(total_trades_count as i32)
+            .bind(&params)
+            .execute(&pool)
+            .await?;
+
+            if !eq_points.is_empty() {
+                for chunk in eq_points.chunks(5000) {
+                    let mut builder = sqlx::QueryBuilder::new(
+                        "INSERT INTO equity_curve (run_id, datetime, equity, drawdown) "
+                    );
+                    builder.push_values(chunk, |mut b, (dt, eq, dd)| {
+                        b.push_bind(run_id).push_bind(*dt).push_bind(*eq).push_bind(*dd);
+                    });
+                    builder.build().execute(&pool).await?;
+                }
+            }
+            Ok::<_, sqlx::Error>(())
+        });
+
+        if insert_ok.is_ok() {
+            if let Some(obj) = report.as_object_mut() {
+                obj.insert("run_id".into(), json!(run_id.to_string()));
+            }
+        } else if let Err(e) = insert_ok {
+            warn!("Failed to persist multi-backtest run to DB: {}", e);
+        }
+    }
 
     ts.complete(tid, &report.to_string());
 }
@@ -695,4 +832,131 @@ pub async fn walk_forward(
     );
 
     (StatusCode::OK, Json(json!(result)))
+}
+
+// ── Backtest comparison endpoints ───────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct CompareRequest {
+    pub run_ids: Vec<String>,
+}
+
+/// GET /api/backtest/history — List recent persisted backtest runs
+pub async fn backtest_history(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<Value>) {
+    let Some(pool) = &state.db else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Database not available"})));
+    };
+
+    match sqlx::query(
+        "SELECT id, strategy_name, symbols, start_date, end_date, \
+                initial_capital, total_return, annual_return, sharpe_ratio, \
+                max_drawdown, win_rate, profit_factor, total_trades, created_at \
+         FROM backtest_runs ORDER BY created_at DESC LIMIT 50"
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => {
+            let results: Vec<Value> = rows.iter().map(|row| {
+                json!({
+                    "id": row.get::<uuid::Uuid, _>("id").to_string(),
+                    "strategy": row.get::<String, _>("strategy_name"),
+                    "symbols": row.get::<String, _>("symbols"),
+                    "start_date": row.get::<chrono::NaiveDate, _>("start_date").to_string(),
+                    "end_date": row.get::<chrono::NaiveDate, _>("end_date").to_string(),
+                    "initial_capital": row.get::<f64, _>("initial_capital"),
+                    "total_return": row.get::<Option<f64>, _>("total_return"),
+                    "annual_return": row.get::<Option<f64>, _>("annual_return"),
+                    "sharpe": row.get::<Option<f64>, _>("sharpe_ratio"),
+                    "max_drawdown": row.get::<Option<f64>, _>("max_drawdown"),
+                    "win_rate": row.get::<Option<f64>, _>("win_rate"),
+                    "profit_factor": row.get::<Option<f64>, _>("profit_factor"),
+                    "total_trades": row.get::<Option<i32>, _>("total_trades"),
+                    "created_at": row.get::<Option<chrono::NaiveDateTime>, _>("created_at")
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+                })
+            }).collect();
+            (StatusCode::OK, Json(json!(results)))
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))),
+    }
+}
+
+/// POST /api/backtest/compare — Compare multiple backtest runs side-by-side
+pub async fn backtest_compare(
+    State(state): State<AppState>,
+    Json(req): Json<CompareRequest>,
+) -> (StatusCode, Json<Value>) {
+    let Some(pool) = &state.db else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Database not available"})));
+    };
+
+    if req.run_ids.is_empty() || req.run_ids.len() > 10 {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "Provide 1-10 run IDs"})));
+    }
+
+    let mut runs = Vec::new();
+
+    for run_id_str in &req.run_ids {
+        let Ok(run_id) = uuid::Uuid::parse_str(run_id_str) else {
+            continue;
+        };
+
+        let run_row = sqlx::query(
+            "SELECT id, strategy_name, symbols, start_date, end_date, \
+                    initial_capital, final_capital, total_return, annual_return, \
+                    sharpe_ratio, max_drawdown, win_rate, profit_factor, \
+                    total_trades, parameters, created_at \
+             FROM backtest_runs WHERE id = $1"
+        )
+        .bind(run_id)
+        .fetch_optional(pool)
+        .await;
+
+        let Some(row) = run_row.ok().flatten() else {
+            continue;
+        };
+
+        let eq_rows = sqlx::query(
+            "SELECT datetime, equity, drawdown FROM equity_curve WHERE run_id = $1 ORDER BY datetime"
+        )
+        .bind(run_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let equity_curve: Vec<Value> = eq_rows.iter().map(|r| {
+            json!({
+                "date": r.get::<chrono::NaiveDateTime, _>("datetime").format("%Y-%m-%d").to_string(),
+                "value": r.get::<f64, _>("equity"),
+                "drawdown": r.get::<f64, _>("drawdown"),
+            })
+        }).collect();
+
+        runs.push(json!({
+            "id": row.get::<uuid::Uuid, _>("id").to_string(),
+            "strategy": row.get::<String, _>("strategy_name"),
+            "symbols": row.get::<String, _>("symbols"),
+            "start_date": row.get::<chrono::NaiveDate, _>("start_date").to_string(),
+            "end_date": row.get::<chrono::NaiveDate, _>("end_date").to_string(),
+            "initial_capital": row.get::<f64, _>("initial_capital"),
+            "final_capital": row.get::<Option<f64>, _>("final_capital"),
+            "equity_curve": equity_curve,
+            "metrics": {
+                "total_return": row.get::<Option<f64>, _>("total_return"),
+                "annual_return": row.get::<Option<f64>, _>("annual_return"),
+                "sharpe_ratio": row.get::<Option<f64>, _>("sharpe_ratio"),
+                "max_drawdown": row.get::<Option<f64>, _>("max_drawdown"),
+                "win_rate": row.get::<Option<f64>, _>("win_rate"),
+                "profit_factor": row.get::<Option<f64>, _>("profit_factor"),
+                "total_trades": row.get::<Option<i32>, _>("total_trades"),
+            },
+            "created_at": row.get::<Option<chrono::NaiveDateTime>, _>("created_at")
+                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+        }));
+    }
+
+    (StatusCode::OK, Json(json!({ "runs": runs })))
 }
