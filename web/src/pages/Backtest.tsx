@@ -29,8 +29,8 @@ import {
   Line,
   Legend,
 } from 'recharts';
-import { runBacktest, getBacktestResults, runOptimization, getBacktestHistory, compareBacktestRuns } from '../api/client';
-import type { BacktestRunSummary, CompareRunData } from '../api/client';
+import { runBacktest, getBacktestResults, runOptimization, getBacktestHistory, compareBacktestRuns, runMonteCarloSimulation, getTaskResult } from '../api/client';
+import type { BacktestRunSummary, CompareRunData, MonteCarloResultData } from '../api/client';
 
 interface BacktestConfig {
   strategy: string;
@@ -219,6 +219,12 @@ export default function Backtest() {
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareError, setCompareError] = useState<string | null>(null);
 
+  // ── Monte Carlo state ─────────────────────────────────────────────
+  const [mcRunning, setMcRunning] = useState(false);
+  const [mcResult, setMcResult] = useState<MonteCarloResultData | null>(null);
+  const [mcError, setMcError] = useState<string | null>(null);
+  const mcPollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const stopPolling = useCallback(() => {
     if (pollerRef.current) {
       clearInterval(pollerRef.current);
@@ -236,6 +242,50 @@ export default function Backtest() {
   }, []);
 
   useEffect(() => stopOptPolling, [stopOptPolling]);
+
+  const stopMcPolling = useCallback(() => {
+    if (mcPollerRef.current) {
+      clearInterval(mcPollerRef.current);
+      mcPollerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => stopMcPolling, [stopMcPolling]);
+
+  const handleRunMonteCarlo = async () => {
+    if (!taskId) return;
+    setMcRunning(true);
+    setMcResult(null);
+    setMcError(null);
+    try {
+      const { task_id: mcTaskId } = await runMonteCarloSimulation({
+        task_id: taskId,
+        num_simulations: 1000,
+        num_days: 252,
+      });
+      mcPollerRef.current = setInterval(async () => {
+        try {
+          const res = await getTaskResult(mcTaskId);
+          if (res.status === 'completed' && res.result) {
+            stopMcPolling();
+            setMcResult(JSON.parse(res.result));
+            setMcRunning(false);
+          } else if (res.status === 'failed') {
+            stopMcPolling();
+            setMcError(res.error ?? '模拟失败');
+            setMcRunning(false);
+          }
+        } catch {
+          stopMcPolling();
+          setMcError('轮询失败');
+          setMcRunning(false);
+        }
+      }, 1000);
+    } catch (e) {
+      setMcError(e instanceof Error ? e.message : '启动失败');
+      setMcRunning(false);
+    }
+  };
 
   // Auto-save config to localStorage whenever it changes
   useEffect(() => {
@@ -976,6 +1026,198 @@ export default function Backtest() {
             </div>
           )}
         </>
+      )}
+
+      {/* ── Monte Carlo Simulation ──────────────────────────────────── */}
+      {result && taskId && (
+        <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-[#f8fafc] flex items-center gap-2">
+              <Activity size={20} className="text-[#a855f7]" /> 蒙特卡洛模拟
+            </h2>
+            <button
+              onClick={handleRunMonteCarlo}
+              disabled={mcRunning}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-[#a855f7] text-white hover:bg-[#9333ea] disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            >
+              {mcRunning ? (
+                <><Loader2 size={16} className="animate-spin" /> 模拟中...</>
+              ) : (
+                <><BarChart3 size={16} /> 运行蒙特卡洛模拟 (1000次)</>
+              )}
+            </button>
+          </div>
+
+          {mcError && (
+            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-sm">
+              {mcError}
+            </div>
+          )}
+
+          {mcResult && (() => {
+            // Build fan chart data from paths
+            const fanData = (() => {
+              if (!mcResult.paths.length) return [];
+              const maxLen = Math.max(...mcResult.paths.map(p => p.equity.length));
+              const pathMap: Record<number, number[]> = {};
+              mcResult.paths.forEach(p => { pathMap[p.percentile] = p.equity; });
+              const rows = [];
+              for (let i = 0; i < maxLen; i++) {
+                rows.push({
+                  day: i,
+                  p5: pathMap[5]?.[i] ?? null,
+                  p25: pathMap[25]?.[i] ?? null,
+                  p50: pathMap[50]?.[i] ?? null,
+                  p75: pathMap[75]?.[i] ?? null,
+                  p95: pathMap[95]?.[i] ?? null,
+                });
+              }
+              return rows;
+            })();
+
+            const rd = mcResult.return_distribution;
+            const dd = mcResult.drawdown_distribution;
+
+            // Histogram: divide returns into 20 bins
+            const histogramData = (() => {
+              const p5 = rd.percentile_5;
+              const p95 = rd.percentile_95;
+              const range = p95 - p5;
+              if (range <= 0) return [];
+              const margin = range * 0.2;
+              const lo = p5 - margin;
+              const hi = p95 + margin;
+              const binCount = 20;
+              const binWidth = (hi - lo) / binCount;
+              const bins = Array.from({ length: binCount }, (_, i) => ({
+                label: ((lo + binWidth * i + binWidth / 2) * 100).toFixed(0) + '%',
+                rangeStart: lo + binWidth * i,
+                rangeEnd: lo + binWidth * (i + 1),
+                count: 0,
+              }));
+              // We don't have individual sim returns on frontend, so approximate from distribution
+              // Instead show the distribution stats as a visual
+              return bins;
+            })();
+            void histogramData;
+
+            const lossColor = mcResult.probability_of_loss < 0.2 ? '#22c55e'
+              : mcResult.probability_of_loss < 0.4 ? '#eab308' : '#ef4444';
+
+            return (
+              <div className="space-y-4">
+                {/* Fan Chart */}
+                <div className="bg-[#0f172a] rounded-lg p-4">
+                  <h3 className="text-sm font-medium text-[#94a3b8] mb-3">模拟路径 (P5-P95 扇形图)</h3>
+                  <ResponsiveContainer width="100%" height={320}>
+                    <AreaChart data={fanData} margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis dataKey="day" stroke="#64748b" tick={{ fontSize: 11 }} label={{ value: '交易日', position: 'insideBottomRight', offset: -5, fill: '#64748b', fontSize: 11 }} />
+                      <YAxis stroke="#64748b" tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} label={{ value: '净值', angle: -90, position: 'insideLeft', fill: '#64748b', fontSize: 11 }} />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
+                        formatter={(v: number, name: string) => [`${v?.toFixed(4)}`, name]}
+                        labelFormatter={(l: number) => `第 ${l} 天`}
+                      />
+                      <Area type="monotone" dataKey="p95" stroke="none" fill="#a855f7" fillOpacity={0.1} name="P95" />
+                      <Area type="monotone" dataKey="p75" stroke="none" fill="#a855f7" fillOpacity={0.15} name="P75" />
+                      <Area type="monotone" dataKey="p50" stroke="#a855f7" strokeWidth={2} fill="#a855f7" fillOpacity={0.25} name="P50 (中位)" />
+                      <Area type="monotone" dataKey="p25" stroke="none" fill="#0f172a" fillOpacity={0.6} name="P25" />
+                      <Area type="monotone" dataKey="p5" stroke="none" fill="#0f172a" fillOpacity={0.7} name="P5" />
+                      <Legend wrapperStyle={{ fontSize: 11, color: '#94a3b8' }} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Distribution Summary Cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="bg-[#0f172a] rounded-lg p-4 border border-[#334155]">
+                    <div className="text-xs text-[#94a3b8] mb-1">预期收益 (中位)</div>
+                    <div className="text-xl font-bold" style={{ color: rd.percentile_50 >= 0 ? '#22c55e' : '#ef4444' }}>
+                      {(rd.percentile_50 * 100).toFixed(1)}%
+                    </div>
+                    <div className="text-xs text-[#64748b] mt-1">
+                      ± {((rd.std ?? 0) * 100).toFixed(1)}%
+                    </div>
+                  </div>
+                  <div className="bg-[#0f172a] rounded-lg p-4 border border-[#334155]">
+                    <div className="text-xs text-[#94a3b8] mb-1">最大回撤范围</div>
+                    <div className="text-xl font-bold text-[#ef4444]">
+                      {(dd.percentile_50 * 100).toFixed(1)}%
+                    </div>
+                    <div className="text-xs text-[#64748b] mt-1">
+                      P5: {(dd.percentile_5 * 100).toFixed(1)}% ~ P95: {(dd.percentile_95 * 100).toFixed(1)}%
+                    </div>
+                  </div>
+                  <div className="bg-[#0f172a] rounded-lg p-4 border border-[#334155]">
+                    <div className="text-xs text-[#94a3b8] mb-1">亏损概率</div>
+                    <div className="text-xl font-bold" style={{ color: lossColor }}>
+                      {(mcResult.probability_of_loss * 100).toFixed(1)}%
+                    </div>
+                    <div className="text-xs text-[#64748b] mt-1">
+                      最终收益 &lt; 0 的比例
+                    </div>
+                  </div>
+                  <div className="bg-[#0f172a] rounded-lg p-4 border border-[#334155]">
+                    <div className="text-xs text-[#94a3b8] mb-1">爆仓概率</div>
+                    <div className="text-xl font-bold" style={{ color: mcResult.probability_of_ruin > 0.05 ? '#ef4444' : '#22c55e' }}>
+                      {(mcResult.probability_of_ruin * 100).toFixed(1)}%
+                    </div>
+                    <div className="text-xs text-[#64748b] mt-1">
+                      最大回撤 &gt; 50% 的比例
+                    </div>
+                  </div>
+                </div>
+
+                {/* Detailed percentiles */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="bg-[#0f172a] rounded-lg p-4 border border-[#334155]">
+                    <h3 className="text-sm font-medium text-[#94a3b8] mb-2">收益分布</h3>
+                    <div className="space-y-1 text-sm font-mono">
+                      {[
+                        { label: 'P5 (悲观)', value: rd.percentile_5 },
+                        { label: 'P25', value: rd.percentile_25 },
+                        { label: 'P50 (中位)', value: rd.percentile_50 },
+                        { label: 'P75', value: rd.percentile_75 },
+                        { label: 'P95 (乐观)', value: rd.percentile_95 },
+                        { label: '均值', value: rd.mean },
+                      ].map(({ label, value }) => (
+                        <div key={label} className="flex justify-between">
+                          <span className="text-[#94a3b8]">{label}</span>
+                          <span style={{ color: value >= 0 ? '#22c55e' : '#ef4444' }}>
+                            {value >= 0 ? '+' : ''}{(value * 100).toFixed(2)}%
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="bg-[#0f172a] rounded-lg p-4 border border-[#334155]">
+                    <h3 className="text-sm font-medium text-[#94a3b8] mb-2">回撤分布</h3>
+                    <div className="space-y-1 text-sm font-mono">
+                      {[
+                        { label: 'P5 (最差)', value: dd.percentile_5 },
+                        { label: 'P25', value: dd.percentile_25 },
+                        { label: 'P50 (中位)', value: dd.percentile_50 },
+                        { label: 'P75', value: dd.percentile_75 },
+                        { label: 'P95 (最优)', value: dd.percentile_95 },
+                        { label: '均值', value: dd.mean },
+                      ].map(({ label, value }) => (
+                        <div key={label} className="flex justify-between">
+                          <span className="text-[#94a3b8]">{label}</span>
+                          <span className="text-[#ef4444]">{(value * 100).toFixed(2)}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="text-xs text-[#64748b] text-center">
+                  基于 {mcResult.simulations} 次 Bootstrap 重采样模拟 · {mcResult.trading_days} 个交易日
+                </div>
+              </div>
+            );
+          })()}
+        </div>
       )}
       </>)}
 

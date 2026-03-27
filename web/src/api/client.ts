@@ -174,6 +174,48 @@ export async function compareBacktestRuns(runIds: string[]): Promise<{ runs: Com
   });
 }
 
+// ── Monte Carlo simulation API ──────────────────────────────────────
+
+export interface MonteCarloDistribution {
+  percentile_5: number;
+  percentile_25: number;
+  percentile_50: number;
+  percentile_75: number;
+  percentile_95: number;
+  mean: number;
+  std?: number;
+}
+
+export interface MonteCarloPath {
+  percentile: number;
+  equity: number[];
+}
+
+export interface MonteCarloResultData {
+  simulations: number;
+  trading_days: number;
+  return_distribution: MonteCarloDistribution;
+  drawdown_distribution: MonteCarloDistribution;
+  paths: MonteCarloPath[];
+  probability_of_loss: number;
+  probability_of_ruin: number;
+}
+
+export async function runMonteCarloSimulation(params: {
+  task_id: string;
+  num_simulations?: number;
+  num_days?: number;
+}): Promise<{ task_id: string }> {
+  return fetchJson('/backtest/monte-carlo', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function getTaskResult(taskId: string) {
+  return fetchJson<{ status: string; result?: string; progress?: string; error?: string }>(`/tasks/${taskId}`);
+}
+
 export async function getPortfolio() {
   return fetchJson('/portfolio');
 }
