@@ -614,6 +614,19 @@ export async function loadStrategyConfig(): Promise<{ config: Record<string, unk
   return fetchJson('/strategy/config');
 }
 
+// ── Composite Strategy API ──────────────────────────────────────────
+
+export async function saveCompositeStrategy(config: Record<string, unknown>) {
+  return fetchJson('/strategy/composite', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+}
+
+export async function loadCompositeStrategy(): Promise<{ config: Record<string, unknown> | null; exists: boolean }> {
+  return fetchJson('/strategy/composite');
+}
+
 // ── ML Model Training API ───────────────────────────────────────────
 
 export interface ModelInfo {

@@ -137,14 +137,6 @@ pub async fn list_strategies() -> Json<Value> {
                 ]
             },
             {
-                "name": "dual_momentum",
-                "display_name": "Dual Momentum",
-                "description": "Absolute + relative momentum strategy",
-                "parameters": [
-                    {"key": "lookback", "label": "Lookback Period", "type": "number", "default": 60, "min": 20, "max": 120}
-                ]
-            },
-            {
                 "name": "multi_factor",
                 "display_name": "多因子模型",
                 "description": "6因子综合评分策略: 趋势+动量+波动率+KDJ+量价+价格行为",
@@ -170,6 +162,12 @@ pub async fn list_strategies() -> Json<Value> {
                     {"key": "buy_threshold", "label": "买入阈值", "type": "number", "default": 0.60, "min": 0.50, "max": 0.80},
                     {"key": "sell_threshold", "label": "卖出阈值", "type": "number", "default": 0.35, "min": 0.20, "max": 0.50}
                 ]
+            },
+            {
+                "name": "composite",
+                "display_name": "策略组合",
+                "description": "组合多个子策略并加权投票，根据综合评分生成信号",
+                "parameters": []
             }
         ]
     }))
@@ -926,6 +924,74 @@ pub async fn save_strategy_config(
 
 pub async fn load_strategy_config() -> Json<Value> {
     let path = std::path::Path::new(STRATEGY_CONFIG_PATH);
+    if !path.exists() {
+        return Json(json!({"config": null, "exists": false}));
+    }
+
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            let config: Value = serde_json::from_str(&content).unwrap_or(Value::Null);
+            Json(json!({"config": config, "exists": true}))
+        }
+        Err(e) => Json(json!({"config": null, "exists": false, "error": format!("{}", e)})),
+    }
+}
+
+// ── Composite Strategy ──────────────────────────────────────────────
+
+const COMPOSITE_CONFIG_PATH: &str = "data/composite_strategy.json";
+
+pub async fn save_composite_strategy(
+    Json(body): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    // Validate the config by attempting to build the composite strategy
+    let strategies = body.get("strategies").and_then(|v| v.as_array());
+    if strategies.map_or(true, |s| s.is_empty()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "至少需要一个子策略"})),
+        );
+    }
+
+    // Validate each sub-strategy name
+    let valid_names: Vec<&str> = quant_strategy::factory::STRATEGY_NAMES
+        .iter()
+        .filter(|n| **n != "composite")
+        .copied()
+        .collect();
+    for item in strategies.unwrap() {
+        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if !valid_names.contains(&name) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("未知策略: '{}'。可用: {}", name, valid_names.join(", "))})),
+            );
+        }
+        let weight = item.get("weight").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        if weight <= 0.0 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("策略 '{}' 的权重必须大于0", name)})),
+            );
+        }
+    }
+
+    // Persist
+    if let Err(e) = std::fs::create_dir_all("data") {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Cannot create data dir: {}", e)})),
+        );
+    }
+
+    match std::fs::write(COMPOSITE_CONFIG_PATH, serde_json::to_string_pretty(&body).unwrap_or_default()) {
+        Ok(_) => (StatusCode::OK, Json(json!({"status": "saved", "path": COMPOSITE_CONFIG_PATH}))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Save failed: {}", e)}))),
+    }
+}
+
+pub async fn load_composite_strategy() -> Json<Value> {
+    let path = std::path::Path::new(COMPOSITE_CONFIG_PATH);
     if !path.exists() {
         return Json(json!({"config": null, "exists": false}));
     }

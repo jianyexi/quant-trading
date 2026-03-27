@@ -155,8 +155,10 @@ const STRATEGIES = [
   { value: 'sma_cross', label: 'SMA 交叉 (5/20)' },
   { value: 'rsi_reversal', label: 'RSI 均值回归 (14)' },
   { value: 'macd_trend', label: 'MACD 动量 (12/26/9)' },
+  { value: 'bollinger_bands', label: '布林带策略' },
   { value: 'multi_factor', label: '多因子模型' },
   { value: 'ml_factor', label: 'ML因子模型' },
+  { value: 'composite', label: '策略组合' },
 ];
 
 const MULTI_COLORS = ['#3b82f6', '#22c55e', '#eab308', '#ef4444', '#a855f7', '#06b6d4', '#f97316', '#ec4899'];

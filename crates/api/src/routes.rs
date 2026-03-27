@@ -220,6 +220,7 @@ pub fn create_router(state: AppState, web_dist: &str) -> Router {
         .route("/api/latency", get(handlers::get_latency))
         .route("/api/strategies", get(handlers::list_strategies))
         .route("/api/strategy/config", get(handlers::load_strategy_config).post(handlers::save_strategy_config))
+        .route("/api/strategy/composite", get(handlers::load_composite_strategy).post(handlers::save_composite_strategy))
         .nest("/api/data", data_quality_routes())
         .nest("/api/market", market_routes())
         .nest("/api/backtest", backtest_routes())

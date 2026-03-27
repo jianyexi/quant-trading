@@ -174,6 +174,64 @@ impl Strategy for MacdMomentum {
     fn on_stop(&mut self) {}
 }
 
+// ── Bollinger Bands Strategy ────────────────────────────────────────
+//
+// Buy when price closes below the lower band (mean-reversion).
+// Sell when price closes above the upper band.
+
+pub struct BollingerBandsStrategy {
+    period: usize,
+    std_dev: f64,
+    bb: BollingerBands,
+}
+
+impl BollingerBandsStrategy {
+    pub fn new(period: usize, std_dev: f64) -> Self {
+        Self {
+            period,
+            std_dev,
+            bb: BollingerBands::new(period, std_dev),
+        }
+    }
+}
+
+impl Strategy for BollingerBandsStrategy {
+    fn name(&self) -> &str {
+        "BollingerBands"
+    }
+
+    fn on_init(&mut self) {
+        self.bb = BollingerBands::new(self.period, self.std_dev);
+    }
+
+    fn on_bar(&mut self, kline: &Kline) -> Option<Signal> {
+        self.bb.update(kline.close);
+        match (self.bb.upper(), self.bb.lower(), self.bb.middle()) {
+            (Some(upper), Some(lower), Some(_mid)) => {
+                let range = upper - lower;
+                if range < f64::EPSILON {
+                    return None;
+                }
+                let pct_b = (kline.close - lower) / range;
+                if kline.close < lower {
+                    // Price below lower band → oversold → buy
+                    let confidence = (1.0 - pct_b).min(1.0);
+                    Some(Signal::buy(&kline.symbol, confidence, kline.datetime))
+                } else if kline.close > upper {
+                    // Price above upper band → overbought → sell
+                    let confidence = (pct_b - 1.0).min(1.0);
+                    Some(Signal::sell(&kline.symbol, confidence, kline.datetime))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn on_stop(&mut self) {}
+}
+
 // ── Multi-Factor Model Strategy ─────────────────────────────────────
 //
 // Combines 6 factor groups into a composite score each bar:

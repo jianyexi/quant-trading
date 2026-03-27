@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { StrategyConfig, StrategyParam } from '../types';
-import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlModelInfo, type ModelInfo } from '../api/client';
-import { Save, Upload, Play, RotateCcw, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlModelInfo, saveCompositeStrategy, loadCompositeStrategy, type ModelInfo } from '../api/client';
+import { Save, Upload, Play, RotateCcw, CheckCircle, AlertCircle, Loader2, Plus, Trash2 } from 'lucide-react';
 import { useMarket } from '../contexts/MarketContext';
 
 const STRATEGIES: StrategyConfig[] = [
@@ -32,6 +32,15 @@ const STRATEGIES: StrategyConfig[] = [
       { key: 'fast_period', label: '快线EMA', type: 'number', default: 12, min: 2, max: 50, step: 1 },
       { key: 'slow_period', label: '慢线EMA', type: 'number', default: 26, min: 5, max: 100, step: 1 },
       { key: 'signal_period', label: '信号线', type: 'number', default: 9, min: 2, max: 30, step: 1 },
+    ],
+  },
+  {
+    name: 'BollingerBands',
+    displayName: '布林带策略',
+    description: '价格突破布林带上轨时卖出，跌破下轨时买入。经典均值回归策略。',
+    parameters: [
+      { key: 'period', label: '周期', type: 'number', default: 20, min: 10, max: 50, step: 1 },
+      { key: 'std_dev', label: '标准差倍数', type: 'number', default: 2.0, min: 1.0, max: 3.0, step: 0.1 },
     ],
   },
   {
@@ -114,6 +123,17 @@ export default function StrategyConfigPage() {
   const [saving, setSaving] = useState(false);
   const [modelInfoData, setModelInfoData] = useState<ModelInfo | null>(null);
 
+  // Composite strategy state
+  const SUB_STRATEGY_OPTIONS = STRATEGIES.filter(s => s.name !== 'MlFactor').map(s => ({ value: s.name, label: s.displayName }));
+  const [compositeItems, setCompositeItems] = useState<{ name: string; weight: number }[]>([
+    { name: 'DualMaCrossover', weight: 0.4 },
+    { name: 'RsiMeanReversion', weight: 0.3 },
+    { name: 'MacdMomentum', weight: 0.3 },
+  ]);
+  const [compositeBuyThreshold, setCompositeBuyThreshold] = useState(0.3);
+  const [compositeSellThreshold, setCompositeSellThreshold] = useState(-0.3);
+  const [compositeSaving, setCompositeSaving] = useState(false);
+
   const activeStrategy = STRATEGIES.find((s) => s.name === selectedStrategy)!;
 
   // Load config from server on mount
@@ -122,6 +142,7 @@ export default function StrategyConfigPage() {
     if (mountedRef.current) return;
     mountedRef.current = true;
     loadFromServer();
+    loadCompositeFromServer();
     fetchModelInfo();
   });
 
@@ -212,6 +233,63 @@ export default function StrategyConfigPage() {
     } catch {
       showStatus('回测请求失败', 'error');
     }
+  };
+
+  // ── Composite strategy helpers ──
+  const addCompositeItem = () => {
+    setCompositeItems((prev) => [...prev, { name: 'DualMaCrossover', weight: 0.2 }]);
+  };
+
+  const removeCompositeItem = (index: number) => {
+    setCompositeItems((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const updateCompositeItem = (index: number, field: 'name' | 'weight', value: string | number) => {
+    setCompositeItems((prev) => prev.map((item, i) => i === index ? { ...item, [field]: value } : item));
+  };
+
+  const normalizedWeights = (() => {
+    const total = compositeItems.reduce((sum, item) => sum + item.weight, 0);
+    return total > 0 ? compositeItems.map((item) => item.weight / total) : compositeItems.map(() => 0);
+  })();
+
+  const saveComposite = async () => {
+    setCompositeSaving(true);
+    try {
+      const config = {
+        strategies: compositeItems.map((item, i) => ({
+          name: item.name,
+          weight: normalizedWeights[i],
+          params: paramValues[item.name] ?? {},
+        })),
+        buy_threshold: compositeBuyThreshold,
+        sell_threshold: compositeSellThreshold,
+      };
+      await saveCompositeStrategy(config as unknown as Record<string, unknown>);
+      showStatus('策略组合已保存', 'success');
+    } catch {
+      showStatus('保存策略组合失败', 'error');
+    } finally {
+      setCompositeSaving(false);
+    }
+  };
+
+  const loadCompositeFromServer = async () => {
+    try {
+      const result = await loadCompositeStrategy();
+      if (result.exists && result.config) {
+        const config = result.config as unknown as {
+          strategies?: { name: string; weight: number }[];
+          buy_threshold?: number;
+          sell_threshold?: number;
+        };
+        if (config.strategies && config.strategies.length > 0) {
+          setCompositeItems(config.strategies.map((s) => ({ name: s.name, weight: s.weight })));
+        }
+        if (config.buy_threshold != null) setCompositeBuyThreshold(config.buy_threshold);
+        if (config.sell_threshold != null) setCompositeSellThreshold(config.sell_threshold);
+      }
+    } catch { /* ignore */ }
   };
 
   const currentParams = paramValues[selectedStrategy] ?? {};
@@ -421,6 +499,115 @@ export default function StrategyConfigPage() {
           <Upload className="h-4 w-4" /> 加载配置
         </button>
       </div>
+
+      {/* ── 策略组合 (Composite Strategy) ── */}
+      <section className="bg-[#1e293b] rounded-lg border border-[#334155] p-6">
+        <h2 className="text-lg font-semibold mb-4">🔗 策略组合</h2>
+        <p className="text-sm text-[#94a3b8] mb-4">组合多个子策略并加权投票。权重会自动归一化到总和为1。</p>
+
+        {/* Sub-strategy list */}
+        <div className="space-y-3 mb-5">
+          {compositeItems.map((item, idx) => (
+            <div key={idx} className="flex items-center gap-3 bg-[#0f172a] rounded-lg p-3 border border-[#334155]">
+              <select
+                value={item.name}
+                onChange={(e) => updateCompositeItem(idx, 'name', e.target.value)}
+                className="flex-1 bg-[#1e293b] border border-[#334155] rounded px-2 py-1.5 text-sm focus:outline-none focus:border-[#3b82f6]"
+              >
+                {SUB_STRATEGY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              <div className="flex items-center gap-2 min-w-[200px]">
+                <span className="text-xs text-[#64748b] whitespace-nowrap">权重</span>
+                <input
+                  type="range"
+                  min={0.05}
+                  max={1}
+                  step={0.05}
+                  value={item.weight}
+                  onChange={(e) => updateCompositeItem(idx, 'weight', Number(e.target.value))}
+                  className="flex-1 accent-[#3b82f6] h-2 cursor-pointer"
+                />
+                <span className="text-xs text-[#f8fafc] w-12 text-right">{(normalizedWeights[idx] * 100).toFixed(0)}%</span>
+              </div>
+              <button
+                onClick={() => removeCompositeItem(idx)}
+                disabled={compositeItems.length <= 1}
+                className="p-1.5 text-red-400 hover:text-red-300 disabled:text-[#334155] transition-colors cursor-pointer"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <button
+          onClick={addCompositeItem}
+          className="flex items-center gap-1.5 text-sm text-[#3b82f6] hover:text-[#60a5fa] transition-colors mb-5 cursor-pointer"
+        >
+          <Plus className="h-4 w-4" /> 添加策略
+        </button>
+
+        {/* Thresholds */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4 mb-5">
+          <div>
+            <label className="block text-sm font-medium text-[#94a3b8] mb-1.5">买入阈值</label>
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={0.1}
+                max={0.8}
+                step={0.05}
+                value={compositeBuyThreshold}
+                onChange={(e) => setCompositeBuyThreshold(Number(e.target.value))}
+                className="flex-1 accent-[#22c55e] h-2 cursor-pointer"
+              />
+              <input
+                type="number"
+                min={0.1}
+                max={0.8}
+                step={0.05}
+                value={compositeBuyThreshold}
+                onChange={(e) => setCompositeBuyThreshold(Number(e.target.value))}
+                className="w-20 bg-[#0f172a] border border-[#334155] rounded px-2 py-1 text-sm text-center focus:outline-none focus:border-[#3b82f6]"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-[#94a3b8] mb-1.5">卖出阈值</label>
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={-0.8}
+                max={-0.1}
+                step={0.05}
+                value={compositeSellThreshold}
+                onChange={(e) => setCompositeSellThreshold(Number(e.target.value))}
+                className="flex-1 accent-[#ef4444] h-2 cursor-pointer"
+              />
+              <input
+                type="number"
+                min={-0.8}
+                max={-0.1}
+                step={0.05}
+                value={compositeSellThreshold}
+                onChange={(e) => setCompositeSellThreshold(Number(e.target.value))}
+                className="w-20 bg-[#0f172a] border border-[#334155] rounded px-2 py-1 text-sm text-center focus:outline-none focus:border-[#3b82f6]"
+              />
+            </div>
+          </div>
+        </div>
+
+        <button
+          onClick={saveComposite}
+          disabled={compositeSaving}
+          className="flex items-center gap-2 px-5 py-2.5 bg-[#8b5cf6] hover:bg-[#7c3aed] disabled:bg-[#334155] text-white font-medium rounded-lg transition-colors cursor-pointer text-sm"
+        >
+          {compositeSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          保存组合
+        </button>
+      </section>
     </div>
   );
 }
