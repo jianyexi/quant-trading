@@ -362,6 +362,35 @@ pub async fn factor_correlation() -> (StatusCode, Json<Value>) {
     }
 }
 
+/// Compute factor IC decay over forward horizons via Python helper
+pub async fn factor_ic_decay() -> (StatusCode, Json<Value>) {
+    let script = std::path::Path::new("ml_models/factor_ic_decay.py");
+    if !script.exists() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "factor_ic_decay.py not found"})),
+        );
+    }
+    let python = match find_python() {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Python not found"})),
+            );
+        }
+    };
+
+    let args = vec!["ml_models/factor_ic_decay.py".to_string()];
+    match run_python_script(&python, &args) {
+        Ok(val) => (StatusCode::OK, Json(val)),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e})),
+        ),
+    }
+}
+
 /// Save a manually evaluated factor to registry
 pub async fn save_manual_factor(
     body: Option<Json<Value>>,

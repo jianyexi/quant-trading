@@ -139,6 +139,7 @@ fn factor_routes() -> Router<AppState> {
         .route("/export", post(handlers::factor_export_promoted))
         .route("/results", get(handlers::factor_results))
         .route("/correlation", post(handlers::factor_correlation))
+        .route("/ic-decay", post(handlers::factor_ic_decay))
         .route("/mining-history", get(handlers::factor_mining_history))
         .route("/mining-history/:id", get(handlers::factor_mining_run_detail))
 }

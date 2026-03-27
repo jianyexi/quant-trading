@@ -912,6 +912,25 @@ export async function factorSaveManual(params: {
   });
 }
 
+// ── Factor IC Decay ─────────────────────────────────────────────────
+
+export interface IcDecayFactor {
+  name: string;
+  ic_values: number[];
+  half_life: number;
+  base_ic: number;
+}
+
+export interface IcDecayResult {
+  horizons: number[];
+  factors: IcDecayFactor[];
+  error?: string;
+}
+
+export async function factorIcDecay(): Promise<IcDecayResult> {
+  return fetchJson('/factor/ic-decay', { method: 'POST' });
+}
+
 // ── Notifications ───────────────────────────────────────────────────
 
 export interface NotificationItem {

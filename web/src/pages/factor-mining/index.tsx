@@ -12,9 +12,10 @@ import ManualTab from './ManualTab';
 import RegistryTab from './RegistryTab';
 import ExportTab from './ExportTab';
 import CorrelationTab from './CorrelationTab';
+import IcDecayTab from './IcDecayTab';
 
 /* ── Tab types ───────────────────────────────────────────────────── */
-type Tab = 'overview' | 'parametric' | 'gp' | 'manual' | 'registry' | 'export' | 'correlation';
+type Tab = 'overview' | 'parametric' | 'gp' | 'manual' | 'registry' | 'export' | 'correlation' | 'ic-decay';
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'overview', label: '总览', icon: '📊' },
@@ -24,6 +25,7 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'registry', label: '因子注册表', icon: '📋' },
   { id: 'export', label: '导出集成', icon: '📦' },
   { id: 'correlation', label: '因子相关性', icon: '🔗' },
+  { id: 'ic-decay', label: 'IC衰减', icon: '📈' },
 ];
 
 /* ── Main Page ───────────────────────────────────────────────────── */
@@ -88,6 +90,7 @@ export default function FactorMining() {
       <div className={activeTab === 'registry' ? '' : 'hidden'}><RegistryTab registry={registry} onRefresh={loadData} /></div>
       <div className={activeTab === 'export' ? '' : 'hidden'}><ExportTab results={results} /></div>
       <div className={activeTab === 'correlation' ? '' : 'hidden'}><CorrelationTab /></div>
+      <div className={activeTab === 'ic-decay' ? '' : 'hidden'}><IcDecayTab /></div>
     </div>
   );
 }
