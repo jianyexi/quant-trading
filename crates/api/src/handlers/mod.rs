@@ -15,6 +15,7 @@ pub mod data_quality;
 pub mod data_adjust;
 mod ml;
 mod monte_carlo;
+mod attribution;
 mod risk_metrics;
 
 pub use market::*;
@@ -33,6 +34,7 @@ pub use export::{export_backtest_csv, export_trades_csv, export_metrics_csv};
 pub use data_adjust::data_adjust;
 pub use ml::*;
 pub use monte_carlo::run_monte_carlo;
+pub use attribution::backtest_attribution;
 pub use risk_metrics::{risk_var, risk_stress_test};
 
 use axum::{

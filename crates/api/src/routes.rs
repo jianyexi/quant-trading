@@ -41,6 +41,7 @@ fn backtest_routes() -> Router<AppState> {
         .route("/history", get(handlers::backtest_history))
         .route("/compare", post(handlers::backtest_compare))
         .route("/monte-carlo", post(handlers::run_monte_carlo))
+        .route("/attribution", post(handlers::backtest_attribution))
 }
 
 fn order_routes() -> Router<AppState> {

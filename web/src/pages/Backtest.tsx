@@ -28,9 +28,14 @@ import {
   LineChart,
   Line,
   Legend,
+  BarChart,
+  Bar,
+  Cell,
+  PieChart,
+  Pie,
 } from 'recharts';
-import { runBacktest, getBacktestResults, runOptimization, getBacktestHistory, compareBacktestRuns, runMonteCarloSimulation, getTaskResult } from '../api/client';
-import type { BacktestRunSummary, CompareRunData, MonteCarloResultData } from '../api/client';
+import { runBacktest, getBacktestResults, runOptimization, getBacktestHistory, compareBacktestRuns, runMonteCarloSimulation, getTaskResult, runAttribution } from '../api/client';
+import type { BacktestRunSummary, CompareRunData, MonteCarloResultData, AttributionResultData } from '../api/client';
 
 interface BacktestConfig {
   strategy: string;
@@ -233,6 +238,11 @@ export default function Backtest() {
   const [mcError, setMcError] = useState<string | null>(null);
   const mcPollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // ── Attribution state ───────────────────────────────────────────
+  const [attrRunning, setAttrRunning] = useState(false);
+  const [attrResult, setAttrResult] = useState<AttributionResultData | null>(null);
+  const [attrError, setAttrError] = useState<string | null>(null);
+
   const stopPolling = useCallback(() => {
     if (pollerRef.current) {
       clearInterval(pollerRef.current);
@@ -292,6 +302,21 @@ export default function Backtest() {
     } catch (e) {
       setMcError(e instanceof Error ? e.message : '启动失败');
       setMcRunning(false);
+    }
+  };
+
+  const handleRunAttribution = async () => {
+    if (!taskId) return;
+    setAttrRunning(true);
+    setAttrResult(null);
+    setAttrError(null);
+    try {
+      const res = await runAttribution({ task_id: taskId });
+      setAttrResult(res);
+    } catch (e) {
+      setAttrError(e instanceof Error ? e.message : '归因分析失败');
+    } finally {
+      setAttrRunning(false);
     }
   };
 
@@ -1342,6 +1367,228 @@ export default function Backtest() {
         </div>
       )}
       </>)}
+
+      {/* ── Performance Attribution ──────────────────────────────────── */}
+      {result && taskId && (
+        <div className="bg-[#1e293b] rounded-xl border border-[#334155] p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-[#f8fafc] flex items-center gap-2">
+              <BarChart3 size={20} className="text-[#f59e0b]" /> 📊 绩效归因
+            </h2>
+            <button
+              onClick={handleRunAttribution}
+              disabled={attrRunning}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-[#f59e0b] text-white hover:bg-[#d97706] disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            >
+              {attrRunning ? (
+                <><Loader2 size={16} className="animate-spin" /> 分析中…</>
+              ) : (
+                <><Target size={16} /> Brinson 归因分析</>
+              )}
+            </button>
+          </div>
+
+          {attrError && (
+            <div className="text-sm text-red-400 bg-red-400/10 px-3 py-2 rounded-lg">
+              {attrError}
+            </div>
+          )}
+
+          {attrResult && (() => {
+            const attr = attrResult;
+
+            // Waterfall data
+            const waterfallData = [
+              { name: '选股', value: attr.selection_contribution, fill: '#22c55e' },
+              { name: '择时', value: attr.timing_contribution, fill: attr.timing_contribution >= 0 ? '#22c55e' : '#ef4444' },
+              { name: '交互', value: attr.interaction_contribution, fill: '#3b82f6' },
+              { name: '费用', value: -attr.commission_drag, fill: '#ef4444' },
+              { name: '总收益', value: attr.total_return, fill: '#8b5cf6' },
+            ];
+
+            // Pie data (absolute proportions)
+            const total = Math.abs(attr.selection_contribution) + Math.abs(attr.timing_contribution) + Math.abs(attr.interaction_contribution) + Math.abs(attr.commission_drag);
+            const pieData = total > 0 ? [
+              { name: '选股', value: Math.abs(attr.selection_contribution), color: '#22c55e' },
+              { name: '择时', value: Math.abs(attr.timing_contribution), color: '#3b82f6' },
+              { name: '交互', value: Math.abs(attr.interaction_contribution), color: '#8b5cf6' },
+              { name: '费用', value: Math.abs(attr.commission_drag), color: '#ef4444' },
+            ] : [];
+
+            // Top/Bottom trades
+            const sorted = [...attr.trade_attribution].sort((a, b) => b.contribution - a.contribution);
+            const topTrades = sorted.slice(0, 5);
+            const bottomTrades = sorted.slice(-5).reverse();
+
+            return (
+              <div className="space-y-6">
+                {/* Waterfall Chart */}
+                <div>
+                  <h3 className="text-sm font-medium text-[#94a3b8] mb-3">收益归因瀑布图</h3>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <BarChart data={waterfallData} margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 12 }} />
+                      <YAxis tickFormatter={(v: number) => `${v.toFixed(1)}%`} tick={{ fill: '#94a3b8', fontSize: 11 }} />
+                      <Tooltip
+                        formatter={(value: number) => [`${value.toFixed(2)}%`, '贡献']}
+                        contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
+                        labelStyle={{ color: '#f8fafc' }}
+                      />
+                      <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                        {waterfallData.map((d, i) => (
+                          <Cell key={i} fill={d.fill} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Contribution Breakdown Cards + Pie */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    {[
+                      { label: '选股贡献', value: attr.selection_contribution, color: '#22c55e', icon: '🎯' },
+                      { label: '择时贡献', value: attr.timing_contribution, color: '#3b82f6', icon: '⏱️' },
+                      { label: '交互效应', value: attr.interaction_contribution, color: '#8b5cf6', icon: '🔄' },
+                      { label: '费用拖累', value: -attr.commission_drag, color: '#ef4444', icon: '💰' },
+                    ].map((item) => (
+                      <div key={item.label} className="bg-[#0f172a] rounded-lg p-3 border border-[#334155]">
+                        <div className="text-xs text-[#64748b] mb-1">{item.icon} {item.label}</div>
+                        <div className="text-lg font-bold" style={{ color: item.value >= 0 ? '#22c55e' : '#ef4444' }}>
+                          {item.value >= 0 ? '+' : ''}{item.value.toFixed(2)}%
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {pieData.length > 0 && (
+                    <div className="flex items-center justify-center">
+                      <ResponsiveContainer width="100%" height={200}>
+                        <PieChart>
+                          <Pie
+                            data={pieData}
+                            dataKey="value"
+                            nameKey="name"
+                            cx="50%"
+                            cy="50%"
+                            outerRadius={75}
+                            innerRadius={40}
+                            label={({ name, percent }: { name: string; percent: number }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                            labelLine={false}
+                          >
+                            {pieData.map((d, i) => (
+                              <Cell key={i} fill={d.color} />
+                            ))}
+                          </Pie>
+                          <Tooltip
+                            formatter={(value: number) => [`${value.toFixed(2)}%`, '绝对贡献']}
+                            contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
+                          />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+                </div>
+
+                {/* Top / Bottom Trades */}
+                {attr.trade_attribution.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Top Trades */}
+                    <div>
+                      <h3 className="text-sm font-medium text-[#22c55e] mb-2">🏆 最佳交易 Top 5</h3>
+                      <div className="overflow-x-auto rounded-lg border border-[#334155]">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="bg-[#0f172a]">
+                              <th className="py-2 px-3 text-left text-[#64748b]">标的</th>
+                              <th className="py-2 px-3 text-left text-[#64748b]">日期</th>
+                              <th className="py-2 px-3 text-right text-[#64748b]">收益%</th>
+                              <th className="py-2 px-3 text-right text-[#64748b]">贡献%</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {topTrades.map((t, i) => (
+                              <tr key={i} className="border-t border-[#1e293b] hover:bg-[#0f172a]/50">
+                                <td className="py-1.5 px-3 text-[#f8fafc]">{t.symbol}</td>
+                                <td className="py-1.5 px-3 text-[#94a3b8]">{t.entry_date?.slice(0, 10)} → {t.exit_date?.slice(0, 10)}</td>
+                                <td className="py-1.5 px-3 text-right text-[#22c55e] font-mono">{t.return_pct >= 0 ? '+' : ''}{t.return_pct.toFixed(2)}%</td>
+                                <td className="py-1.5 px-3 text-right text-[#22c55e] font-mono">{t.contribution >= 0 ? '+' : ''}{t.contribution.toFixed(2)}%</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    {/* Bottom Trades */}
+                    <div>
+                      <h3 className="text-sm font-medium text-[#ef4444] mb-2">📉 最差交易 Bottom 5</h3>
+                      <div className="overflow-x-auto rounded-lg border border-[#334155]">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="bg-[#0f172a]">
+                              <th className="py-2 px-3 text-left text-[#64748b]">标的</th>
+                              <th className="py-2 px-3 text-left text-[#64748b]">日期</th>
+                              <th className="py-2 px-3 text-right text-[#64748b]">收益%</th>
+                              <th className="py-2 px-3 text-right text-[#64748b]">贡献%</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {bottomTrades.map((t, i) => (
+                              <tr key={i} className="border-t border-[#1e293b] hover:bg-[#0f172a]/50">
+                                <td className="py-1.5 px-3 text-[#f8fafc]">{t.symbol}</td>
+                                <td className="py-1.5 px-3 text-[#94a3b8]">{t.entry_date?.slice(0, 10)} → {t.exit_date?.slice(0, 10)}</td>
+                                <td className="py-1.5 px-3 text-right text-[#ef4444] font-mono">{t.return_pct >= 0 ? '+' : ''}{t.return_pct.toFixed(2)}%</td>
+                                <td className="py-1.5 px-3 text-right text-[#ef4444] font-mono">{t.contribution >= 0 ? '+' : ''}{t.contribution.toFixed(2)}%</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Monthly Attribution Table */}
+                {attr.monthly_attribution.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-medium text-[#94a3b8] mb-2">📅 月度归因</h3>
+                    <div className="overflow-x-auto rounded-lg border border-[#334155]">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="bg-[#0f172a]">
+                            <th className="py-2 px-3 text-left text-[#64748b]">月份</th>
+                            <th className="py-2 px-3 text-right text-[#64748b]">收益%</th>
+                            <th className="py-2 px-3 text-right text-[#64748b]">交易数</th>
+                            <th className="py-2 px-3 text-left text-[#64748b]">最佳交易</th>
+                            <th className="py-2 px-3 text-left text-[#64748b]">最差交易</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {attr.monthly_attribution.map((m) => (
+                            <tr key={m.month} className="border-t border-[#1e293b] hover:bg-[#0f172a]/50">
+                              <td className="py-1.5 px-3 text-[#f8fafc] font-mono">{m.month}</td>
+                              <td className="py-1.5 px-3 text-right font-mono" style={{ color: m.return_pct >= 0 ? '#22c55e' : '#ef4444' }}>
+                                {m.return_pct >= 0 ? '+' : ''}{m.return_pct.toFixed(2)}%
+                              </td>
+                              <td className="py-1.5 px-3 text-right text-[#94a3b8]">{m.trade_count}</td>
+                              <td className="py-1.5 px-3 text-[#22c55e] text-xs">{m.best_trade ?? '—'}</td>
+                              <td className="py-1.5 px-3 text-[#ef4444] text-xs">{m.worst_trade ?? '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                <div className="text-xs text-[#64748b] text-center">
+                  Brinson 绩效归因模型 · 选股 + 择时 + 交互 = 总收益
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
 
       {/* ── Parameter Optimization Tab ────────────────────────────────── */}
       {activeTab === 'optimize' && (

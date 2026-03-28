@@ -216,6 +216,42 @@ export async function getTaskResult(taskId: string) {
   return fetchJson<{ status: string; result?: string; progress?: string; error?: string }>(`/tasks/${taskId}`);
 }
 
+// ── Attribution types ───────────────────────────────────────────────
+export interface TradeAttribution {
+  symbol: string;
+  entry_date: string;
+  exit_date: string;
+  return_pct: number;
+  holding_days: number;
+  contribution: number;
+}
+
+export interface MonthlyAttribution {
+  month: string;
+  return_pct: number;
+  best_trade: string | null;
+  worst_trade: string | null;
+  trade_count: number;
+}
+
+export interface AttributionResultData {
+  total_return: number;
+  timing_contribution: number;
+  selection_contribution: number;
+  interaction_contribution: number;
+  commission_drag: number;
+  slippage_drag: number;
+  trade_attribution: TradeAttribution[];
+  monthly_attribution: MonthlyAttribution[];
+}
+
+export async function runAttribution(params: { task_id: string }): Promise<AttributionResultData> {
+  return fetchJson('/backtest/attribution', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
 export async function getPortfolio() {
   return fetchJson('/portfolio');
 }
