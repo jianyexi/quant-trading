@@ -197,6 +197,7 @@ function PipelineContent() {
   const [btResult, setBtResult] = useState<any>(null);
   const [btError, setBtError] = useState('');
   const btPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [btTaskId, setBtTaskId] = useState<string | null>(null);
 
   const autoRef = useRef(false);
 
@@ -363,6 +364,7 @@ function PipelineContent() {
         period: bt.period,
         symbols: extra,
       });
+      setBtTaskId(res.task_id);
 
       // Start polling
       if (btPollRef.current) clearInterval(btPollRef.current);
@@ -806,6 +808,13 @@ function PipelineContent() {
 
       {/* Backtest Results */}
       <BtSummary />
+      {btTaskId && btResult && (
+        <div className="flex justify-end">
+          <a href={`/backtest?task_id=${btTaskId}`} className="text-blue-400 hover:text-blue-300 underline text-sm">
+            📊 查看完整回测结果 →
+          </a>
+        </div>
+      )}
 
       {/* Pipeline summary when all done */}
       {stepStatus.every(s => s === 'done' || s === 'skipped') && stepStatus.some(s => s === 'done') && (

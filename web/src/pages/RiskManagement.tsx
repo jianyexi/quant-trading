@@ -10,6 +10,7 @@ import {
 import {
   getRiskSignals, getPerformance, resetCircuitBreaker, resetDailyLoss,
   createMonitorWebSocket, getRiskVar, runStressTest,
+  tradeStop, tradeStatus,
   type RiskSignalsSnapshot, type RiskEvent, type TailRiskData,
   type VarResult, type StressTestResult,
 } from '../api/client';
@@ -49,6 +50,31 @@ export default function RiskManagement() {
   const [stressResult, setStressResult] = useState<StressTestResult | null>(null);
   const [stressLoading, setStressLoading] = useState(false);
   const [customDrawdown, setCustomDrawdown] = useState(-20);
+
+  // ── Emergency stop state ──────────────────────────────────────────
+  const [isTrading, setIsTrading] = useState(false);
+  const [stopping, setStopping] = useState(false);
+
+  useEffect(() => {
+    tradeStatus().then(s => setIsTrading(s.running || false)).catch(() => {});
+    const iv = setInterval(() => {
+      tradeStatus().then(s => setIsTrading(s.running || false)).catch(() => {});
+    }, 5000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const handleEmergencyStop = async () => {
+    if (!confirm('确定要紧急停止所有交易？')) return;
+    setStopping(true);
+    try {
+      await tradeStop();
+      setIsTrading(false);
+    } catch (e) {
+      alert('停止失败: ' + e);
+    } finally {
+      setStopping(false);
+    }
+  };
 
   const fetchAll = useCallback(async () => {
     try {
@@ -167,6 +193,26 @@ export default function RiskManagement() {
 
   return (
     <div className="space-y-6 text-[#f8fafc]">
+      {/* Emergency Stop Banner */}
+      {isTrading && (
+        <div className="mb-6 p-4 bg-red-900/60 border-2 border-red-500 rounded-xl flex items-center justify-between animate-pulse">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">⚠️</span>
+            <div>
+              <p className="text-red-200 font-bold text-lg">交易引擎运行中</p>
+              <p className="text-red-300 text-sm">如需停止，请点击右侧按钮</p>
+            </div>
+          </div>
+          <button
+            onClick={handleEmergencyStop}
+            disabled={stopping}
+            className="px-6 py-3 bg-red-600 hover:bg-red-700 disabled:bg-red-800 text-white font-bold rounded-lg text-lg border-2 border-red-400"
+          >
+            {stopping ? '停止中...' : '🛑 紧急停止交易'}
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

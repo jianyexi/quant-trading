@@ -59,6 +59,23 @@ export default function ExportTab({ results }: { results: FactorResults | null }
           </pre>
         )}
       </div>
+
+      {/* Backtest with mined factors */}
+      <div className="rounded-xl border border-[#334155] bg-[#1e293b] p-5">
+        <h3 className="text-base font-bold text-[#f8fafc] mb-1">🧪 因子回测</h3>
+        <p className="text-xs text-[#94a3b8] mb-4">
+          使用已挖掘的因子进行策略回测验证
+        </p>
+        <button
+          onClick={() => {
+            localStorage.setItem('quant-backtest-strategy', 'ml_factor');
+            window.location.href = '/backtest';
+          }}
+          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg flex items-center gap-2 text-sm font-medium"
+        >
+          🧪 用挖掘因子回测
+        </button>
+      </div>
     </div>
   );
 }

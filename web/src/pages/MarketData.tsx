@@ -302,6 +302,15 @@ export default function MarketData() {
                   <span>{stockInfo.turnover >= 1e8 ? (stockInfo.turnover / 1e8).toFixed(1) + '亿' : (stockInfo.turnover / 1e4).toFixed(0) + '万'}</span>
                 </div>
               </div>
+              <button
+                onClick={() => {
+                  localStorage.setItem('quant-backtest-symbol', stockInfo.symbol);
+                  window.location.href = '/backtest';
+                }}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm flex items-center gap-1"
+              >
+                📊 用此标的回测
+              </button>
             </div>
           </div>
 

@@ -243,6 +243,9 @@ export default function Backtest() {
   const [attrResult, setAttrResult] = useState<AttributionResultData | null>(null);
   const [attrError, setAttrError] = useState<string | null>(null);
 
+  // ── Config toast / cross-page navigation state ────────────────────
+  const [configToast, setConfigToast] = useState('');
+
   const stopPolling = useCallback(() => {
     if (pollerRef.current) {
       clearInterval(pollerRef.current);
@@ -324,6 +327,67 @@ export default function Backtest() {
   useEffect(() => {
     localStorage.setItem('quant-backtest-config', JSON.stringify(config));
   }, [config]);
+
+  // ── Cross-page navigation: pick up symbol from MarketData ─────────
+  useEffect(() => {
+    const sym = localStorage.getItem('quant-backtest-symbol');
+    if (sym) {
+      setConfig(prev => ({ ...prev, symbol: sym }));
+      localStorage.removeItem('quant-backtest-symbol');
+    }
+  }, []);
+
+  // ── Cross-page navigation: pick up task_id from URL (Pipeline link) ─
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tid = params.get('task_id');
+    if (tid) {
+      setTaskId(tid);
+      // Start polling for this task
+      const poll = async () => {
+        try {
+          const data = await getBacktestResults(tid) as Record<string, unknown>;
+          const status = data.status as string;
+          if (status === 'completed' || status === 'Completed') {
+            stopPolling();
+            setResult(data as unknown as BacktestResultData);
+            setProgress(null);
+            setRunning(false);
+            setConfigOpen(false);
+          } else if (status === 'Failed' || status === 'failed') {
+            stopPolling();
+            setError((data.error as string) ?? 'Backtest failed');
+            setProgress(null);
+            setRunning(false);
+          } else {
+            setProgress((data.progress as string) ?? '⏳ Running...');
+            setRunning(true);
+          }
+        } catch { /* transient */ }
+      };
+      setTimeout(() => void poll(), 500);
+      pollerRef.current = setInterval(() => void poll(), 1000);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Cross-page navigation: pick up strategy from factor mining ────
+  useEffect(() => {
+    const strat = localStorage.getItem('quant-backtest-strategy');
+    if (strat) {
+      setConfig(prev => ({ ...prev, strategy: strat }));
+      localStorage.removeItem('quant-backtest-strategy');
+    }
+  }, []);
+
+  // ── Config sync toast ─────────────────────────────────────────────
+  useEffect(() => {
+    const saved = localStorage.getItem('quant-strategy-config');
+    if (saved) {
+      setConfigToast('✅ 已从策略配置页加载参数');
+      setTimeout(() => setConfigToast(''), 3000);
+    }
+  }, []);
 
   // Load backtest history when comparison tab is activated
   useEffect(() => {
@@ -596,6 +660,13 @@ export default function Backtest() {
 
   return (
     <div className="space-y-6">
+      {/* Config sync toast */}
+      {configToast && (
+        <div className="fixed top-4 right-4 z-50 px-4 py-2 bg-green-700 text-white rounded-lg shadow-lg animate-fade-in">
+          {configToast}
+        </div>
+      )}
+
       {/* Tab Switcher */}
       <div className="flex gap-2">
         <button
@@ -852,6 +923,21 @@ export default function Backtest() {
               >
                 <Download size={14} />
                 导出绩效指标 CSV
+              </button>
+              <button
+                onClick={() => {
+                  const deployConfig = {
+                    strategy: config.strategy,
+                    symbols: config.symbol + (config.extraSymbols?.length ? ',' + config.extraSymbols.join(',') : ''),
+                    source: 'backtest',
+                    timestamp: Date.now(),
+                  };
+                  localStorage.setItem('quant-deploy-config', JSON.stringify(deployConfig));
+                  window.location.href = '/autotrade';
+                }}
+                className="px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg flex items-center gap-2 text-lg"
+              >
+                🚀 部署到纸上交易
               </button>
             </div>
           )}
@@ -1703,7 +1789,16 @@ export default function Backtest() {
 
           {/* Optimization Results */}
           {optResult && optResult.grid && (
-            <OptimizationResults result={optResult} metric={optMetric} onMetricChange={setOptMetric} />
+            <OptimizationResults result={optResult} metric={optMetric} onMetricChange={setOptMetric}
+              onApplyBest={(params) => {
+                const bestParamsMap: Record<string, number> = { [params.param1_name]: params.param1, [params.param2_name]: params.param2 };
+                setConfig(prev => ({ ...prev, ...bestParamsMap }));
+                const saved = JSON.parse(localStorage.getItem('quant-strategy-config') || '{}');
+                saved[config.strategy] = { ...(saved[config.strategy] || {}), ...bestParamsMap };
+                localStorage.setItem('quant-strategy-config', JSON.stringify(saved));
+                setActiveTab('backtest');
+              }}
+            />
           )}
         </>
       )}
@@ -1764,10 +1859,12 @@ function OptimizationResults({
   result,
   metric,
   onMetricChange,
+  onApplyBest,
 }: {
   result: OptimizeResultData;
   metric: 'sharpe' | 'total_return' | 'max_drawdown' | 'win_rate';
   onMetricChange: (m: 'sharpe' | 'total_return' | 'max_drawdown' | 'win_rate') => void;
+  onApplyBest?: (params: { param1_name: string; param1: number; param2_name: string; param2: number }) => void;
 }) {
   const { grid, best, param1_name, param2_name } = result;
 
@@ -1809,18 +1906,28 @@ function OptimizationResults({
       {/* Best Parameters Banner */}
       {best && (
         <div className="bg-[#1e293b] rounded-xl border border-[#8b5cf6]/40 p-4">
-          <div className="flex items-center gap-3">
-            <span className="text-2xl">🏆</span>
-            <div>
-              <p className="text-sm text-[#94a3b8]">最优参数</p>
-              <p className="text-lg font-bold text-[#f8fafc]">
-                {param1_name}={best.param1}, {param2_name}={best.param2}
-              </p>
-              <p className="text-sm text-[#94a3b8]">
-                收益率: <span className={best.total_return >= 0 ? 'text-green-400' : 'text-red-400'}>{best.total_return >= 0 ? '+' : ''}{best.total_return.toFixed(2)}%</span>
-                {' · '}夏普: <span className={best.sharpe >= 1 ? 'text-green-400' : 'text-yellow-400'}>{best.sharpe.toFixed(2)}</span>
-              </p>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">🏆</span>
+              <div>
+                <p className="text-sm text-[#94a3b8]">最优参数</p>
+                <p className="text-lg font-bold text-[#f8fafc]">
+                  {param1_name}={best.param1}, {param2_name}={best.param2}
+                </p>
+                <p className="text-sm text-[#94a3b8]">
+                  收益率: <span className={best.total_return >= 0 ? 'text-green-400' : 'text-red-400'}>{best.total_return >= 0 ? '+' : ''}{best.total_return.toFixed(2)}%</span>
+                  {' · '}夏普: <span className={best.sharpe >= 1 ? 'text-green-400' : 'text-yellow-400'}>{best.sharpe.toFixed(2)}</span>
+                </p>
+              </div>
             </div>
+            {onApplyBest && (
+              <button
+                onClick={() => onApplyBest({ param1_name, param1: best.param1, param2_name, param2: best.param2 })}
+                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium"
+              >
+                ✅ 应用最优参数并回测
+              </button>
+            )}
           </div>
         </div>
       )}

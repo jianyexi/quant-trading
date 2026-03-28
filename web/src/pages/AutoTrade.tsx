@@ -42,6 +42,23 @@ export default function AutoTrade() {
   const [replayPeriod, setReplayPeriod] = useState('daily');
   const [slippageBps, setSlippageBps] = useState(5);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [deployNotice, setDeployNotice] = useState('');
+
+  // ── Pre-fill from Backtest deploy ──────────────────────────────────
+  useEffect(() => {
+    const deployStr = localStorage.getItem('quant-deploy-config');
+    if (deployStr) {
+      try {
+        const deploy = JSON.parse(deployStr);
+        if (Date.now() - deploy.timestamp < 300000) {
+          if (deploy.strategy) setStrategy(deploy.strategy);
+          if (deploy.symbols) setSymbolsInput(deploy.symbols);
+          setDeployNotice(`已从回测结果加载: ${deploy.strategy} / ${deploy.symbols}`);
+        }
+      } catch { /* ignore */ }
+      localStorage.removeItem('quant-deploy-config');
+    }
+  }, []);
 
   // Fetch initial status
   useEffect(() => {
@@ -161,6 +178,13 @@ export default function AutoTrade() {
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-sm flex items-center gap-2">
           <AlertCircle className="h-4 w-4 shrink-0" /> {error}
+        </div>
+      )}
+
+      {deployNotice && (
+        <div className="mb-4 p-3 bg-green-900/50 border border-green-700 rounded-lg text-green-300 flex items-center justify-between">
+          <span>✅ {deployNotice}</span>
+          <button onClick={() => setDeployNotice('')} className="text-green-400 hover:text-white">✕</button>
         </div>
       )}
 
