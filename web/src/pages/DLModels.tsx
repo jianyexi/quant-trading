@@ -254,12 +254,12 @@ function FeatureImportanceSection() {
                 color: '#f8fafc',
                 fontSize: '12px',
               }}
-              formatter={(value: number | null) => [
+              formatter={((value: number | null) => [
                 value !== null ? value.toFixed(1) : 'N/A',
                 '重要性',
-              ]}
+              ]) as any}
             />
-            <Bar dataKey="importance" radius={[0, 4, 4, 0]} label={{ position: 'right', fill: '#94a3b8', fontSize: 10, formatter: (v: number | null) => v !== null ? v.toFixed(1) : '' }}>
+            <Bar dataKey="importance" radius={[0, 4, 4, 0]} label={{ position: 'right', fill: '#94a3b8', fontSize: 10, formatter: ((v: number | null) => v !== null ? v.toFixed(1) : '') as any }}>
               {chartData.map((_, index) => (
                 <Cell
                   key={`cell-${index}`}

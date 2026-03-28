@@ -114,7 +114,7 @@ function PipelineBar({ modules }: { modules: ModuleInfo[] }) {
   );
 }
 
-function LatencyContent() {
+export function LatencyContent() {
   const [data, setData] = useState<LatencyData | null>(null);
   const [refreshInterval, setRefreshInterval] = useState(3);
   const [error, setError] = useState('');

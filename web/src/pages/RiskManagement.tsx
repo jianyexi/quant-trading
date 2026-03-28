@@ -285,8 +285,10 @@ export default function RiskManagement() {
                       <XAxis dataKey="bin" tickFormatter={(v: number) => `${(v * 100).toFixed(1)}%`} tick={{ fill: '#64748b', fontSize: 10 }} />
                       <YAxis tick={{ fill: '#64748b', fontSize: 10 }} width={32} />
                       <Tooltip
-                        formatter={(value: number) => [value, '频次']}
-                        labelFormatter={(v: number) => `收益率: ${(v * 100).toFixed(2)}%`}
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        formatter={(value: any) => [value, '频次']}
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        labelFormatter={(v: any) => `收益率: ${(Number(v) * 100).toFixed(2)}%`}
                         contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
                       />
                       <Bar dataKey="count" radius={[2, 2, 0, 0]}>

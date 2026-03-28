@@ -1009,10 +1009,10 @@ export default function Backtest() {
                     tickFormatter={(v: number) => `¥${(v / 1000).toFixed(0)}k`} />
                   <Tooltip
                     contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', color: '#f8fafc', fontSize: '12px' }}
-                    formatter={(value: number | undefined, name: string) => [
+                    formatter={((value: number | undefined, name: string) => [
                       `¥${(value ?? 0).toLocaleString()}`,
                       name === 'benchmark' ? `基准 (${result.benchmark_symbol})` : '策略净值',
-                    ]}
+                    ]) as any}
                     labelStyle={{ color: '#94a3b8' }} />
                   {result.benchmark_curve && result.benchmark_curve.length > 0 && (
                     <Legend formatter={(v: string) => v === 'benchmark' ? `基准 (${result.benchmark_symbol})` : '策略净值'} />
@@ -1049,7 +1049,7 @@ export default function Backtest() {
                     tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} />
                   <Tooltip
                     contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', color: '#f8fafc', fontSize: '12px' }}
-                    formatter={(v: number) => [`${(Number(v) * 100).toFixed(2)}%`, '回撤']}
+                    formatter={((v: number) => [`${(Number(v) * 100).toFixed(2)}%`, '回撤']) as any}
                     labelStyle={{ color: '#94a3b8' }} />
                   <Area type="monotone" dataKey="drawdown" stroke="#ef4444" fill="url(#drawdownGrad)" />
                 </AreaChart>
@@ -1263,8 +1263,8 @@ export default function Backtest() {
                       <YAxis stroke="#64748b" tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} label={{ value: '净值', angle: -90, position: 'insideLeft', fill: '#64748b', fontSize: 11 }} />
                       <Tooltip
                         contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
-                        formatter={(v: number, name: string) => [`${v?.toFixed(4)}`, name]}
-                        labelFormatter={(l: number) => `第 ${l} 天`}
+                        formatter={((v: number, name: string) => [`${v?.toFixed(4)}`, name]) as any}
+                        labelFormatter={((l: number) => `第 ${l} 天`) as any}
                       />
                       <Area type="monotone" dataKey="p95" stroke="none" fill="#a855f7" fillOpacity={0.1} name="P95" />
                       <Area type="monotone" dataKey="p75" stroke="none" fill="#a855f7" fillOpacity={0.15} name="P75" />
@@ -1431,7 +1431,7 @@ export default function Backtest() {
                       <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 12 }} />
                       <YAxis tickFormatter={(v: number) => `${v.toFixed(1)}%`} tick={{ fill: '#94a3b8', fontSize: 11 }} />
                       <Tooltip
-                        formatter={(value: number) => [`${value.toFixed(2)}%`, '贡献']}
+                        formatter={((value: number) => [`${value.toFixed(2)}%`, '贡献']) as any}
                         contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
                         labelStyle={{ color: '#f8fafc' }}
                       />
@@ -1473,7 +1473,7 @@ export default function Backtest() {
                             cy="50%"
                             outerRadius={75}
                             innerRadius={40}
-                            label={({ name, percent }: { name: string; percent: number }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                            label={(({ name, percent }: { name: string; percent: number }) => `${name} ${(percent * 100).toFixed(0)}%`) as any}
                             labelLine={false}
                           >
                             {pieData.map((d, i) => (
@@ -1481,7 +1481,7 @@ export default function Backtest() {
                             ))}
                           </Pie>
                           <Tooltip
-                            formatter={(value: number) => [`${value.toFixed(2)}%`, '绝对贡献']}
+                            formatter={((value: number) => [`${value.toFixed(2)}%`, '绝对贡献']) as any}
                             contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
                           />
                         </PieChart>
