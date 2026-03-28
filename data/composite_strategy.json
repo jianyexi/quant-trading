@@ -1,0 +1,14 @@
+{
+  "buy_threshold": 0.3,
+  "sell_threshold": -0.3,
+  "strategies": [
+    {
+      "name": "sma_cross",
+      "weight": 0.5
+    },
+    {
+      "name": "rsi_reversal",
+      "weight": 0.5
+    }
+  ]
+}
