@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
+import WorkflowHint from '../components/WorkflowHint';
 import {
   ComposedChart,
   Bar,
@@ -484,6 +485,7 @@ export default function MarketData() {
           </div>
         </>
       )}
+      <WorkflowHint currentPath="/market" />
     </div>
   );
 }

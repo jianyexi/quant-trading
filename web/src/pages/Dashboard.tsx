@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import WorkflowHint from '../components/WorkflowHint';
 import {
   DollarSign, TrendingUp, TrendingDown, BarChart3, Target, Loader2,
   Activity, ShieldCheck, AlertTriangle, Zap, RefreshCw,
@@ -378,6 +379,7 @@ export default function Dashboard() {
 
       {activeTab === 'metrics' && <MetricsContent />}
       {activeTab === 'reports' && <ReportsContent />}
+      <WorkflowHint currentPath="/" />
     </div>
   );
 }

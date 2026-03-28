@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import WorkflowHint from '../components/WorkflowHint';
 import type { StrategyConfig, StrategyParam } from '../types';
 import { runBacktest, saveStrategyConfig, loadStrategyConfig, mlModelInfo, saveCompositeStrategy, loadCompositeStrategy, type ModelInfo } from '../api/client';
 import { Save, Upload, Play, RotateCcw, CheckCircle, AlertCircle, Loader2, Plus, Trash2 } from 'lucide-react';
@@ -608,6 +609,7 @@ export default function StrategyConfigPage() {
           保存组合
         </button>
       </section>
+      <WorkflowHint currentPath="/strategy" />
     </div>
   );
 }

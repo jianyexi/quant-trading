@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import WorkflowHint from '../components/WorkflowHint';
 import { Play, Square, RefreshCw, Activity, TrendingUp, TrendingDown, AlertCircle, Loader2, Radio, FileText, BarChart3 } from 'lucide-react';
 import { tradeStart, tradeStop, tradeStatus, qmtBridgeStatus, getJournal, type TradeStatus, type QmtBridgeStatus, type JournalEntry } from '../api/client';
 
@@ -553,6 +554,7 @@ export default function AutoTrade() {
           </div>
         )}
       </div>
+      <WorkflowHint currentPath="/autotrade" />
     </div>
   );
 }

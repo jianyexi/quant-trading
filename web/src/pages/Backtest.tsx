@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import WorkflowHint from '../components/WorkflowHint';
 import {
   ChevronDown,
   ChevronUp,
@@ -2213,6 +2214,7 @@ function ComparisonTab({
           </>
         )}
       </div>
+      <WorkflowHint currentPath="/backtest" />
     </div>
   );
 }

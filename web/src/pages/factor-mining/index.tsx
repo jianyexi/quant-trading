@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import WorkflowHint from '../../components/WorkflowHint';
 import {
   factorRegistryGet,
   factorResults,
@@ -91,6 +92,7 @@ export default function FactorMining() {
       <div className={activeTab === 'export' ? '' : 'hidden'}><ExportTab results={results} /></div>
       <div className={activeTab === 'correlation' ? '' : 'hidden'}><CorrelationTab /></div>
       <div className={activeTab === 'ic-decay' ? '' : 'hidden'}><IcDecayTab /></div>
+      <WorkflowHint currentPath="/factor-mining" />
     </div>
   );
 }
